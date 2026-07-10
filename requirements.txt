@@ -1,4 +1,6 @@
 fastapi
 jinja2
+openai
+python-dotenv
 requests
 uvicorn[standard]

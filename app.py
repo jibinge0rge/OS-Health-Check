@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,6 +20,13 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, field_validator
 
 from eol_service import lookup_os_eol_batch
+from normalization_service import (
+    DEFAULT_FUZZY_MATCH_THRESHOLD,
+    suggest_normalization_batch,
+)
+
+
+load_dotenv()
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -27,6 +35,7 @@ DRAFT_PATH = BASE_DIR / "_draft" / "eol_lookup.csv"
 BACKUP_DIR = BASE_DIR / "_backup"
 CONFIG_DIR = BASE_DIR / "_config"
 AZURE_CONFIG_PATH = CONFIG_DIR / "azure.json"
+APP_SETTINGS_PATH = CONFIG_DIR / "app_settings.json"
 CSV_HEADERS = [
     "os_string",
     "normalized_os_detailed_name",
@@ -72,6 +81,38 @@ class EolLookupItem(BaseModel):
 
 class EolLookupBatchRequest(BaseModel):
     items: list[EolLookupItem] = Field(default_factory=list)
+
+
+class NormalizationPair(BaseModel):
+    normalized_os_detailed_name: str = ""
+    normalized_os: str = ""
+
+
+class NormalizeSuggestItem(BaseModel):
+    os_string: str = ""
+
+
+class NormalizeSuggestRequest(BaseModel):
+    items: list[NormalizeSuggestItem] = Field(default_factory=list)
+    allowed_pairs: list[NormalizationPair] = Field(default_factory=list)
+    fuzzy_match_threshold: int = Field(
+        default=DEFAULT_FUZZY_MATCH_THRESHOLD,
+        ge=50,
+        le=100,
+    )
+
+
+class NormalizeSuggestResult(BaseModel):
+    normalized_os_detailed_name: str = ""
+    normalized_os: str = ""
+
+
+class AppSettings(BaseModel):
+    fuzzy_match_threshold: int = Field(
+        default=DEFAULT_FUZZY_MATCH_THRESHOLD,
+        ge=50,
+        le=100,
+    )
 
 
 class AzureUploadRequest(BaseModel):
@@ -186,6 +227,30 @@ def save_azure_settings(payload: AzureUploadRequest) -> AzureSettings:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     settings = AzureSettings(**payload.model_dump())
     with AZURE_CONFIG_PATH.open("w", encoding="utf-8") as handle:
+        json.dump(settings.model_dump(), handle, indent=2)
+        handle.write("\n")
+    return settings
+
+
+def load_app_settings() -> AppSettings:
+    if not APP_SETTINGS_PATH.exists():
+        return AppSettings()
+
+    with APP_SETTINGS_PATH.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=500, detail="App settings file is invalid.")
+
+    return AppSettings(
+        fuzzy_match_threshold=int(payload.get("fuzzy_match_threshold", DEFAULT_FUZZY_MATCH_THRESHOLD)),
+    )
+
+
+def save_app_settings(payload: AppSettings) -> AppSettings:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    settings = AppSettings(**payload.model_dump())
+    with APP_SETTINGS_PATH.open("w", encoding="utf-8") as handle:
         json.dump(settings.model_dump(), handle, indent=2)
         handle.write("\n")
     return settings
@@ -419,6 +484,16 @@ async def delete_draft_lookup() -> dict[str, object]:
     return {"deleted": True, "source": "draft"}
 
 
+@app.get("/api/app/settings")
+async def get_app_settings() -> AppSettings:
+    return load_app_settings()
+
+
+@app.put("/api/app/settings")
+async def update_app_settings(payload: AppSettings) -> AppSettings:
+    return save_app_settings(payload)
+
+
 @app.get("/api/azure/settings")
 async def get_azure_settings() -> AzureSettings:
     return load_azure_settings()
@@ -441,6 +516,28 @@ async def upload_lookup_to_azure() -> StreamingResponse:
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.post("/api/normalize-suggest")
+async def normalize_suggest(payload: NormalizeSuggestRequest) -> dict[str, object]:
+    if not payload.items:
+        return {"results": []}
+
+    suggestions = await asyncio.to_thread(
+        suggest_normalization_batch,
+        [item.os_string for item in payload.items],
+        [pair.model_dump() for pair in payload.allowed_pairs],
+        payload.fuzzy_match_threshold,
+    )
+
+    results: list[NormalizeSuggestResult | None] = []
+    for suggestion in suggestions:
+        if suggestion is None:
+            results.append(None)
+            continue
+        results.append(NormalizeSuggestResult(**suggestion))
+
+    return {"results": results}
 
 
 @app.post("/api/eol-lookup")

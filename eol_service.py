@@ -11,6 +11,7 @@ import requests
 
 BASE_URL = "https://endoflife.date/api"
 PRODUCTS_URL = f"{BASE_URL}/all.json"
+PRODUCT_V1_URL = f"{BASE_URL}/v1/products"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 }
@@ -41,6 +42,10 @@ def _clean(value: Any) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def join_labels(*parts: object) -> str:
+    return " ".join(part for part in (_clean(value) for value in parts) if part)
 
 
 def pick_api_os_value(
@@ -90,45 +95,77 @@ def extract_version_hints(os_name: str) -> list[str]:
     return hints
 
 
-def _cycle_score(cycle: str, hint: str) -> int:
-    if cycle == hint:
+def _release_score(release_name: str, hint: str) -> int:
+    if release_name == hint:
         return 100
-    if cycle.startswith(hint) or hint.startswith(cycle):
+    if release_name.startswith(hint) or hint.startswith(release_name):
         return 80
-    if cycle.split(".")[0] == hint.split(".")[0]:
+    if release_name.split(".")[0] == hint.split(".")[0]:
         return 60
-    if hint in cycle:
+    if hint in release_name:
         return 40
     return 0
 
 
-def pick_cycle(cycles: list[dict[str, Any]], hints: list[str]) -> dict[str, Any]:
-    if not cycles:
+def pick_release(releases: list[dict[str, Any]], hints: list[str]) -> dict[str, Any]:
+    if not releases:
         return {}
     if not hints:
-        return cycles[0]
+        return releases[0]
 
-    best_cycle = cycles[0]
+    best_release = releases[0]
     best_score = -1
-    for row in cycles:
-        cycle = str(row.get("cycle", ""))
-        score = max((_cycle_score(cycle, hint) for hint in hints), default=0)
+    for release in releases:
+        release_name = str(release.get("name", ""))
+        score = max((_release_score(release_name, hint) for hint in hints), default=0)
         if score > best_score:
             best_score = score
-            best_cycle = row
-    return best_cycle
+            best_release = release
+    return best_release
 
 
-def fetch_cycles(slug: str) -> list[dict[str, Any]]:
-    response = requests.get(f"{BASE_URL}/{slug}.json", headers=HEADERS, timeout=30)
+def fetch_product(slug: str) -> dict[str, Any]:
+    response = requests.get(f"{PRODUCT_V1_URL}/{slug}", headers=HEADERS, timeout=30)
     response.raise_for_status()
-    return response.json()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError("Product response was not an object.")
+    return payload
 
 
-def status_from_date(date_value: Any, reference_date: str) -> str:
+def has_api_date(date_value: Any) -> bool:
     if date_value in (None, "", False, True):
+        return False
+    cleaned = _clean(date_value)
+    if not cleaned:
+        return False
+    try:
+        datetime.strptime(cleaned, "%Y-%m-%d")
+        return True
+    except ValueError:
+        return False
+
+
+def resolve_lifecycle_status(
+    date_value: Any,
+    api_status: Any,
+    reference_date: str | None = None,
+) -> str:
+    """
+    Status rules:
+    - Date present -> leave status blank (date is enough)
+    - Date missing and API status true -> "true"
+    - Date missing and API status false -> "false"
+    - Date missing and API status missing -> blank
+    """
+    if has_api_date(date_value):
         return ""
-    return "true" if str(date_value) < reference_date else "false"
+
+    if api_status is True:
+        return "true"
+    if api_status is False:
+        return "false"
+    return ""
 
 
 def iso_date_to_epoch(iso_value: Any) -> str:
@@ -142,12 +179,26 @@ def iso_date_to_epoch(iso_value: Any) -> str:
         return ""
 
 
+def build_normalization_from_product(
+    product_result: dict[str, Any],
+    release: dict[str, Any],
+) -> dict[str, str]:
+    product_label = _clean(product_result.get("label"))
+    release_label = _clean(release.get("label"))
+    release_name = _clean(release.get("name"))
+
+    return {
+        "normalized_os_detailed_name": join_labels(product_label, release_label),
+        "normalized_os": join_labels(product_label, release_name),
+    }
+
+
 def lookup_os_eol(
     os_string: str,
     normalized_os_detailed_name: str,
     normalized_os: str,
     valid_slugs: frozenset[str],
-    product_cache: dict[str, list[dict[str, Any]]],
+    product_cache: dict[str, dict[str, Any]],
     reference_date: str | None = None,
 ) -> dict[str, str]:
     today = reference_date or date.today().isoformat()
@@ -158,6 +209,8 @@ def lookup_os_eol(
         "eol_status": "",
         "eoas_date": "",
         "eoas_status": "",
+        "normalized_os_detailed_name": "",
+        "normalized_os": "",
         "api_note": "",
     }
 
@@ -172,26 +225,43 @@ def lookup_os_eol(
 
     try:
         if slug not in product_cache:
-            product_cache[slug] = fetch_cycles(slug)
-        cycles = product_cache[slug]
-    except requests.RequestException as exc:
+            product_cache[slug] = fetch_product(slug)
+        product_payload = product_cache[slug]
+    except (requests.RequestException, ValueError) as exc:
         empty_result["api_note"] = f"API error: {exc}"
         return empty_result
 
-    selected_cycle = pick_cycle(cycles, extract_version_hints(cleaned_name))
-    eol_value = selected_cycle.get("eol")
-    extended_support = selected_cycle.get("extendedSupport")
+    product_result = product_payload.get("result")
+    if not isinstance(product_result, dict):
+        empty_result["api_note"] = "Product details were missing from endoflife.date"
+        return empty_result
 
-    eol_date = iso_date_to_epoch(eol_value)
-    eoas_date = iso_date_to_epoch(extended_support)
-    eol_status = status_from_date(eol_value, today)
-    eoas_status = status_from_date(extended_support, today)
+    releases = product_result.get("releases")
+    if not isinstance(releases, list) or not releases:
+        empty_result["api_note"] = "No releases found in endoflife.date product data"
+        return empty_result
+
+    selected_release = pick_release(releases, extract_version_hints(cleaned_name))
+    if not selected_release:
+        empty_result["api_note"] = "No matching release found in endoflife.date product data"
+        return empty_result
+
+    eol_from = selected_release.get("eolFrom")
+    eoas_from = selected_release.get("eoasFrom")
+    normalization = build_normalization_from_product(product_result, selected_release)
+
+    eol_date = iso_date_to_epoch(eol_from)
+    eoas_date = iso_date_to_epoch(eoas_from)
+    eol_status = resolve_lifecycle_status(eol_from, selected_release.get("isEol"), today)
+    eoas_status = resolve_lifecycle_status(eoas_from, selected_release.get("isEoas"), today)
 
     return {
         "eol_date": eol_date,
         "eol_status": eol_status,
         "eoas_date": eoas_date,
         "eoas_status": eoas_status,
+        "normalized_os_detailed_name": normalization["normalized_os_detailed_name"],
+        "normalized_os": normalization["normalized_os"],
         "api_note": "",
     }
 
@@ -201,7 +271,7 @@ def lookup_os_eol_batch(
     reference_date: str | None = None,
 ) -> list[dict[str, str]]:
     valid_slugs = get_valid_slugs()
-    product_cache: dict[str, list[dict[str, Any]]] = {}
+    product_cache: dict[str, dict[str, Any]] = {}
     results: list[dict[str, str]] = []
 
     for item in items:

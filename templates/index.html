@@ -34,6 +34,14 @@
             >
               Add multiple OS
             </button>
+            <button
+              id="refresh-eol-button"
+              class="ghost-button compact-button"
+              type="button"
+              title="Look up EOL and EOAS dates and statuses for all entries"
+            >
+              Refresh EOL/EOAS
+            </button>
           </div>
           <div class="action-group">
             <button id="save-button" class="primary-button compact-button">Save Draft</button>
@@ -73,6 +81,9 @@
                 <button id="azure-settings-button" type="button" role="menuitem">Settings</button>
               </div>
             </div>
+            <button id="match-settings-button" class="ghost-button compact-button" type="button">
+              Matching
+            </button>
           </div>
 
           <div class="source-controls">
@@ -153,6 +164,58 @@
       </section>
     </main>
 
+    <dialog id="confirm-dialog" class="modal confirm-dialog">
+      <form method="dialog" class="modal-card" id="confirm-form">
+        <div class="modal-header">
+          <div>
+            <p id="confirm-eyebrow" class="eyebrow">Confirm</p>
+            <h2 id="confirm-title">Are you sure?</h2>
+          </div>
+          <button id="confirm-close-button" class="ghost-button" value="cancel" type="submit">
+            Close
+          </button>
+        </div>
+
+        <p id="confirm-message" class="confirm-message"></p>
+
+        <div class="modal-actions">
+          <button id="confirm-cancel-button" class="ghost-button" value="cancel" type="submit">
+            Cancel
+          </button>
+          <button id="confirm-ok-button" class="primary-button" value="confirm" type="submit">
+            Continue
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="add-os-dialog" class="modal">
+      <form method="dialog" class="modal-card" id="add-os-form">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">Add operating system</p>
+            <h2>Add OS</h2>
+          </div>
+          <button id="add-os-close-button" class="ghost-button" value="cancel">Close</button>
+        </div>
+
+        <label class="modal-field">
+          <span>Operating system</span>
+          <input
+            id="add-os-input"
+            type="text"
+            autocomplete="off"
+            placeholder="Enter one operating system"
+          />
+        </label>
+
+        <div class="modal-actions">
+          <button id="add-os-cancel-button" class="ghost-button" value="cancel">Cancel</button>
+          <button id="add-os-apply-button" class="primary-button" type="submit">Add OS</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog id="bulk-upload-dialog" class="modal">
       <form method="dialog" class="modal-card">
         <div class="modal-header">
@@ -182,8 +245,8 @@
       <div class="modal-card">
         <div class="modal-header">
           <div>
-            <p class="eyebrow">Add operating systems</p>
-            <h2>Adding operating systems</h2>
+            <p id="bulk-progress-eyebrow" class="eyebrow">Add operating systems</p>
+            <h2 id="bulk-progress-title">Adding operating systems</h2>
           </div>
         </div>
 
@@ -197,6 +260,42 @@
           <button id="bulk-progress-cancel" class="ghost-button" type="button">Cancel</button>
         </div>
       </div>
+    </dialog>
+
+    <dialog id="match-settings-dialog" class="modal">
+      <form method="dialog" class="modal-card">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">Normalization matching</p>
+            <h2>Matching settings</h2>
+          </div>
+          <button id="match-close-button" class="ghost-button" value="cancel">Close</button>
+        </div>
+
+        <p class="modal-note">
+          Higher values require a closer match before auto-filling normalized fields.
+          Edition and qualifier words must align, so similar names like
+          Windows 11 Pro and Windows 11 Pro Enterprise are not treated as the same.
+        </p>
+
+        <label class="modal-field">
+          <span>Fuzzy match threshold (%)</span>
+          <input
+            id="fuzzy-threshold-input"
+            type="number"
+            min="50"
+            max="100"
+            step="1"
+          />
+        </label>
+
+        <div class="modal-actions">
+          <button id="match-cancel-button" class="ghost-button" value="cancel">Cancel</button>
+          <button id="match-save-settings-button" class="primary-button" type="button">
+            Save settings
+          </button>
+        </div>
+      </form>
     </dialog>
 
     <dialog id="azure-settings-dialog" class="modal">
@@ -290,6 +389,8 @@
         { value: "false", label: "False" },
       ];
       const BULK_BATCH_SIZE = 8;
+      const DEFAULT_FUZZY_MATCH_THRESHOLD = 95;
+      let fuzzyMatchThreshold = DEFAULT_FUZZY_MATCH_THRESHOLD;
       let allRows = [];
       let filteredRows = [];
       let originalRows = [];
@@ -316,9 +417,23 @@
       const azureMenu = document.getElementById("azure-menu");
       const azureUploadButton = document.getElementById("azure-upload-button");
       const azureSettingsButton = document.getElementById("azure-settings-button");
+      const matchSettingsButton = document.getElementById("match-settings-button");
       const deleteDraftButton = document.getElementById("delete-draft-button");
       const addRowButton = document.getElementById("add-row-button");
       const bulkUploadButton = document.getElementById("bulk-upload-button");
+      const refreshEolButton = document.getElementById("refresh-eol-button");
+      const confirmDialog = document.getElementById("confirm-dialog");
+      const confirmForm = document.getElementById("confirm-form");
+      const confirmEyebrow = document.getElementById("confirm-eyebrow");
+      const confirmTitle = document.getElementById("confirm-title");
+      const confirmMessage = document.getElementById("confirm-message");
+      const confirmOkButton = document.getElementById("confirm-ok-button");
+      const addOsDialog = document.getElementById("add-os-dialog");
+      const addOsForm = document.getElementById("add-os-form");
+      const addOsInput = document.getElementById("add-os-input");
+      const addOsCloseButton = document.getElementById("add-os-close-button");
+      const addOsCancelButton = document.getElementById("add-os-cancel-button");
+      const addOsApplyButton = document.getElementById("add-os-apply-button");
       const revertButton = document.getElementById("revert-button");
       const statusBanner = document.getElementById("status-banner");
       const totalRowsCard = document.getElementById("total-rows-card");
@@ -331,6 +446,8 @@
       const bulkCancelButton = document.getElementById("bulk-cancel-button");
       const bulkCloseButton = document.getElementById("bulk-close-button");
       const bulkProgressDialog = document.getElementById("bulk-progress-dialog");
+      const bulkProgressEyebrow = document.getElementById("bulk-progress-eyebrow");
+      const bulkProgressTitle = document.getElementById("bulk-progress-title");
       const bulkProgressText = document.getElementById("bulk-progress-text");
       const bulkProgressBar = document.getElementById("bulk-progress-bar");
       const bulkProgressStage = document.getElementById("bulk-progress-stage");
@@ -338,6 +455,11 @@
       const azureCloseButton = document.getElementById("azure-close-button");
       const azureCancelButton = document.getElementById("azure-cancel-button");
       const azureSaveSettingsButton = document.getElementById("azure-save-settings-button");
+      const matchSettingsDialog = document.getElementById("match-settings-dialog");
+      const matchCloseButton = document.getElementById("match-close-button");
+      const matchCancelButton = document.getElementById("match-cancel-button");
+      const matchSaveSettingsButton = document.getElementById("match-save-settings-button");
+      const fuzzyThresholdInput = document.getElementById("fuzzy-threshold-input");
       const azureAccountNameInput = document.getElementById("azure-account-name-input");
       const azureContainerNameInput = document.getElementById("azure-container-name-input");
       const azureBlobNameInput = document.getElementById("azure-blob-name-input");
@@ -377,6 +499,38 @@
         statusBanner.className = "status-banner hidden";
       }
 
+      function askConfirm({
+        eyebrow = "Confirm",
+        title = "Are you sure?",
+        message = "",
+        confirmLabel = "Continue",
+        cancelLabel = "Cancel",
+        danger = false,
+      } = {}) {
+        return new Promise((resolve) => {
+          confirmEyebrow.textContent = eyebrow;
+          confirmTitle.textContent = title;
+          confirmMessage.textContent = message;
+          confirmOkButton.textContent = confirmLabel;
+          document.getElementById("confirm-cancel-button").textContent = cancelLabel;
+          confirmOkButton.classList.toggle("danger-button", Boolean(danger));
+
+          const finish = (result) => {
+            confirmDialog.removeEventListener("close", onClose);
+            resolve(result);
+          };
+
+          const onClose = () => {
+            finish(confirmDialog.returnValue === "confirm");
+          };
+
+          confirmDialog.addEventListener("close", onClose, { once: true });
+          confirmDialog.returnValue = "cancel";
+          confirmDialog.showModal();
+          setTimeout(() => confirmOkButton.focus(), 0);
+        });
+      }
+
       function setDirty(nextDirty) {
         isDirty = nextDirty;
         dirtyIndicator.textContent = nextDirty ? "Unsaved" : "Saved";
@@ -396,8 +550,10 @@
         validateButton.disabled = bulkProcessing || azureUploadProcessing || currentSource !== "draft";
         downloadButton.disabled = bulkProcessing || azureUploadProcessing;
         azureMenuButton.disabled = bulkProcessing || azureUploadProcessing;
+        matchSettingsButton.disabled = bulkProcessing || azureUploadProcessing;
         azureUploadButton.disabled = bulkProcessing || azureUploadProcessing;
         azureSettingsButton.disabled = bulkProcessing || azureUploadProcessing;
+        refreshEolButton.disabled = bulkProcessing || azureUploadProcessing;
         deleteDraftButton.disabled = bulkProcessing || azureUploadProcessing || currentSource !== "draft";
         revertButton.disabled =
           bulkProcessing ||
@@ -507,57 +663,100 @@
         return normalized ? normalized.split(" ") : [];
       }
 
-      function overlapScore(leftValue, rightValue) {
-        const leftTokens = new Set(tokenize(leftValue));
-        const rightTokens = new Set(tokenize(rightValue));
-        if (!leftTokens.size || !rightTokens.size) {
+      function strictMatchPercent(queryValue, candidateValue) {
+        const query = normalizeForMatch(queryValue);
+        const candidate = normalizeForMatch(candidateValue);
+        if (!query || !candidate) {
+          return 0;
+        }
+        if (query === candidate) {
+          return 100;
+        }
+
+        const queryTokens = tokenize(queryValue);
+        const candidateTokens = tokenize(candidateValue);
+        if (!queryTokens.length || !candidateTokens.length) {
           return 0;
         }
 
-        let matches = 0;
-        leftTokens.forEach((token) => {
-          if (rightTokens.has(token)) {
-            matches += 1;
-          }
-        });
+        const candidateTokenSet = new Set(candidateTokens);
+        if (queryTokens.some((token) => !candidateTokenSet.has(token))) {
+          return 0;
+        }
 
-        return matches / Math.max(leftTokens.size, rightTokens.size);
+        if (candidateTokens.length > queryTokens.length) {
+          return Math.round((100 * queryTokens.length) / candidateTokens.length);
+        }
+
+        if (candidateTokens.length < queryTokens.length) {
+          return Math.round((100 * candidateTokens.length) / queryTokens.length);
+        }
+
+        return 100;
       }
 
       function scoreCandidate(osValue, candidate) {
         const query = normalizeForMatch(osValue);
-        const osKey = normalizeForMatch(candidate.os_string);
-        const detailedKey = normalizeForMatch(candidate.normalized_os_detailed_name);
-        const normalizedKey = normalizeForMatch(candidate.normalized_os);
-
         if (!query) {
           return 0;
         }
 
-        let score = 0;
-        if (query === osKey) score += 220;
-        if (query === detailedKey) score += 180;
-        if (query === normalizedKey) score += 180;
-        if (osKey.includes(query) || query.includes(osKey)) score += 80;
-        if (detailedKey.includes(query) || query.includes(detailedKey)) score += 60;
-        if (normalizedKey.includes(query) || query.includes(normalizedKey)) score += 60;
-
-        score += overlapScore(osValue, candidate.os_string) * 100;
-        score += overlapScore(osValue, candidate.normalized_os_detailed_name) * 70;
-        score += overlapScore(osValue, candidate.normalized_os) * 70;
-
-        return score;
+        return Math.max(
+          strictMatchPercent(osValue, candidate.os_string),
+          strictMatchPercent(osValue, candidate.normalized_os_detailed_name),
+          strictMatchPercent(osValue, candidate.normalized_os)
+        );
       }
 
-      function inferNormalizationValues(osValue, excludeRowId = null, candidates = allRows) {
+      function emptyNormalizationSuggestion() {
+        return {
+          normalized_os_detailed_name: "",
+          normalized_os: "",
+          detailedAuto: true,
+          normalizedAuto: true,
+        };
+      }
+
+      function buildAllowedPairs(candidates, excludeRowId = null) {
+        const seen = new Set();
+        const pairs = [];
+
+        candidates.forEach((candidate) => {
+          if (candidate.__id === excludeRowId) {
+            return;
+          }
+
+          const detailed = String(candidate.normalized_os_detailed_name ?? "").trim();
+          const normalized = String(candidate.normalized_os ?? "").trim();
+          if (!detailed || !normalized) {
+            return;
+          }
+          if (
+            detailed.toLowerCase() === "ambiguous os" ||
+            normalized.toLowerCase() === "ambiguous os"
+          ) {
+            return;
+          }
+
+          const key = `${detailed.toLowerCase()}|||${normalized.toLowerCase()}`;
+          if (seen.has(key)) {
+            return;
+          }
+
+          seen.add(key);
+          pairs.push({
+            normalized_os_detailed_name: detailed,
+            normalized_os: normalized,
+          });
+        });
+
+        return pairs;
+      }
+
+      function inferFuzzyNormalizationValues(osValue, excludeRowId = null, candidates = allRows) {
         const fallbackValue = String(osValue ?? "").trim();
         if (!fallbackValue) {
-          return {
-            normalized_os_detailed_name: "",
-            normalized_os: "",
-            detailedAuto: true,
-            normalizedAuto: true,
-          };
+          return { ...emptyNormalizationSuggestion(), fuzzyMatched: false };
         }
 
         let bestCandidate = null;
@@ -577,22 +776,185 @@
           }
         });
 
-        if (!bestCandidate || bestScore < 85) {
-          return {
-            normalized_os_detailed_name: fallbackValue,
-            normalized_os: fallbackValue,
-            detailedAuto: true,
-            normalizedAuto: true,
-          };
+        if (!bestCandidate || bestScore < fuzzyMatchThreshold) {
+          return { ...emptyNormalizationSuggestion(), fuzzyMatched: false };
         }
 
         return {
-          normalized_os_detailed_name:
-            bestCandidate.normalized_os_detailed_name || fallbackValue,
-          normalized_os: bestCandidate.normalized_os || fallbackValue,
+          normalized_os_detailed_name: String(bestCandidate.normalized_os_detailed_name ?? "").trim(),
+          normalized_os: String(bestCandidate.normalized_os ?? "").trim(),
           detailedAuto: true,
           normalizedAuto: true,
+          fuzzyMatched: true,
         };
+      }
+
+      async function fetchAiNormalization(osStrings, allowedPairs, signal) {
+        if (!osStrings.length || !allowedPairs.length) {
+          return osStrings.map(() => null);
+        }
+
+        const response = await fetch("/api/normalize-suggest", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            items: osStrings.map((os_string) => ({ os_string })),
+            allowed_pairs: allowedPairs,
+            fuzzy_match_threshold: fuzzyMatchThreshold,
+          }),
+          signal,
+        });
+
+        if (!response.ok) {
+          throw new Error("Unable to suggest normalization.");
+        }
+
+        const payload = await response.json();
+        return (payload.results || []).map((result) => {
+          if (!result) {
+            return null;
+          }
+
+          const detailed = String(result.normalized_os_detailed_name ?? "").trim();
+          const normalized = String(result.normalized_os ?? "").trim();
+          if (!detailed || !normalized) {
+            return null;
+          }
+
+          return {
+            normalized_os_detailed_name: detailed,
+            normalized_os: normalized,
+          };
+        });
+      }
+
+      async function inferNormalizationValues(
+        osValue,
+        excludeRowId = null,
+        candidates = allRows,
+        { signal } = {}
+      ) {
+        const fuzzySuggestion = inferFuzzyNormalizationValues(osValue, excludeRowId, candidates);
+        if (fuzzySuggestion.fuzzyMatched) {
+          const { fuzzyMatched, ...suggestion } = fuzzySuggestion;
+          return suggestion;
+        }
+
+        const allowedPairs = buildAllowedPairs(candidates, excludeRowId);
+        if (!allowedPairs.length) {
+          return emptyNormalizationSuggestion();
+        }
+
+        try {
+          const [aiSuggestion] = await fetchAiNormalization([osValue], allowedPairs, signal);
+          if (aiSuggestion) {
+            return {
+              ...aiSuggestion,
+              detailedAuto: true,
+              normalizedAuto: true,
+            };
+          }
+        } catch (error) {
+          if (signal?.aborted) {
+            throw error;
+          }
+        }
+
+        return emptyNormalizationSuggestion();
+      }
+
+      async function applyAiNormalizationToRows(rows, candidates, { signal } = {}) {
+        const rowsNeedingAi = rows.filter((row) => {
+          if (isAmbiguousOs(row.os_string)) {
+            return false;
+          }
+          return (
+            !String(row.normalized_os_detailed_name ?? "").trim() &&
+            !String(row.normalized_os ?? "").trim()
+          );
+        });
+
+        if (!rowsNeedingAi.length) {
+          return;
+        }
+
+        const allowedPairs = buildAllowedPairs(candidates);
+        if (!allowedPairs.length) {
+          return;
+        }
+
+        const aiResults = await fetchAiNormalization(
+          rowsNeedingAi.map((row) => row.os_string),
+          allowedPairs,
+          signal
+        );
+
+        rowsNeedingAi.forEach((row, index) => {
+          const aiSuggestion = aiResults[index];
+          if (!aiSuggestion) {
+            return;
+          }
+
+          if (row.__normalizedDetailedAuto || !String(row.normalized_os_detailed_name ?? "").trim()) {
+            row.normalized_os_detailed_name = aiSuggestion.normalized_os_detailed_name;
+            row.__normalizedDetailedAuto = true;
+          }
+          if (row.__normalizedOsAuto || !String(row.normalized_os ?? "").trim()) {
+            row.normalized_os = aiSuggestion.normalized_os;
+            row.__normalizedOsAuto = true;
+          }
+        });
+      }
+
+      function applyNormalizationSuggestion(row, suggestion) {
+        if (row.__normalizedDetailedAuto || !String(row.normalized_os_detailed_name ?? "").trim()) {
+          row.normalized_os_detailed_name = suggestion.normalized_os_detailed_name;
+          row.__normalizedDetailedAuto = suggestion.detailedAuto;
+        }
+
+        if (row.__normalizedOsAuto || !String(row.normalized_os ?? "").trim()) {
+          row.normalized_os = suggestion.normalized_os;
+          row.__normalizedOsAuto = suggestion.normalizedAuto;
+        }
+      }
+
+      function applyFuzzyNormalization(row, osValue, candidates = allRows) {
+        if (isAmbiguousOs(osValue)) {
+          applyAmbiguousOsFields(row);
+          return;
+        }
+
+        const { fuzzyMatched, ...suggestion } = inferFuzzyNormalizationValues(
+          osValue,
+          row.__id,
+          candidates
+        );
+        applyNormalizationSuggestion(row, suggestion);
+      }
+
+      async function applySuggestedNormalization(
+        row,
+        osValue,
+        candidates = allRows,
+        { useAi = false, signal } = {}
+      ) {
+        if (isAmbiguousOs(osValue)) {
+          applyAmbiguousOsFields(row);
+          return;
+        }
+
+        const suggestion = useAi
+          ? await inferNormalizationValues(osValue, row.__id, candidates, { signal })
+          : (() => {
+              const { fuzzyMatched, ...fuzzySuggestion } = inferFuzzyNormalizationValues(
+                osValue,
+                row.__id,
+                candidates
+              );
+              return fuzzySuggestion;
+            })();
+
+        applyNormalizationSuggestion(row, suggestion);
       }
 
       function isAmbiguousOs(osValue) {
@@ -623,25 +985,6 @@
         if (row.__eoasStatusAuto || !String(row.eoas_status ?? "").trim()) {
           row.eoas_status = "";
           row.__eoasStatusAuto = true;
-        }
-      }
-
-      function applySuggestedNormalization(row, osValue, candidates = allRows) {
-        if (isAmbiguousOs(osValue)) {
-          applyAmbiguousOsFields(row);
-          return;
-        }
-
-        const suggestion = inferNormalizationValues(osValue, row.__id, candidates);
-
-        if (row.__normalizedDetailedAuto || !String(row.normalized_os_detailed_name ?? "").trim()) {
-          row.normalized_os_detailed_name = suggestion.normalized_os_detailed_name;
-          row.__normalizedDetailedAuto = suggestion.detailedAuto;
-        }
-
-        if (row.__normalizedOsAuto || !String(row.normalized_os ?? "").trim()) {
-          row.normalized_os = suggestion.normalized_os;
-          row.__normalizedOsAuto = suggestion.normalizedAuto;
         }
       }
 
@@ -695,7 +1038,7 @@
         );
       }
 
-      function applyExistingEolFallback(row, candidates = allRows) {
+      function applyExistingEolFallback(row, candidates = allRows, { forceLifecycle = false } = {}) {
         const existing = findExistingEolValues(
           row.normalized_os_detailed_name,
           row.normalized_os,
@@ -706,40 +1049,91 @@
           return false;
         }
 
-        applyEolResultToRow(row, {
-          eol_date: existing.eol_date ?? "",
-          eol_status: existing.eol_status ?? "",
-          eoas_date: existing.eoas_date ?? "",
-          eoas_status: existing.eoas_status ?? "",
-        });
+        applyEolResultToRow(
+          row,
+          {
+            eol_date: existing.eol_date ?? "",
+            eol_status: existing.eol_status ?? "",
+            eoas_date: existing.eoas_date ?? "",
+            eoas_status: existing.eoas_status ?? "",
+          },
+          { forceLifecycle }
+        );
         return true;
       }
 
-      function applyEolResultToRow(row, data) {
-        if (row.__eolDateAuto || !String(row.eol_date ?? "").trim()) {
-          row.eol_date = data.eol_date || "";
-          row.__eolDateAuto = true;
+      function hasExplicitLifecycleStatus(value) {
+        const status = String(value ?? "").trim().toLowerCase();
+        return status === "true" || status === "false";
+      }
+
+      function applyEolResultToRow(row, data, { forceLifecycle = false } = {}) {
+        if (
+          (row.__normalizedDetailedAuto || !String(row.normalized_os_detailed_name ?? "").trim()) &&
+          String(data.normalized_os_detailed_name ?? "").trim()
+        ) {
+          row.normalized_os_detailed_name = data.normalized_os_detailed_name;
+          row.__normalizedDetailedAuto = true;
         }
-        if (row.__eolStatusAuto || !String(row.eol_status ?? "").trim()) {
-          row.eol_status = data.eol_status || "";
-          row.__eolStatusAuto = true;
+        if (
+          (row.__normalizedOsAuto || !String(row.normalized_os ?? "").trim()) &&
+          String(data.normalized_os ?? "").trim()
+        ) {
+          row.normalized_os = data.normalized_os;
+          row.__normalizedOsAuto = true;
         }
-        if (row.__eoasDateAuto || !String(row.eoas_date ?? "").trim()) {
-          row.eoas_date = data.eoas_date || "";
-          row.__eoasDateAuto = true;
+
+        const apiEolDate = String(data.eol_date ?? "").trim();
+        const existingEolDate = String(row.eol_date ?? "").trim();
+        if (apiEolDate) {
+          if (forceLifecycle || row.__eolDateAuto || !existingEolDate) {
+            row.eol_date = apiEolDate;
+            row.__eolDateAuto = true;
+            // Date is authoritative: clear any previous true/false status.
+            row.eol_status = "";
+            row.__eolStatusAuto = true;
+          }
+        } else if (!existingEolDate) {
+          if (
+            !hasExplicitLifecycleStatus(row.eol_status) &&
+            (forceLifecycle || row.__eolStatusAuto || !String(row.eol_status ?? "").trim())
+          ) {
+            row.eol_status = data.eol_status || "";
+            row.__eolStatusAuto = true;
+          }
         }
-        if (row.__eoasStatusAuto || !String(row.eoas_status ?? "").trim()) {
-          row.eoas_status = data.eoas_status || "";
-          row.__eoasStatusAuto = true;
+
+        const apiEoasDate = String(data.eoas_date ?? "").trim();
+        const existingEoasDate = String(row.eoas_date ?? "").trim();
+        if (apiEoasDate) {
+          if (forceLifecycle || row.__eoasDateAuto || !existingEoasDate) {
+            row.eoas_date = apiEoasDate;
+            row.__eoasDateAuto = true;
+            // Date is authoritative: clear any previous true/false status.
+            row.eoas_status = "";
+            row.__eoasStatusAuto = true;
+          }
+        } else if (!existingEoasDate) {
+          if (
+            !hasExplicitLifecycleStatus(row.eoas_status) &&
+            (forceLifecycle || row.__eoasStatusAuto || !String(row.eoas_status ?? "").trim())
+          ) {
+            row.eoas_status = data.eoas_status || "";
+            row.__eoasStatusAuto = true;
+          }
         }
       }
 
-      async function applyEolFromApi(rows, { signal, fallbackCandidates } = {}) {
+      async function applyEolFromApi(
+        rows,
+        { signal, fallbackCandidates, includeExisting = false, forceLifecycle = false } = {}
+      ) {
         const uiRows = rows.filter(
-          (row) => row.__sourceIndex == null && !isAmbiguousOs(row.os_string)
+          (row) =>
+            (includeExisting || row.__sourceIndex == null) && !isAmbiguousOs(row.os_string)
         );
         if (!uiRows.length) {
-          return;
+          return { updated: 0, failed: 0 };
         }
 
         const items = uiRows.map((row) => ({
@@ -761,21 +1155,43 @@
           }
 
           const payload = await response.json();
+          let updated = 0;
+          let failed = 0;
           uiRows.forEach((row, index) => {
             const apiResult = payload.results[index] ?? {};
-            applyEolResultToRow(row, apiResult);
             if (isEmptyEolPayload(apiResult)) {
-              applyExistingEolFallback(row, fallbackCandidates ?? uiRows.concat(allRows));
+              const usedFallback = applyExistingEolFallback(
+                row,
+                fallbackCandidates ?? uiRows.concat(allRows),
+                { forceLifecycle }
+              );
+              if (usedFallback) {
+                updated += 1;
+              } else {
+                failed += 1;
+              }
+            } else {
+              applyEolResultToRow(row, apiResult, { forceLifecycle });
+              updated += 1;
             }
           });
+          return { updated, failed };
         } catch (error) {
           if (signal?.aborted) {
             throw error;
           }
           showStatus(error.message, "error");
-          uiRows.forEach((row) =>
-            applyExistingEolFallback(row, fallbackCandidates ?? uiRows.concat(allRows))
-          );
+          let updated = 0;
+          uiRows.forEach((row) => {
+            if (
+              applyExistingEolFallback(row, fallbackCandidates ?? uiRows.concat(allRows), {
+                forceLifecycle,
+              })
+            ) {
+              updated += 1;
+            }
+          });
+          return { updated, failed: uiRows.length - updated };
         }
       }
 
@@ -831,7 +1247,7 @@
         }
         targetRow[header] = nextValue;
         if (header === "os_string") {
-          applySuggestedNormalization(targetRow, nextValue);
+          applyFuzzyNormalization(targetRow, nextValue);
         }
         syncDirtyState();
         updateRowActionState(rowId);
@@ -920,7 +1336,7 @@
           ...values,
         };
         if (row.os_string) {
-          applySuggestedNormalization(row, row.os_string, candidates);
+          applyFuzzyNormalization(row, row.os_string, candidates);
         }
         return row;
       }
@@ -929,10 +1345,12 @@
         bulkProcessing = active;
         addRowButton.disabled = active || azureUploadProcessing;
         bulkUploadButton.disabled = active || azureUploadProcessing;
+        refreshEolButton.disabled = active || azureUploadProcessing;
         saveButton.disabled = active || azureUploadProcessing;
         validateButton.disabled = active || azureUploadProcessing || currentSource !== "draft";
         downloadButton.disabled = active || azureUploadProcessing;
         azureMenuButton.disabled = active || azureUploadProcessing;
+        matchSettingsButton.disabled = active || azureUploadProcessing;
         azureUploadButton.disabled = active || azureUploadProcessing;
         azureSettingsButton.disabled = active || azureUploadProcessing;
         deleteDraftButton.disabled = active || azureUploadProcessing || currentSource !== "draft";
@@ -945,16 +1363,21 @@
         bulkApplyButton.disabled = active;
         bulkCancelButton.disabled = active;
         bulkCloseButton.disabled = active;
+        addOsApplyButton.disabled = active;
+        addOsCancelButton.disabled = active;
+        addOsCloseButton.disabled = active;
       }
 
       function setAzureUploadProcessingActive(active) {
         azureUploadProcessing = active;
         addRowButton.disabled = active || bulkProcessing;
         bulkUploadButton.disabled = active || bulkProcessing;
+        refreshEolButton.disabled = active || bulkProcessing;
         saveButton.disabled = active || bulkProcessing;
         validateButton.disabled = active || bulkProcessing || currentSource !== "draft";
         downloadButton.disabled = active || bulkProcessing;
         azureMenuButton.disabled = active || bulkProcessing;
+        matchSettingsButton.disabled = active || bulkProcessing;
         azureUploadButton.disabled = active || bulkProcessing;
         azureSettingsButton.disabled = active || bulkProcessing;
         deleteDraftButton.disabled = active || bulkProcessing || currentSource !== "draft";
@@ -966,8 +1389,17 @@
         sourceSelect.disabled = active || bulkProcessing;
       }
 
-      function openBulkProgress(total) {
-        updateBulkProgress(0, total, "Preparing operating systems...");
+      function openBulkProgress(
+        total,
+        {
+          eyebrow = "Add operating systems",
+          title = "Adding operating systems",
+          stageText = "Preparing operating systems...",
+        } = {}
+      ) {
+        bulkProgressEyebrow.textContent = eyebrow;
+        bulkProgressTitle.textContent = title;
+        updateBulkProgress(0, total, stageText);
         bulkProgressDialog.showModal();
       }
 
@@ -1030,6 +1462,18 @@
         return "No operating systems were added.";
       }
 
+      function openAddOsDialog() {
+        addOsInput.value = "";
+        addOsDialog.showModal();
+        setTimeout(() => addOsInput.focus(), 0);
+      }
+
+      function closeAddOsDialog() {
+        if (addOsDialog.open) {
+          addOsDialog.close();
+        }
+      }
+
       function openBulkUploadDialog() {
         bulkUploadTextarea.value = "";
         bulkUploadDialog.showModal();
@@ -1037,21 +1481,19 @@
       }
 
       function closeBulkUploadDialog() {
-        bulkUploadDialog.close();
+        if (bulkUploadDialog.open) {
+          bulkUploadDialog.close();
+        }
       }
 
-      async function applyBulkUpload() {
+      async function addOperatingSystems(values, { closeDialog } = {}) {
         if (bulkProcessing) {
           return;
         }
 
-        const values = bulkUploadTextarea.value
-          .split(/\r?\n/)
-          .map((value) => value.trim())
-          .filter(Boolean);
-
-        if (!values.length) {
-          showStatus("Paste at least one operating system to add.", "info");
+        const cleanedValues = values.map((value) => String(value ?? "").trim()).filter(Boolean);
+        if (!cleanedValues.length) {
+          showStatus("Enter an operating system to add.", "info");
           return;
         }
 
@@ -1060,7 +1502,7 @@
         const toAdd = [];
         let existedCount = 0;
 
-        values.forEach((value) => {
+        cleanedValues.forEach((value) => {
           const key = normalizeOsKey(value);
           if (existing.has(key) || seenInBatch.has(key)) {
             existedCount += 1;
@@ -1071,13 +1513,17 @@
         });
 
         if (!toAdd.length) {
-          closeBulkUploadDialog();
+          if (typeof closeDialog === "function") {
+            closeDialog();
+          }
           showStatus(formatAddResultMessage(0, existedCount), "info");
           return;
         }
 
         promoteToDraftSource();
-        closeBulkUploadDialog();
+        if (typeof closeDialog === "function") {
+          closeDialog();
+        }
         bulkAbortController = new AbortController();
         const { signal } = bulkAbortController;
         const normalizationCandidates = getNormalizationCandidates();
@@ -1110,6 +1556,10 @@
                 normalizationCandidates.concat(batchRows)
               );
               batchRows.push(row);
+            });
+
+            await applyAiNormalizationToRows(batchRows, normalizationCandidates.concat(batchRows), {
+              signal,
             });
 
             updateBulkProgress(
@@ -1163,6 +1613,155 @@
               addedRows.length
                 ? `Adding OS cancelled after adding ${addedRows.length} operating systems.`
                 : "Adding operating systems cancelled.",
+              "info"
+            );
+          } else {
+            showStatus(error.message, "error");
+          }
+        } finally {
+          bulkAbortController = null;
+          setBulkProcessingActive(false);
+          closeBulkProgress();
+        }
+      }
+
+      async function applyAddOs() {
+        await addOperatingSystems([addOsInput.value], { closeDialog: closeAddOsDialog });
+      }
+
+      async function applyBulkUpload() {
+        const values = bulkUploadTextarea.value
+          .split(/\r?\n/)
+          .map((value) => value.trim())
+          .filter(Boolean);
+
+        if (!values.length) {
+          showStatus("Paste at least one operating system to add.", "info");
+          return;
+        }
+
+        await addOperatingSystems(values, { closeDialog: closeBulkUploadDialog });
+      }
+
+      async function refreshAllEolData() {
+        if (bulkProcessing) {
+          return;
+        }
+
+        const targetRows = allRows.filter(
+          (row) => String(row.os_string ?? "").trim() && !isAmbiguousOs(row.os_string)
+        );
+
+        const ambiguousSkipped = allRows.filter((row) =>
+          isAmbiguousOs(row.os_string)
+        ).length;
+        const emptySkipped = allRows.length - targetRows.length - ambiguousSkipped;
+
+        if (!targetRows.length) {
+          showStatus("No operating systems available for EOL/EOAS refresh.", "info");
+          return;
+        }
+
+        const excludedCount = allRows.length - targetRows.length;
+        const excludeParts = [];
+        if (ambiguousSkipped) {
+          excludeParts.push(`${ambiguousSkipped} Ambiguous OS`);
+        }
+        if (emptySkipped > 0) {
+          excludeParts.push(`${emptySkipped} blank OS`);
+        }
+
+        const confirmed = await askConfirm({
+          eyebrow: "EOL/EOAS refresh",
+          title: "Refresh lifecycle data?",
+          message:
+            `Look up EOL and EOAS data for ${targetRows.length} of ${allRows.length} operating systems` +
+            (excludedCount
+              ? `. Excluded ${excludedCount}` +
+                (excludeParts.length ? ` (${excludeParts.join(", ")})` : "")
+              : "") +
+            `. Existing EOL/EOAS values will be updated from the API.`,
+          confirmLabel: "Refresh EOL/EOAS",
+        });
+        if (!confirmed) {
+          return;
+        }
+
+        promoteToDraftSource();
+        bulkAbortController = new AbortController();
+        const { signal } = bulkAbortController;
+        let processed = 0;
+        let updated = 0;
+        let failed = 0;
+        let cancelled = false;
+
+        setBulkProcessingActive(true);
+        openBulkProgress(targetRows.length, {
+          eyebrow: "EOL/EOAS refresh",
+          title: "Refreshing EOL/EOAS data",
+          stageText: "Preparing EOL/EOAS lookup...",
+        });
+
+        try {
+          for (let start = 0; start < targetRows.length; start += BULK_BATCH_SIZE) {
+            if (signal.aborted) {
+              cancelled = true;
+              break;
+            }
+
+            const batchRows = targetRows.slice(start, start + BULK_BATCH_SIZE);
+            updateBulkProgress(
+              processed,
+              targetRows.length,
+              `Looking up EOL/EOAS data for ${processed + 1}-${processed + batchRows.length} of ${targetRows.length}...`
+            );
+            await yieldToUi();
+
+            const batchResult = await applyEolFromApi(batchRows, {
+              signal,
+              includeExisting: true,
+              forceLifecycle: true,
+              fallbackCandidates: allRows,
+            });
+            updated += batchResult.updated;
+            failed += batchResult.failed;
+            processed += batchRows.length;
+
+            updateBulkProgress(
+              processed,
+              targetRows.length,
+              processed === targetRows.length
+                ? "Finalizing..."
+                : `Processed ${processed} of ${targetRows.length} operating systems`
+            );
+            syncDirtyState();
+            updateSummaryCards();
+            await yieldToUi();
+          }
+
+          applyFilter();
+
+          if (cancelled) {
+            showStatus(
+              processed
+                ? `EOL/EOAS refresh cancelled after ${processed} of ${targetRows.length} entries.`
+                : "EOL/EOAS refresh cancelled.",
+              "info"
+            );
+          } else {
+            showStatus(
+              `EOL/EOAS refresh complete. Updated ${updated} entries` +
+                (failed ? `, ${failed} without API data.` : "."),
+              failed ? "info" : "success"
+            );
+          }
+        } catch (error) {
+          applyFilter();
+          if (signal.aborted) {
+            showStatus(
+              processed
+                ? `EOL/EOAS refresh cancelled after ${processed} of ${targetRows.length} entries.`
+                : "EOL/EOAS refresh cancelled.",
               "info"
             );
           } else {
@@ -1458,6 +2057,7 @@
 
         updateRowValue(rowId, header, osValue);
         if (!isAmbiguousOs(osValue)) {
+          await applySuggestedNormalization(targetRow, osValue, allRows, { useAi: true });
           showStatus("Looking up EOL data...");
           await applyEolFromApi([targetRow]);
         }
@@ -1465,14 +2065,21 @@
         renderTable();
       }
 
-      function deleteRow(rowId) {
+      async function deleteRow(rowId) {
         const targetRow = allRows.find((row) => row.__id === rowId);
         if (!targetRow) {
           return;
         }
 
         const osLabel = String(targetRow.os_string ?? "").trim() || "this operating system";
-        if (!window.confirm(`Delete ${osLabel}?`)) {
+        const confirmed = await askConfirm({
+          eyebrow: "Delete entry",
+          title: "Delete operating system?",
+          message: `Delete ${osLabel}? This removes it from the current draft view until you save or revert.`,
+          confirmLabel: "Delete",
+          danger: true,
+        });
+        if (!confirmed) {
           return;
         }
 
@@ -1601,9 +2208,13 @@
           return;
         }
 
-        const confirmed = window.confirm(
-          "Validate changes and overwrite Data with the current Draft?"
-        );
+        const confirmed = await askConfirm({
+          eyebrow: "Validate changes",
+          title: "Overwrite Data with Draft?",
+          message:
+            "Validate changes and overwrite Data with the current Draft? A backup of the current Data file will be created first.",
+          confirmLabel: "Validate changes",
+        });
         if (!confirmed) {
           return;
         }
@@ -1683,6 +2294,81 @@
         azureAccountNameInput.value = config.account_name || "";
         azureContainerNameInput.value = config.container_name || "";
         azureBlobNameInput.value = config.blob_name || "";
+      }
+
+      function clampFuzzyThreshold(value) {
+        const parsed = Number(value);
+        if (Number.isNaN(parsed)) {
+          return DEFAULT_FUZZY_MATCH_THRESHOLD;
+        }
+        return Math.max(50, Math.min(100, Math.round(parsed)));
+      }
+
+      function populateMatchSettingsForm(threshold = fuzzyMatchThreshold) {
+        fuzzyThresholdInput.value = String(clampFuzzyThreshold(threshold));
+      }
+
+      async function loadAppSettings() {
+        const response = await fetch("/api/app/settings");
+        if (!response.ok) {
+          throw new Error("Unable to load matching settings.");
+        }
+
+        const payload = await response.json();
+        fuzzyMatchThreshold = clampFuzzyThreshold(payload.fuzzy_match_threshold);
+        populateMatchSettingsForm(fuzzyMatchThreshold);
+      }
+
+      async function saveAppSettings() {
+        const response = await fetch("/api/app/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            fuzzy_match_threshold: clampFuzzyThreshold(fuzzyThresholdInput.value),
+          }),
+        });
+
+        if (!response.ok) {
+          let detail = "Unable to save matching settings.";
+          try {
+            const payload = await response.json();
+            if (payload?.detail) {
+              detail = Array.isArray(payload.detail)
+                ? payload.detail.map((item) => item.msg || item).join(" ")
+                : String(payload.detail);
+            }
+          } catch {
+            // Keep default message when response is not JSON.
+          }
+          throw new Error(detail);
+        }
+
+        const payload = await response.json();
+        fuzzyMatchThreshold = clampFuzzyThreshold(payload.fuzzy_match_threshold);
+        populateMatchSettingsForm(fuzzyMatchThreshold);
+        return payload;
+      }
+
+      function openMatchSettingsDialog() {
+        populateMatchSettingsForm();
+        matchSettingsDialog.showModal();
+        setTimeout(() => fuzzyThresholdInput.focus(), 0);
+      }
+
+      function closeMatchSettingsDialog() {
+        if (matchSettingsDialog.open) {
+          matchSettingsDialog.close();
+        }
+      }
+
+      async function saveMatchSettings() {
+        try {
+          await saveAppSettings();
+          closeMatchSettingsDialog();
+          showStatus("Matching settings saved.", "success");
+        } catch (error) {
+          showStatus(error.message, "error");
+        }
       }
 
       async function loadAzureConfig() {
@@ -1950,9 +2636,13 @@
           return;
         }
 
-        const confirmed = window.confirm(
-          "Delete Draft and return to Data?"
-        );
+        const confirmed = await askConfirm({
+          eyebrow: "Delete draft",
+          title: "Delete Draft?",
+          message: "Delete Draft and return to Data? This cannot be undone.",
+          confirmLabel: "Delete Draft",
+          danger: true,
+        });
         if (!confirmed) {
           return;
         }
@@ -1979,14 +2669,16 @@
         }
       }
 
-      addRowButton.addEventListener("click", () => {
-        promoteToDraftSource();
-        allRows.unshift(createNewRow());
-        syncDirtyState();
-        applyFilter();
+      addRowButton.addEventListener("click", openAddOsDialog);
+      addOsForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        applyAddOs();
       });
+      addOsCancelButton.addEventListener("click", closeAddOsDialog);
+      addOsCloseButton.addEventListener("click", closeAddOsDialog);
 
       bulkUploadButton.addEventListener("click", openBulkUploadDialog);
+      refreshEolButton.addEventListener("click", refreshAllEolData);
       bulkApplyButton.addEventListener("click", applyBulkUpload);
       bulkCancelButton.addEventListener("click", closeBulkUploadDialog);
       bulkCloseButton.addEventListener("click", closeBulkUploadDialog);
@@ -2049,6 +2741,10 @@
       azureSaveSettingsButton.addEventListener("click", saveAzureSettings);
       azureCancelButton.addEventListener("click", closeAzureSettingsDialog);
       azureCloseButton.addEventListener("click", closeAzureSettingsDialog);
+      matchSettingsButton.addEventListener("click", openMatchSettingsDialog);
+      matchSaveSettingsButton.addEventListener("click", saveMatchSettings);
+      matchCancelButton.addEventListener("click", closeMatchSettingsDialog);
+      matchCloseButton.addEventListener("click", closeMatchSettingsDialog);
       azureProgressCancel.addEventListener("click", () => {
         if (azureAbortController) {
           azureAbortController.abort();
@@ -2063,9 +2759,13 @@
       deleteDraftButton.addEventListener("click", deleteDraft);
       sourceSelect.addEventListener("change", async () => {
         if (isDirty) {
-          const confirmed = window.confirm(
-            "Discard unsaved changes and load the selected source?"
-          );
+          const confirmed = await askConfirm({
+            eyebrow: "Switch source",
+            title: "Discard unsaved changes?",
+            message: "Discard unsaved changes and load the selected source?",
+            confirmLabel: "Discard and switch",
+            danger: true,
+          });
           if (!confirmed) {
             sourceSelect.value = currentSource;
             return;
@@ -2090,6 +2790,9 @@
       });
 
       updateSourceUi();
+      loadAppSettings().catch((error) => {
+        showStatus(error.message, "error");
+      });
       loadRows("data");
     </script>
   </body>

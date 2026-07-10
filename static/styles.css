@@ -223,6 +223,11 @@ h1 {
   background: linear-gradient(135deg, var(--primary), var(--primary-strong));
 }
 
+.danger-button {
+  color: white;
+  background: linear-gradient(135deg, #f87171, #dc2626);
+}
+
 .secondary-button {
   color: var(--text);
   background: var(--secondary);
@@ -458,6 +463,17 @@ h1 {
   margin: 12px 0 20px;
   color: var(--muted);
   font-size: 14px;
+}
+
+.confirm-dialog .modal-card {
+  min-width: min(480px, calc(100vw - 32px));
+}
+
+.confirm-message {
+  margin: 0 0 20px;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.55;
 }
 
 .modal-note {
