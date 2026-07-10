@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timezone
 from functools import lru_cache
 from typing import Any
@@ -15,6 +16,7 @@ PRODUCT_V1_URL = f"{BASE_URL}/v1/products"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 }
+EOL_FETCH_WORKERS = 8
 
 SLUG_RULES: list[tuple[str, str]] = [
     (r"red hat enterprise linux|\brhel\b", "rhel"),
@@ -272,9 +274,61 @@ def lookup_os_eol_batch(
 ) -> list[dict[str, str]]:
     valid_slugs = get_valid_slugs()
     product_cache: dict[str, dict[str, Any]] = {}
-    results: list[dict[str, str]] = []
+    fetch_errors: dict[str, Exception] = {}
 
+    slugs_needed: set[str] = set()
     for item in items:
+        cleaned_name = pick_api_os_value(
+            item.get("os_string", ""),
+            item.get("normalized_os_detailed_name", ""),
+            item.get("normalized_os", ""),
+        )
+        if not cleaned_name:
+            continue
+        slug = resolve_product_slug(cleaned_name, valid_slugs)
+        if slug:
+            slugs_needed.add(slug)
+
+    if slugs_needed:
+        workers = min(EOL_FETCH_WORKERS, len(slugs_needed))
+
+        def fetch_slug(slug: str) -> tuple[str, dict[str, Any] | None, Exception | None]:
+            try:
+                return slug, fetch_product(slug), None
+            except (requests.RequestException, ValueError) as exc:
+                return slug, None, exc
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(fetch_slug, slug) for slug in slugs_needed]
+            for future in as_completed(futures):
+                slug, payload, error = future.result()
+                if payload is not None:
+                    product_cache[slug] = payload
+                elif error is not None:
+                    fetch_errors[slug] = error
+
+    results: list[dict[str, str]] = []
+    for item in items:
+        cleaned_name = pick_api_os_value(
+            item.get("os_string", ""),
+            item.get("normalized_os_detailed_name", ""),
+            item.get("normalized_os", ""),
+        )
+        slug = resolve_product_slug(cleaned_name, valid_slugs) if cleaned_name else None
+        if slug and slug not in product_cache and slug in fetch_errors:
+            results.append(
+                {
+                    "eol_date": "",
+                    "eol_status": "",
+                    "eoas_date": "",
+                    "eoas_status": "",
+                    "normalized_os_detailed_name": "",
+                    "normalized_os": "",
+                    "api_note": f"API error: {fetch_errors[slug]}",
+                }
+            )
+            continue
+
         results.append(
             lookup_os_eol(
                 os_string=item.get("os_string", ""),

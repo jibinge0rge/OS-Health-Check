@@ -13,7 +13,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -24,6 +24,7 @@ from normalization_service import (
     DEFAULT_FUZZY_MATCH_THRESHOLD,
     suggest_normalization_batch,
 )
+from os_import_service import extract_distinct_os_values, inspect_os_import_file
 
 
 load_dotenv()
@@ -542,7 +543,46 @@ async def normalize_suggest(payload: NormalizeSuggestRequest) -> dict[str, objec
 
 @app.post("/api/eol-lookup")
 async def eol_lookup(payload: EolLookupBatchRequest) -> dict[str, object]:
-    results = lookup_os_eol_batch(
+    results = await asyncio.to_thread(
+        lookup_os_eol_batch,
         [item.model_dump() for item in payload.items],
     )
     return {"results": results}
+
+
+@app.post("/api/os-import/inspect")
+async def os_import_inspect(file: UploadFile = File(...)) -> dict[str, object]:
+    content = await file.read()
+    try:
+        return await asyncio.to_thread(
+            inspect_os_import_file,
+            content,
+            file.filename or "upload.csv",
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/api/os-import/extract")
+async def os_import_extract(
+    file: UploadFile = File(...),
+    columns: str = Form(...),
+) -> dict[str, object]:
+    try:
+        selected_columns = json.loads(columns)
+    except json.JSONDecodeError as error:
+        raise HTTPException(status_code=400, detail="Invalid columns payload.") from error
+
+    if not isinstance(selected_columns, list):
+        raise HTTPException(status_code=400, detail="Columns must be a JSON array.")
+
+    content = await file.read()
+    try:
+        return await asyncio.to_thread(
+            extract_distinct_os_values,
+            content,
+            file.filename or "upload.csv",
+            [str(column) for column in selected_columns],
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error

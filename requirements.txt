@@ -1,6 +1,8 @@
 fastapi
 jinja2
 openai
+openpyxl
 python-dotenv
+python-multipart
 requests
 uvicorn[standard]

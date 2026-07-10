@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OS Health Check</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
@@ -64,7 +65,16 @@
 
         <div class="toolbar-right">
           <div class="export-actions action-group">
-            <button id="download-button" class="ghost-button compact-button" type="button">Download</button>
+            <button id="download-button" class="ghost-button compact-button" type="button" title="Download current source rows (respects table filters)">Download</button>
+            <button
+              id="download-delta-button"
+              class="ghost-button compact-button"
+              type="button"
+              title="Download only new or modified draft rows compared to Data (respects table filters)"
+              disabled
+            >
+              Download Delta
+            </button>
             <div class="menu-anchor">
               <button
                 id="azure-menu-button"
@@ -113,12 +123,12 @@
         <article class="summary-card danger">
           <p class="summary-label">EOL</p>
           <p id="eol-count-card" class="summary-value">0</p>
-          <p class="summary-note">By status or past EOL date</p>
+          <p class="summary-note">In current filter</p>
         </article>
         <article class="summary-card warning">
           <p class="summary-label">EOAS</p>
           <p id="eoas-count-card" class="summary-value">0</p>
-          <p class="summary-note">By status or past EOAS date</p>
+          <p class="summary-note">In current filter</p>
         </article>
         <article class="summary-card info">
           <p class="summary-label">Shown Operating Systems</p>
@@ -270,7 +280,7 @@
     </dialog>
 
     <dialog id="bulk-upload-dialog" class="modal">
-      <form method="dialog" class="modal-card">
+      <form method="dialog" class="modal-card bulk-upload-card">
         <div class="modal-header">
           <div>
             <p class="eyebrow">Add operating systems</p>
@@ -279,13 +289,76 @@
           <button id="bulk-close-button" class="ghost-button" value="cancel">Close</button>
         </div>
 
-        <label class="bulk-upload-field">
-          <span>One operating system per line</span>
-          <textarea
-            id="bulk-upload-textarea"
-            placeholder="Windows Server 2022&#10;Ubuntu 24.04&#10;RHEL 9.4"
-          ></textarea>
-        </label>
+        <div class="bulk-source-tabs" role="tablist" aria-label="Bulk add source">
+          <button
+            id="bulk-tab-paste"
+            class="bulk-source-tab is-active"
+            type="button"
+            role="tab"
+            aria-selected="true"
+            data-bulk-source="paste"
+          >
+            Paste list
+          </button>
+          <button
+            id="bulk-tab-file"
+            class="bulk-source-tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            data-bulk-source="file"
+          >
+            CSV / Excel
+          </button>
+        </div>
+
+        <div id="bulk-paste-panel" class="bulk-source-panel">
+          <label class="bulk-upload-field">
+            <span>One operating system per line</span>
+            <textarea
+              id="bulk-upload-textarea"
+              placeholder="Windows Server 2022&#10;Ubuntu 24.04&#10;RHEL 9.4"
+            ></textarea>
+          </label>
+        </div>
+
+        <div id="bulk-file-panel" class="bulk-source-panel hidden">
+          <div class="bulk-upload-field">
+            <span>Upload CSV or Excel (.xlsx)</span>
+            <div class="bulk-file-picker">
+              <input
+                id="bulk-file-input"
+                class="bulk-file-input"
+                type="file"
+                accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              />
+              <button id="bulk-file-browse" class="ghost-button" type="button">
+                Choose file
+              </button>
+              <span id="bulk-file-name" class="bulk-file-name">No file chosen</span>
+            </div>
+          </div>
+
+          <div id="bulk-file-meta" class="bulk-file-meta hidden"></div>
+
+          <div id="bulk-column-section" class="bulk-column-section hidden">
+            <div class="bulk-column-header">
+              <span>Columns to use for OS values</span>
+              <div class="bulk-column-actions">
+                <button id="bulk-columns-all" class="ghost-button compact-button" type="button">
+                  Select all
+                </button>
+                <button id="bulk-columns-none" class="ghost-button compact-button" type="button">
+                  Clear
+                </button>
+              </div>
+            </div>
+            <div id="bulk-column-list" class="bulk-column-list"></div>
+            <p id="bulk-column-hint" class="bulk-column-hint">
+              Distinct non-empty values from the selected columns will be added.
+            </p>
+          </div>
+        </div>
 
         <div class="modal-actions">
           <button id="bulk-cancel-button" class="ghost-button" value="cancel">Cancel</button>
@@ -441,7 +514,8 @@
         { value: "true", label: "True" },
         { value: "false", label: "False" },
       ];
-      const BULK_BATCH_SIZE = 8;
+      const BULK_BATCH_SIZE = 12;
+      const BULK_CONCURRENCY = 3;
       const DEFAULT_FUZZY_MATCH_THRESHOLD = 95;
       let fuzzyMatchThreshold = DEFAULT_FUZZY_MATCH_THRESHOLD;
       let allRows = [];
@@ -455,6 +529,9 @@
       let statusTimer = null;
       let bulkProcessing = false;
       let bulkAbortController = null;
+      let bulkSourceMode = "paste";
+      let bulkImportFile = null;
+      let bulkImportColumns = [];
       let azureUploadProcessing = false;
       let azureAbortController = null;
       const columnFilters = Object.fromEntries(
@@ -469,6 +546,7 @@
       const saveButton = document.getElementById("save-button");
       const validateButton = document.getElementById("validate-button");
       const downloadButton = document.getElementById("download-button");
+      const downloadDeltaButton = document.getElementById("download-delta-button");
       const azureMenuButton = document.getElementById("azure-menu-button");
       const azureMenu = document.getElementById("azure-menu");
       const azureUploadButton = document.getElementById("azure-upload-button");
@@ -501,6 +579,19 @@
       const bulkApplyButton = document.getElementById("bulk-apply-button");
       const bulkCancelButton = document.getElementById("bulk-cancel-button");
       const bulkCloseButton = document.getElementById("bulk-close-button");
+      const bulkTabPaste = document.getElementById("bulk-tab-paste");
+      const bulkTabFile = document.getElementById("bulk-tab-file");
+      const bulkPastePanel = document.getElementById("bulk-paste-panel");
+      const bulkFilePanel = document.getElementById("bulk-file-panel");
+      const bulkFileInput = document.getElementById("bulk-file-input");
+      const bulkFileBrowse = document.getElementById("bulk-file-browse");
+      const bulkFileName = document.getElementById("bulk-file-name");
+      const bulkFileMeta = document.getElementById("bulk-file-meta");
+      const bulkColumnSection = document.getElementById("bulk-column-section");
+      const bulkColumnList = document.getElementById("bulk-column-list");
+      const bulkColumnHint = document.getElementById("bulk-column-hint");
+      const bulkColumnsAll = document.getElementById("bulk-columns-all");
+      const bulkColumnsNone = document.getElementById("bulk-columns-none");
       const bulkProgressDialog = document.getElementById("bulk-progress-dialog");
       const bulkProgressEyebrow = document.getElementById("bulk-progress-eyebrow");
       const bulkProgressTitle = document.getElementById("bulk-progress-title");
@@ -605,6 +696,8 @@
         sourceIndicator.classList.toggle("draft-pill", currentSource === "draft");
         validateButton.disabled = bulkProcessing || azureUploadProcessing || currentSource !== "draft";
         downloadButton.disabled = bulkProcessing || azureUploadProcessing;
+        downloadDeltaButton.disabled =
+          bulkProcessing || azureUploadProcessing || currentSource !== "draft";
         azureMenuButton.disabled = bulkProcessing || azureUploadProcessing;
         matchSettingsButton.disabled = bulkProcessing || azureUploadProcessing;
         azureUploadButton.disabled = bulkProcessing || azureUploadProcessing;
@@ -1255,6 +1348,32 @@
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       }
 
+      function chunkArray(items, size) {
+        const chunks = [];
+        for (let index = 0; index < items.length; index += size) {
+          chunks.push(items.slice(index, index + size));
+        }
+        return chunks;
+      }
+
+      async function runPool(items, concurrency, worker) {
+        if (!items.length) {
+          return;
+        }
+
+        let nextIndex = 0;
+        const workerCount = Math.min(Math.max(1, concurrency), items.length);
+        await Promise.all(
+          Array.from({ length: workerCount }, async () => {
+            while (nextIndex < items.length) {
+              const currentIndex = nextIndex;
+              nextIndex += 1;
+              await worker(items[currentIndex], currentIndex);
+            }
+          })
+        );
+      }
+
       function normalizeStatus(value) {
         return String(value ?? "").trim().toLowerCase();
       }
@@ -1288,8 +1407,8 @@
       function updateSummaryCards() {
         totalRowsCard.textContent = String(allRows.length);
         shownRowsCard.textContent = String(filteredRows.length);
-        eolCountCard.textContent = String(allRows.filter(isEolRow).length);
-        eoasCountCard.textContent = String(allRows.filter(isEoasRow).length);
+        eolCountCard.textContent = String(filteredRows.filter(isEolRow).length);
+        eoasCountCard.textContent = String(filteredRows.filter(isEoasRow).length);
       }
 
       function updateRowValue(rowId, header, nextValue) {
@@ -1405,6 +1524,7 @@
         saveButton.disabled = active || azureUploadProcessing;
         validateButton.disabled = active || azureUploadProcessing || currentSource !== "draft";
         downloadButton.disabled = active || azureUploadProcessing;
+        downloadDeltaButton.disabled = active || azureUploadProcessing || currentSource !== "draft";
         azureMenuButton.disabled = active || azureUploadProcessing;
         matchSettingsButton.disabled = active || azureUploadProcessing;
         azureUploadButton.disabled = active || azureUploadProcessing;
@@ -1432,6 +1552,7 @@
         saveButton.disabled = active || bulkProcessing;
         validateButton.disabled = active || bulkProcessing || currentSource !== "draft";
         downloadButton.disabled = active || bulkProcessing;
+        downloadDeltaButton.disabled = active || bulkProcessing || currentSource !== "draft";
         azureMenuButton.disabled = active || bulkProcessing;
         matchSettingsButton.disabled = active || bulkProcessing;
         azureUploadButton.disabled = active || bulkProcessing;
@@ -1473,10 +1594,24 @@
         bulkProgressStage.textContent = stageText || "Processing...";
       }
 
+      async function reportBulkProgress(processed, total, stageText) {
+        updateBulkProgress(processed, total, stageText);
+        await yieldToUi();
+      }
+
       function getNormalizationCandidates() {
         return allRows.filter(
           (row) => row.normalized_os_detailed_name || row.normalized_os
         );
+      }
+
+      function getFuzzyCandidateRows(candidates) {
+        return buildAllowedPairs(candidates).map((pair) => ({
+          __id: `pair-${pair.normalized_os_detailed_name}|||${pair.normalized_os}`,
+          os_string: pair.normalized_os_detailed_name,
+          normalized_os_detailed_name: pair.normalized_os_detailed_name,
+          normalized_os: pair.normalized_os,
+        }));
       }
 
       function normalizeOsKey(value) {
@@ -1530,8 +1665,152 @@
         }
       }
 
+      function setBulkSourceMode(mode) {
+        bulkSourceMode = mode === "file" ? "file" : "paste";
+        bulkTabPaste.classList.toggle("is-active", bulkSourceMode === "paste");
+        bulkTabFile.classList.toggle("is-active", bulkSourceMode === "file");
+        bulkTabPaste.setAttribute("aria-selected", String(bulkSourceMode === "paste"));
+        bulkTabFile.setAttribute("aria-selected", String(bulkSourceMode === "file"));
+        bulkPastePanel.classList.toggle("hidden", bulkSourceMode !== "paste");
+        bulkFilePanel.classList.toggle("hidden", bulkSourceMode !== "file");
+      }
+
+      function resetBulkFileImport() {
+        bulkImportFile = null;
+        bulkImportColumns = [];
+        bulkFileInput.value = "";
+        bulkFileName.textContent = "No file chosen";
+        bulkFileName.classList.remove("has-file");
+        bulkFileMeta.textContent = "";
+        bulkFileMeta.classList.add("hidden");
+        bulkColumnList.innerHTML = "";
+        bulkColumnSection.classList.add("hidden");
+        bulkColumnHint.textContent =
+          "Distinct non-empty values from the selected columns will be added.";
+      }
+
+      function getSelectedBulkColumns() {
+        return Array.from(
+          bulkColumnList.querySelectorAll('input[type="checkbox"]:checked')
+        ).map((input) => input.value);
+      }
+
+      function renderBulkColumns(columns) {
+        bulkImportColumns = columns;
+        bulkColumnList.innerHTML = "";
+        columns.forEach((column) => {
+          const label = document.createElement("label");
+          label.className = "bulk-column-option";
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.value = column;
+          const lower = column.toLowerCase();
+          checkbox.checked =
+            lower.includes("os") ||
+            lower.includes("operating") ||
+            lower === "name" ||
+            lower.includes("platform");
+          const text = document.createElement("span");
+          text.textContent = column;
+          label.append(checkbox, text);
+          bulkColumnList.appendChild(label);
+        });
+        bulkColumnSection.classList.remove("hidden");
+        updateBulkColumnHint();
+      }
+
+      function updateBulkColumnHint() {
+        const selected = getSelectedBulkColumns();
+        if (!bulkImportFile) {
+          bulkColumnHint.textContent =
+            "Distinct non-empty values from the selected columns will be added.";
+          return;
+        }
+        if (!selected.length) {
+          bulkColumnHint.textContent = "Select one or more columns that contain OS names.";
+          return;
+        }
+        bulkColumnHint.textContent = `${selected.length} column${
+          selected.length === 1 ? "" : "s"
+        } selected. Distinct non-empty values will be added.`;
+      }
+
+      function setBulkColumnSelection(checked) {
+        bulkColumnList.querySelectorAll('input[type="checkbox"]').forEach((input) => {
+          input.checked = checked;
+        });
+        updateBulkColumnHint();
+      }
+
+      async function inspectBulkImportFile(file) {
+        const formData = new FormData();
+        formData.append("file", file);
+        const response = await fetch("/api/os-import/inspect", {
+          method: "POST",
+          body: formData,
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          const detail = payload.detail;
+          throw new Error(
+            typeof detail === "string" ? detail : "Could not read the uploaded file."
+          );
+        }
+        return payload;
+      }
+
+      async function extractOsValuesFromFile(file, columns) {
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("columns", JSON.stringify(columns));
+        const response = await fetch("/api/os-import/extract", {
+          method: "POST",
+          body: formData,
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          const detail = payload.detail;
+          throw new Error(
+            typeof detail === "string" ? detail : "Could not extract OS values from the file."
+          );
+        }
+        return payload;
+      }
+
+      async function handleBulkFileSelected() {
+        const file = bulkFileInput.files?.[0] || null;
+        const selectedName = file ? file.name : "No file chosen";
+        resetBulkFileImport();
+        if (!file) {
+          return;
+        }
+
+        bulkImportFile = file;
+        bulkFileName.textContent = selectedName;
+        bulkFileName.classList.add("has-file");
+        bulkFileMeta.textContent = "Reading file...";
+        bulkFileMeta.classList.remove("hidden");
+
+        try {
+          const payload = await inspectBulkImportFile(file);
+          bulkFileMeta.textContent = `${payload.filename} · ${payload.row_count} data row${
+            payload.row_count === 1 ? "" : "s"
+          } · ${payload.columns.length} column${payload.columns.length === 1 ? "" : "s"}`;
+          renderBulkColumns(payload.columns || []);
+        } catch (error) {
+          bulkImportFile = null;
+          bulkFileInput.value = "";
+          bulkFileName.textContent = "No file chosen";
+          bulkFileName.classList.remove("has-file");
+          bulkFileMeta.classList.add("hidden");
+          showStatus(error.message, "error");
+        }
+      }
+
       function openBulkUploadDialog() {
         bulkUploadTextarea.value = "";
+        resetBulkFileImport();
+        setBulkSourceMode("paste");
         bulkUploadDialog.showModal();
         setTimeout(() => bulkUploadTextarea.focus(), 0);
       }
@@ -1583,66 +1862,86 @@
         bulkAbortController = new AbortController();
         const { signal } = bulkAbortController;
         const normalizationCandidates = getNormalizationCandidates();
+        const fuzzyCandidates = getFuzzyCandidateRows(normalizationCandidates);
         const addedRows = [];
         let processed = 0;
         let cancelled = false;
+        let commitQueue = Promise.resolve();
+
+        const commitBatch = (batchRows) => {
+          commitQueue = commitQueue.then(async () => {
+            allRows = [...batchRows, ...allRows];
+            addedRows.push(...batchRows);
+            processed += batchRows.length;
+            totalRowsCard.textContent = String(allRows.length);
+            syncDirtyState();
+            await reportBulkProgress(
+              processed,
+              toAdd.length,
+              processed >= toAdd.length
+                ? "Finalizing..."
+                : `Processed ${processed} of ${toAdd.length} operating systems`
+            );
+          });
+          return commitQueue;
+        };
 
         setBulkProcessingActive(true);
         openBulkProgress(toAdd.length);
+        await reportBulkProgress(0, toAdd.length, "Starting bulk add...");
 
         try {
-          for (let start = 0; start < toAdd.length; start += BULK_BATCH_SIZE) {
+          const valueChunks = chunkArray(toAdd, BULK_BATCH_SIZE);
+          await runPool(valueChunks, BULK_CONCURRENCY, async (batchValues, chunkIndex) => {
             if (signal.aborted) {
               cancelled = true;
-              break;
+              return;
             }
 
-            const batchValues = toAdd.slice(start, start + BULK_BATCH_SIZE);
-            updateBulkProgress(
-              processed,
-              toAdd.length,
-              `Normalizing ${processed + 1}-${processed + batchValues.length} of ${toAdd.length}...`
-            );
             await yieldToUi();
 
-            const batchRows = [];
-            batchValues.forEach((osValue) => {
-              const row = createNewRow(
-                { os_string: osValue },
-                normalizationCandidates.concat(batchRows)
-              );
-              batchRows.push(row);
-            });
+            const batchStart = chunkIndex * BULK_BATCH_SIZE + 1;
+            const batchEnd = Math.min(batchStart + batchValues.length - 1, toAdd.length);
+            const batchRows = batchValues.map((osValue) =>
+              createNewRow({ os_string: osValue }, fuzzyCandidates)
+            );
 
-            await applyAiNormalizationToRows(batchRows, normalizationCandidates.concat(batchRows), {
-              signal,
-            });
-
-            updateBulkProgress(
+            await reportBulkProgress(
               processed,
               toAdd.length,
-              `Looking up EOL data for ${processed + 1}-${processed + batchValues.length} of ${toAdd.length}...`
+              `Normalizing ${batchStart}-${batchEnd} of ${toAdd.length}...`
+            );
+
+            await applyAiNormalizationToRows(batchRows, normalizationCandidates, { signal });
+
+            if (signal.aborted) {
+              cancelled = true;
+              return;
+            }
+
+            await reportBulkProgress(
+              processed,
+              toAdd.length,
+              `Looking up EOL data for ${batchStart}-${batchEnd} of ${toAdd.length}...`
             );
 
             await applyEolFromApi(batchRows, {
               signal,
               fallbackCandidates: normalizationCandidates.concat(batchRows),
             });
-            allRows = [...batchRows, ...allRows];
-            addedRows.push(...batchRows);
-            normalizationCandidates.push(...batchRows);
-            processed += batchValues.length;
 
-            updateBulkProgress(
-              processed,
-              toAdd.length,
-              processed === toAdd.length
-                ? "Finalizing..."
-                : `Processed ${processed} of ${toAdd.length} operating systems`
-            );
-            totalRowsCard.textContent = String(allRows.length);
-            syncDirtyState();
-            await yieldToUi();
+            if (signal.aborted) {
+              cancelled = true;
+              return;
+            }
+
+            await commitBatch(batchRows);
+          });
+
+          await commitQueue;
+
+          if (signal.aborted) {
+            cancelled = true;
           }
 
           applyFilter();
@@ -1661,8 +1960,10 @@
             );
           }
         } catch (error) {
+          await commitQueue.catch(() => {});
           if (addedRows.length) {
             applyFilter();
+            syncDirtyState();
           }
           if (signal.aborted) {
             showStatus(
@@ -1686,6 +1987,35 @@
       }
 
       async function applyBulkUpload() {
+        if (bulkSourceMode === "file") {
+          if (!bulkImportFile) {
+            showStatus("Choose a CSV or Excel file to import.", "info");
+            return;
+          }
+
+          const columns = getSelectedBulkColumns();
+          if (!columns.length) {
+            showStatus("Select at least one column that contains OS values.", "info");
+            return;
+          }
+
+          try {
+            bulkApplyButton.disabled = true;
+            const payload = await extractOsValuesFromFile(bulkImportFile, columns);
+            const values = Array.isArray(payload.values) ? payload.values : [];
+            if (!values.length) {
+              showStatus("No OS values found in the selected columns.", "info");
+              return;
+            }
+            await addOperatingSystems(values, { closeDialog: closeBulkUploadDialog });
+          } catch (error) {
+            showStatus(error.message, "error");
+          } finally {
+            bulkApplyButton.disabled = bulkProcessing;
+          }
+          return;
+        }
+
         const values = bulkUploadTextarea.value
           .split(/\r?\n/)
           .map((value) => value.trim())
@@ -1759,19 +2089,23 @@
         });
 
         try {
-          for (let start = 0; start < targetRows.length; start += BULK_BATCH_SIZE) {
+          const eolChunks = chunkArray(targetRows, BULK_BATCH_SIZE);
+          let commitQueue = Promise.resolve();
+          await reportBulkProgress(0, targetRows.length, "Starting EOL/EOAS refresh...");
+
+          await runPool(eolChunks, BULK_CONCURRENCY, async (batchRows, chunkIndex) => {
             if (signal.aborted) {
               cancelled = true;
-              break;
+              return;
             }
 
-            const batchRows = targetRows.slice(start, start + BULK_BATCH_SIZE);
-            updateBulkProgress(
+            const batchStart = chunkIndex * BULK_BATCH_SIZE + 1;
+            const batchEnd = Math.min(batchStart + batchRows.length - 1, targetRows.length);
+            await reportBulkProgress(
               processed,
               targetRows.length,
-              `Looking up EOL/EOAS data for ${processed + 1}-${processed + batchRows.length} of ${targetRows.length}...`
+              `Looking up EOL/EOAS data for ${batchStart}-${batchEnd} of ${targetRows.length}...`
             );
-            await yieldToUi();
 
             const batchResult = await applyEolFromApi(batchRows, {
               signal,
@@ -1779,20 +2113,28 @@
               forceLifecycle: true,
               fallbackCandidates: allRows,
             });
-            updated += batchResult.updated;
-            failed += batchResult.failed;
-            processed += batchRows.length;
 
-            updateBulkProgress(
-              processed,
-              targetRows.length,
-              processed === targetRows.length
-                ? "Finalizing..."
-                : `Processed ${processed} of ${targetRows.length} operating systems`
-            );
-            syncDirtyState();
-            updateSummaryCards();
-            await yieldToUi();
+            commitQueue = commitQueue.then(async () => {
+              updated += batchResult.updated;
+              failed += batchResult.failed;
+              processed += batchRows.length;
+              syncDirtyState();
+              updateSummaryCards();
+              await reportBulkProgress(
+                processed,
+                targetRows.length,
+                processed >= targetRows.length
+                  ? "Finalizing..."
+                  : `Processed ${processed} of ${targetRows.length} operating systems`
+              );
+            });
+            await commitQueue;
+          });
+
+          await commitQueue;
+
+          if (signal.aborted) {
+            cancelled = true;
           }
 
           applyFilter();
@@ -2418,32 +2760,115 @@
         }
       }
 
+      function getDeltaRows(rows = allRows) {
+        return rows.filter((row) => Boolean(getRowIndicatorType(row)));
+      }
+
+      function hasActiveTableFilters() {
+        if (searchInput.value.trim()) {
+          return true;
+        }
+        return headers.some((header) => {
+          const filter = columnFilters[header];
+          if (!filter) {
+            return false;
+          }
+          return Boolean(
+            filter.mode ||
+              String(filter.text ?? "").trim() ||
+              String(filter.from ?? "").trim() ||
+              String(filter.to ?? "").trim()
+          );
+        });
+      }
+
+      function escapeCsvValue(value) {
+        const text = String(value ?? "");
+        if (/[",\r\n]/.test(text)) {
+          return `"${text.replace(/"/g, '""')}"`;
+        }
+        return text;
+      }
+
+      function rowsToCsv(rows) {
+        const lines = [headers.join(",")];
+        rows.forEach((row) => {
+          lines.push(headers.map((header) => escapeCsvValue(row[header])).join(","));
+        });
+        return `${lines.join("\r\n")}\r\n`;
+      }
+
+      function triggerCsvDownload(filename, rows) {
+        const csv = rowsToCsv(rows);
+        const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = filename;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(url);
+      }
+
       async function downloadLookup() {
+        const rows = filteredRows;
+        if (!rows.length) {
+          showStatus(
+            hasActiveTableFilters()
+              ? "No rows match the current filters to download."
+              : "No rows available to download.",
+            "info"
+          );
+          return;
+        }
+
         showStatus("Preparing download...");
 
         try {
-          const response = await fetch(
-            `/api/lookup/download?source=${encodeURIComponent(currentSource)}`
-          );
-
-          if (!response.ok) {
-            if (response.status === 404 && currentSource === "draft") {
-              throw new Error("Draft lookup CSV not found. Save a draft first.");
-            }
-            throw new Error("Unable to download lookup file.");
-          }
-
-          const blob = await response.blob();
-          const url = URL.createObjectURL(blob);
-          const anchor = document.createElement("a");
-          anchor.href = url;
-          anchor.download = "eol_lookup.csv";
-          document.body.appendChild(anchor);
-          anchor.click();
-          anchor.remove();
-          URL.revokeObjectURL(url);
+          const filename = hasActiveTableFilters()
+            ? "eol_lookup_filtered.csv"
+            : "eol_lookup.csv";
+          triggerCsvDownload(filename, rows);
           showStatus(
-            `Downloaded ${sourceLabel(currentSource)} lookup as eol_lookup.csv.`,
+            `Downloaded ${rows.length} ${sourceLabel(currentSource).toLowerCase()} row${
+              rows.length === 1 ? "" : "s"
+            }${hasActiveTableFilters() ? " (filtered)" : ""} as ${filename}.`,
+            "success"
+          );
+        } catch (error) {
+          showStatus(error.message, "error");
+        }
+      }
+
+      async function downloadDeltaLookup() {
+        if (currentSource !== "draft") {
+          showStatus("Download Delta is only available for Draft.", "info");
+          return;
+        }
+
+        const deltaRows = getDeltaRows(filteredRows);
+        if (!deltaRows.length) {
+          showStatus(
+            hasActiveTableFilters()
+              ? "No new or modified draft rows match the current filters."
+              : "No new or modified draft rows to download.",
+            "info"
+          );
+          return;
+        }
+
+        showStatus("Preparing delta download...");
+
+        try {
+          const filename = hasActiveTableFilters()
+            ? "eol_lookup_delta_filtered.csv"
+            : "eol_lookup_delta.csv";
+          triggerCsvDownload(filename, deltaRows);
+          showStatus(
+            `Downloaded ${deltaRows.length} new/modified draft row${
+              deltaRows.length === 1 ? "" : "s"
+            }${hasActiveTableFilters() ? " (filtered)" : ""} as ${filename}.`,
             "success"
           );
         } catch (error) {
@@ -2861,6 +3286,15 @@
       bulkApplyButton.addEventListener("click", applyBulkUpload);
       bulkCancelButton.addEventListener("click", closeBulkUploadDialog);
       bulkCloseButton.addEventListener("click", closeBulkUploadDialog);
+      bulkTabPaste.addEventListener("click", () => setBulkSourceMode("paste"));
+      bulkTabFile.addEventListener("click", () => setBulkSourceMode("file"));
+      bulkFileBrowse.addEventListener("click", () => bulkFileInput.click());
+      bulkFileInput.addEventListener("change", () => {
+        handleBulkFileSelected().catch((error) => showStatus(error.message, "error"));
+      });
+      bulkColumnsAll.addEventListener("click", () => setBulkColumnSelection(true));
+      bulkColumnsNone.addEventListener("click", () => setBulkColumnSelection(false));
+      bulkColumnList.addEventListener("change", updateBulkColumnHint);
       bulkProgressCancel.addEventListener("click", () => {
         if (bulkAbortController) {
           bulkAbortController.abort();
@@ -2907,6 +3341,7 @@
       saveButton.addEventListener("click", saveRows);
       validateButton.addEventListener("click", validateRows);
       downloadButton.addEventListener("click", downloadLookup);
+      downloadDeltaButton.addEventListener("click", downloadDeltaLookup);
       azureMenuButton.addEventListener("click", (event) => {
         event.stopPropagation();
         toggleAzureMenu();
