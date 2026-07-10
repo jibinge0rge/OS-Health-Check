@@ -138,6 +138,59 @@
                 {% endfor %}
                 <th class="actions-column">Actions</th>
               </tr>
+              <tr id="filter-row" class="filter-row">
+                {% for header in headers %}
+                <th data-filter-header="{{ header }}">
+                  <div class="column-filter-controls">
+                    <select
+                      class="column-filter-mode"
+                      data-column-filter="{{ header }}"
+                      aria-label="Filter {{ header }}"
+                    >
+                      <option value="" selected>All</option>
+                      <option value="empty">Empty</option>
+                      <option value="not_empty">Not empty</option>
+                    </select>
+                    {% if header in ['eol_date', 'eoas_date'] %}
+                    <div class="column-date-range">
+                      <input
+                        class="column-filter-date"
+                        data-column-date-from="{{ header }}"
+                        type="date"
+                        title="From"
+                        aria-label="{{ header }} from date"
+                      />
+                      <span class="column-date-sep" aria-hidden="true">–</span>
+                      <input
+                        class="column-filter-date"
+                        data-column-date-to="{{ header }}"
+                        type="date"
+                        title="To"
+                        aria-label="{{ header }} to date"
+                      />
+                    </div>
+                    {% elif header not in ['eol_status', 'eoas_status'] %}
+                    <input
+                      class="column-filter-text"
+                      data-column-text-filter="{{ header }}"
+                      type="search"
+                      placeholder="Contains"
+                      autocomplete="off"
+                    />
+                    {% endif %}
+                  </div>
+                </th>
+                {% endfor %}
+                <th class="actions-column">
+                  <button
+                    id="clear-column-filters-button"
+                    class="ghost-button compact-button"
+                    type="button"
+                  >
+                    Clear filters
+                  </button>
+                </th>
+              </tr>
             </thead>
             <tbody id="table-body"></tbody>
           </table>
@@ -404,6 +457,9 @@
       let bulkAbortController = null;
       let azureUploadProcessing = false;
       let azureAbortController = null;
+      const columnFilters = Object.fromEntries(
+        headers.map((header) => [header, { mode: "", text: "", from: "", to: "" }])
+      );
 
       const tableBody = document.getElementById("table-body");
       const rowCount = document.getElementById("row-count");
@@ -1792,17 +1848,140 @@
         nextPageButton.disabled = currentPage >= total;
       }
 
+      function getColumnFilterValue(row, header) {
+        const rawValue = String(row[header] ?? "").trim();
+        if (dateHeaders.has(header)) {
+          return {
+            raw: rawValue,
+            display: String(toDisplayValue(header, row[header]) ?? "").trim(),
+          };
+        }
+        return { raw: rawValue, display: rawValue };
+      }
+
+      function rowMatchesDateRange(displayDate, fromDate, toDate) {
+        if (!fromDate && !toDate) {
+          return true;
+        }
+        if (!displayDate) {
+          return false;
+        }
+        if (fromDate && displayDate < fromDate) {
+          return false;
+        }
+        if (toDate && displayDate > toDate) {
+          return false;
+        }
+        return true;
+      }
+
+      function rowMatchesColumnFilter(row, header) {
+        const filter = columnFilters[header];
+        if (!filter) {
+          return true;
+        }
+
+        const { raw, display } = getColumnFilterValue(row, header);
+        const isEmpty = !raw;
+        const mode = filter.mode;
+        const fromDate = String(filter.from ?? "").trim();
+        const toDate = String(filter.to ?? "").trim();
+        const text = String(filter.text ?? "").trim().toLowerCase();
+        const isDateColumn = dateHeaders.has(header);
+
+        if (mode === "empty") {
+          return isEmpty;
+        }
+        if (mode === "not_empty") {
+          if (isEmpty) {
+            return false;
+          }
+          return isDateColumn ? rowMatchesDateRange(display, fromDate, toDate) : true;
+        }
+        if (mode === "true") {
+          return raw.toLowerCase() === "true";
+        }
+        if (mode === "false") {
+          return raw.toLowerCase() === "false";
+        }
+
+        if (isDateColumn) {
+          if (!fromDate && !toDate) {
+            return true;
+          }
+          return rowMatchesDateRange(display, fromDate, toDate);
+        }
+
+        if (text) {
+          return (
+            raw.toLowerCase().includes(text) || display.toLowerCase().includes(text)
+          );
+        }
+        return true;
+      }
+
+      function syncColumnFilterInputs() {
+        document.querySelectorAll("[data-column-filter]").forEach((select) => {
+          const header = select.dataset.columnFilter;
+          const filter = columnFilters[header] || {
+            mode: "",
+            text: "",
+            from: "",
+            to: "",
+          };
+          select.value = filter.mode || "";
+
+          const textInput = document.querySelector(
+            `[data-column-text-filter="${header}"]`
+          );
+          if (textInput) {
+            textInput.value = filter.text || "";
+            textInput.disabled = Boolean(filter.mode);
+          }
+
+          const fromInput = document.querySelector(
+            `[data-column-date-from="${header}"]`
+          );
+          const toInput = document.querySelector(
+            `[data-column-date-to="${header}"]`
+          );
+          const dateRangeDisabled = filter.mode === "empty";
+          if (fromInput) {
+            fromInput.value = filter.from || "";
+            fromInput.disabled = dateRangeDisabled;
+          }
+          if (toInput) {
+            toInput.value = filter.to || "";
+            toInput.disabled = dateRangeDisabled;
+          }
+        });
+      }
+
+      function clearColumnFilters() {
+        headers.forEach((header) => {
+          columnFilters[header] = { mode: "", text: "", from: "", to: "" };
+        });
+        syncColumnFilterInputs();
+        applyFilter();
+      }
+
       function applyFilter() {
         const query = searchInput.value.trim().toLowerCase();
-        filteredRows = !query
-          ? allRows
-          : allRows.filter((row) =>
-              headers.some((header) => {
-                const rawValue = String(row[header] ?? "").toLowerCase();
-                const displayValue = String(toDisplayValue(header, row[header])).toLowerCase();
-                return rawValue.includes(query) || displayValue.includes(query);
-              })
-            );
+        filteredRows = allRows.filter((row) => {
+          const matchesSearch =
+            !query ||
+            headers.some((header) => {
+              const rawValue = String(row[header] ?? "").toLowerCase();
+              const displayValue = String(toDisplayValue(header, row[header])).toLowerCase();
+              return rawValue.includes(query) || displayValue.includes(query);
+            });
+
+          if (!matchesSearch) {
+            return false;
+          }
+
+          return headers.every((header) => rowMatchesColumnFilter(row, header));
+        });
         currentPage = 1;
         renderTable();
       }
@@ -2780,6 +2959,87 @@
         const header = th.dataset.header;
         th.textContent = headerLabels[header] ?? header;
       });
+
+      document.querySelectorAll("[data-column-filter]").forEach((select) => {
+        const header = select.dataset.columnFilter;
+        if (booleanStatusHeaders.has(header)) {
+          const trueOption = document.createElement("option");
+          trueOption.value = "true";
+          trueOption.textContent = "True";
+          const falseOption = document.createElement("option");
+          falseOption.value = "false";
+          falseOption.textContent = "False";
+          select.appendChild(trueOption);
+          select.appendChild(falseOption);
+        }
+
+        select.addEventListener("change", () => {
+          columnFilters[header].mode = select.value;
+          const textInput = document.querySelector(
+            `[data-column-text-filter="${header}"]`
+          );
+          if (textInput) {
+            if (select.value) {
+              columnFilters[header].text = "";
+              textInput.value = "";
+              textInput.disabled = true;
+            } else {
+              textInput.disabled = false;
+            }
+          }
+
+          const fromInput = document.querySelector(
+            `[data-column-date-from="${header}"]`
+          );
+          const toInput = document.querySelector(
+            `[data-column-date-to="${header}"]`
+          );
+          const dateRangeDisabled = select.value === "empty";
+          if (fromInput) {
+            if (dateRangeDisabled) {
+              columnFilters[header].from = "";
+              fromInput.value = "";
+            }
+            fromInput.disabled = dateRangeDisabled;
+          }
+          if (toInput) {
+            if (dateRangeDisabled) {
+              columnFilters[header].to = "";
+              toInput.value = "";
+            }
+            toInput.disabled = dateRangeDisabled;
+          }
+          applyFilter();
+        });
+      });
+
+      document.querySelectorAll("[data-column-text-filter]").forEach((input) => {
+        const header = input.dataset.columnTextFilter;
+        input.addEventListener("input", () => {
+          columnFilters[header].text = input.value;
+          applyFilter();
+        });
+      });
+
+      document.querySelectorAll("[data-column-date-from]").forEach((input) => {
+        const header = input.dataset.columnDateFrom;
+        input.addEventListener("change", () => {
+          columnFilters[header].from = input.value;
+          applyFilter();
+        });
+      });
+
+      document.querySelectorAll("[data-column-date-to]").forEach((input) => {
+        const header = input.dataset.columnDateTo;
+        input.addEventListener("change", () => {
+          columnFilters[header].to = input.value;
+          applyFilter();
+        });
+      });
+
+      document
+        .getElementById("clear-column-filters-button")
+        .addEventListener("click", clearColumnFilters);
 
       window.addEventListener("beforeunload", (event) => {
         if (!isDirty) {
