@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import csv
+import json
+import re
+import shutil
+from collections.abc import AsyncIterator
 from datetime import datetime
 from pathlib import Path
-import shutil
 from tempfile import NamedTemporaryFile
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, field_validator
@@ -19,6 +23,8 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_PATH = BASE_DIR / "_data" / "eol_lookup.csv"
 DRAFT_PATH = BASE_DIR / "_draft" / "eol_lookup.csv"
 BACKUP_DIR = BASE_DIR / "_backup"
+CONFIG_DIR = BASE_DIR / "_config"
+AZURE_CONFIG_PATH = CONFIG_DIR / "azure.json"
 CSV_HEADERS = [
     "os_string",
     "normalized_os_detailed_name",
@@ -64,6 +70,36 @@ class EolLookupItem(BaseModel):
 
 class EolLookupBatchRequest(BaseModel):
     items: list[EolLookupItem] = Field(default_factory=list)
+
+
+class AzureUploadRequest(BaseModel):
+    account_name: str = Field(min_length=1)
+    container_name: str = Field(min_length=1)
+    blob_name: str = Field(min_length=1)
+
+    @field_validator("account_name", "container_name", "blob_name", mode="before")
+    @classmethod
+    def strip_required_fields(cls, value: object) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError("Azure upload settings cannot be empty.")
+        return normalized
+
+    @field_validator("blob_name", mode="after")
+    @classmethod
+    def validate_blob_name(cls, value: str) -> str:
+        if value.startswith("/"):
+            raise ValueError("Blob path must not start with /.")
+        return value
+
+
+class AzureSettings(BaseModel):
+    account_name: str = ""
+    container_name: str = ""
+    blob_name: str = ""
+
+
+AZURE_PROGRESS_RE = re.compile(r"(\d+(?:\.\d+)?)%")
 
 
 def lookup_path(source: str) -> Path:
@@ -127,6 +163,154 @@ def backup_data_file() -> Path | None:
     return backup_path
 
 
+def load_azure_settings() -> AzureSettings:
+    if not AZURE_CONFIG_PATH.exists():
+        return AzureSettings()
+
+    with AZURE_CONFIG_PATH.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=500, detail="Azure settings file is invalid.")
+
+    return AzureSettings(
+        account_name=str(payload.get("account_name") or "").strip(),
+        container_name=str(payload.get("container_name") or "").strip(),
+        blob_name=str(payload.get("blob_name") or "").strip(),
+    )
+
+
+def save_azure_settings(payload: AzureUploadRequest) -> AzureSettings:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    settings = AzureSettings(**payload.model_dump())
+    with AZURE_CONFIG_PATH.open("w", encoding="utf-8") as handle:
+        json.dump(settings.model_dump(), handle, indent=2)
+        handle.write("\n")
+    return settings
+
+
+def require_azure_settings() -> AzureUploadRequest:
+    settings = load_azure_settings()
+    if not settings.account_name or not settings.container_name or not settings.blob_name:
+        raise HTTPException(
+            status_code=400,
+            detail="Azure settings are not configured. Save settings first.",
+        )
+
+    return AzureUploadRequest(
+        account_name=settings.account_name,
+        container_name=settings.container_name,
+        blob_name=settings.blob_name,
+    )
+
+
+def sse_event(payload: dict[str, object]) -> str:
+    return f"data: {json.dumps(payload)}\n\n"
+
+
+def parse_azure_progress_line(line: str) -> float | None:
+    match = AZURE_PROGRESS_RE.search(line)
+    if not match:
+        return None
+    return float(match.group(1))
+
+
+async def azure_upload_events(payload: AzureUploadRequest) -> AsyncIterator[str]:
+    if not DATA_PATH.exists():
+        yield sse_event({"type": "error", "message": "Data lookup CSV not found at _data/eol_lookup.csv."})
+        return
+
+    az_path = shutil.which("az")
+    if not az_path:
+        yield sse_event(
+            {
+                "type": "error",
+                "message": "Azure CLI (az) is not installed or not available on PATH.",
+            }
+        )
+        return
+
+    command = [
+        az_path,
+        "storage",
+        "blob",
+        "upload",
+        "--account-name",
+        payload.account_name,
+        "--container-name",
+        payload.container_name,
+        "--file",
+        str(DATA_PATH),
+        "--name",
+        payload.blob_name,
+        "--overwrite",
+        "--auth-mode",
+        "login",
+    ]
+
+    yield sse_event(
+        {
+            "type": "start",
+            "message": (
+                f"Uploading _data/eol_lookup.csv to "
+                f"{payload.account_name}/{payload.container_name}/{payload.blob_name}"
+            ),
+        }
+    )
+
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        cwd=str(BASE_DIR),
+    )
+
+    result_lines: list[str] = []
+    assert process.stdout is not None
+
+    try:
+        while True:
+            line_bytes = await process.stdout.readline()
+            if not line_bytes:
+                break
+
+            line = line_bytes.decode("utf-8", errors="replace").rstrip()
+            if not line:
+                continue
+
+            result_lines.append(line)
+            yield sse_event(
+                {
+                    "type": "progress",
+                    "message": line,
+                    "percent": parse_azure_progress_line(line),
+                }
+            )
+
+        return_code = await process.wait()
+        if return_code == 0:
+            yield sse_event(
+                {
+                    "type": "complete",
+                    "message": "Azure upload completed successfully.",
+                    "output": result_lines,
+                }
+            )
+            return
+
+        yield sse_event(
+            {
+                "type": "error",
+                "message": f"Azure upload failed with exit code {return_code}.",
+                "output": result_lines,
+            }
+        )
+    finally:
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
@@ -159,6 +343,20 @@ async def validate_lookup(payload: LookupPayload) -> dict[str, object]:
     }
 
 
+@app.get("/api/lookup/download")
+async def download_lookup(source: str = "data") -> FileResponse:
+    path = lookup_path(source)
+    if not path.exists():
+        detail = "Draft lookup CSV not found." if source == "draft" else "Lookup CSV not found."
+        raise HTTPException(status_code=404, detail=detail)
+
+    return FileResponse(
+        path=path,
+        media_type="text/csv",
+        filename="eol_lookup.csv",
+    )
+
+
 @app.delete("/api/lookup/draft")
 async def delete_draft_lookup() -> dict[str, object]:
     if not DRAFT_PATH.exists():
@@ -166,6 +364,30 @@ async def delete_draft_lookup() -> dict[str, object]:
 
     DRAFT_PATH.unlink()
     return {"deleted": True, "source": "draft"}
+
+
+@app.get("/api/azure/settings")
+async def get_azure_settings() -> AzureSettings:
+    return load_azure_settings()
+
+
+@app.put("/api/azure/settings")
+async def update_azure_settings(payload: AzureUploadRequest) -> AzureSettings:
+    return save_azure_settings(payload)
+
+
+@app.post("/api/azure/upload")
+async def upload_lookup_to_azure() -> StreamingResponse:
+    payload = require_azure_settings()
+    return StreamingResponse(
+        azure_upload_events(payload),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/eol-lookup")

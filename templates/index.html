@@ -17,12 +17,30 @@
           </p>
         </div>
         <div class="hero-actions">
-          <button id="revert-button" class="ghost-button" disabled>Revert changes</button>
-          <button id="bulk-upload-button" class="secondary-button">Bulk OS Addition</button>
-          <button id="add-row-button" class="secondary-button">Add OS</button>
-          <button id="save-button" class="primary-button">Save Draft</button>
-          <button id="validate-button" class="ghost-button" disabled>Validate changes</button>
-          <button id="delete-draft-button" class="ghost-button" disabled>Delete Draft</button>
+          <div class="action-group">
+            <button
+              id="add-row-button"
+              class="ghost-button compact-button"
+              type="button"
+              title="Add a single operating system to the lookup"
+            >
+              Add OS
+            </button>
+            <button
+              id="bulk-upload-button"
+              class="ghost-button compact-button"
+              type="button"
+              title="Add multiple operating systems to the lookup at once"
+            >
+              Add multiple OS
+            </button>
+          </div>
+          <div class="action-group">
+            <button id="save-button" class="primary-button compact-button">Save Draft</button>
+            <button id="validate-button" class="ghost-button compact-button" disabled>Validate</button>
+            <button id="revert-button" class="ghost-button compact-button" disabled>Revert</button>
+            <button id="delete-draft-button" class="ghost-button compact-button" disabled>Delete draft</button>
+          </div>
         </div>
       </section>
 
@@ -37,6 +55,26 @@
         </label>
 
         <div class="toolbar-right">
+          <div class="export-actions action-group">
+            <button id="download-button" class="ghost-button compact-button" type="button">Download</button>
+            <div class="menu-anchor">
+              <button
+                id="azure-menu-button"
+                class="ghost-button compact-button"
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded="false"
+                aria-controls="azure-menu"
+              >
+                Azure
+              </button>
+              <div id="azure-menu" class="action-menu hidden" role="menu" aria-label="Azure actions">
+                <button id="azure-upload-button" type="button" role="menuitem">Upload</button>
+                <button id="azure-settings-button" type="button" role="menuitem">Settings</button>
+              </div>
+            </div>
+          </div>
+
           <div class="source-controls">
             <label class="source-field">
               <span class="source-inline-label">Source</span>
@@ -119,8 +157,8 @@
       <form method="dialog" class="modal-card">
         <div class="modal-header">
           <div>
-            <p class="eyebrow">Bulk OS Addition</p>
-            <h2>Add Multiple Operating Systems</h2>
+            <p class="eyebrow">Add operating systems</p>
+            <h2>Add multiple operating systems</h2>
           </div>
           <button id="bulk-close-button" class="ghost-button" value="cancel">Close</button>
         </div>
@@ -135,7 +173,7 @@
 
         <div class="modal-actions">
           <button id="bulk-cancel-button" class="ghost-button" value="cancel">Cancel</button>
-          <button id="bulk-apply-button" class="primary-button" type="button">Add entries</button>
+          <button id="bulk-apply-button" class="primary-button" type="button">Add OS entries</button>
         </div>
       </form>
     </dialog>
@@ -144,8 +182,8 @@
       <div class="modal-card">
         <div class="modal-header">
           <div>
-            <p class="eyebrow">Bulk OS Addition</p>
-            <h2>Processing Operating Systems</h2>
+            <p class="eyebrow">Add operating systems</p>
+            <h2>Adding operating systems</h2>
           </div>
         </div>
 
@@ -157,6 +195,78 @@
 
         <div class="modal-actions">
           <button id="bulk-progress-cancel" class="ghost-button" type="button">Cancel</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="azure-settings-dialog" class="modal">
+      <form method="dialog" class="modal-card">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">Azure Storage</p>
+            <h2>Azure Settings</h2>
+          </div>
+          <button id="azure-close-button" class="ghost-button" value="cancel">Close</button>
+        </div>
+
+        <p class="modal-note">
+          Settings are saved to <code>_config/azure.json</code> in this project folder.
+          Uploads only <code>_data/eol_lookup.csv</code> using Azure CLI login auth.
+        </p>
+
+        <label class="modal-field">
+          <span>Storage account name</span>
+          <input
+            id="azure-account-name-input"
+            type="text"
+            autocomplete="off"
+          />
+        </label>
+
+        <label class="modal-field">
+          <span>Container name</span>
+          <input
+            id="azure-container-name-input"
+            type="text"
+            autocomplete="off"
+          />
+        </label>
+
+        <label class="modal-field">
+          <span>Blob path in container</span>
+          <input
+            id="azure-blob-name-input"
+            type="text"
+            autocomplete="off"
+          />
+        </label>
+
+        <div class="modal-actions">
+          <button id="azure-cancel-button" class="ghost-button" value="cancel">Cancel</button>
+          <button id="azure-save-settings-button" class="primary-button" type="button">Save settings</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="azure-progress-dialog" class="modal azure-progress-dialog">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">Azure Storage</p>
+            <h2>Uploading to Azure</h2>
+          </div>
+        </div>
+
+        <p id="azure-progress-text" class="bulk-progress-text">Preparing upload...</p>
+        <div class="progress-track" aria-hidden="true">
+          <div id="azure-progress-bar" class="progress-fill"></div>
+        </div>
+        <p id="azure-progress-stage" class="bulk-progress-stage">Waiting for Azure CLI...</p>
+        <pre id="azure-progress-output" class="azure-progress-output"></pre>
+
+        <div class="modal-actions">
+          <button id="azure-progress-cancel" class="ghost-button" type="button">Cancel</button>
+          <button id="azure-progress-close" class="primary-button" type="button" hidden>Close</button>
         </div>
       </div>
     </dialog>
@@ -191,6 +301,8 @@
       let statusTimer = null;
       let bulkProcessing = false;
       let bulkAbortController = null;
+      let azureUploadProcessing = false;
+      let azureAbortController = null;
 
       const tableBody = document.getElementById("table-body");
       const rowCount = document.getElementById("row-count");
@@ -199,6 +311,11 @@
       const searchInput = document.getElementById("search-input");
       const saveButton = document.getElementById("save-button");
       const validateButton = document.getElementById("validate-button");
+      const downloadButton = document.getElementById("download-button");
+      const azureMenuButton = document.getElementById("azure-menu-button");
+      const azureMenu = document.getElementById("azure-menu");
+      const azureUploadButton = document.getElementById("azure-upload-button");
+      const azureSettingsButton = document.getElementById("azure-settings-button");
       const deleteDraftButton = document.getElementById("delete-draft-button");
       const addRowButton = document.getElementById("add-row-button");
       const bulkUploadButton = document.getElementById("bulk-upload-button");
@@ -217,6 +334,20 @@
       const bulkProgressText = document.getElementById("bulk-progress-text");
       const bulkProgressBar = document.getElementById("bulk-progress-bar");
       const bulkProgressStage = document.getElementById("bulk-progress-stage");
+      const azureSettingsDialog = document.getElementById("azure-settings-dialog");
+      const azureCloseButton = document.getElementById("azure-close-button");
+      const azureCancelButton = document.getElementById("azure-cancel-button");
+      const azureSaveSettingsButton = document.getElementById("azure-save-settings-button");
+      const azureAccountNameInput = document.getElementById("azure-account-name-input");
+      const azureContainerNameInput = document.getElementById("azure-container-name-input");
+      const azureBlobNameInput = document.getElementById("azure-blob-name-input");
+      const azureProgressDialog = document.getElementById("azure-progress-dialog");
+      const azureProgressText = document.getElementById("azure-progress-text");
+      const azureProgressBar = document.getElementById("azure-progress-bar");
+      const azureProgressStage = document.getElementById("azure-progress-stage");
+      const azureProgressOutput = document.getElementById("azure-progress-output");
+      const azureProgressCancel = document.getElementById("azure-progress-cancel");
+      const azureProgressClose = document.getElementById("azure-progress-close");
       const bulkProgressCancel = document.getElementById("bulk-progress-cancel");
       const sourceSelect = document.getElementById("source-select");
       const pageSizeSelect = document.getElementById("page-size-select");
@@ -262,9 +393,16 @@
         sourceSelect.value = currentSource;
         sourceIndicator.textContent = sourceLabel(currentSource);
         sourceIndicator.classList.toggle("draft-pill", currentSource === "draft");
-        validateButton.disabled = bulkProcessing || currentSource !== "draft";
-        deleteDraftButton.disabled = bulkProcessing || currentSource !== "draft";
-        revertButton.disabled = bulkProcessing || (!isDirty && !(currentSource === "draft" && hasAnyRevertableRows()));
+        validateButton.disabled = bulkProcessing || azureUploadProcessing || currentSource !== "draft";
+        downloadButton.disabled = bulkProcessing || azureUploadProcessing;
+        azureMenuButton.disabled = bulkProcessing || azureUploadProcessing;
+        azureUploadButton.disabled = bulkProcessing || azureUploadProcessing;
+        azureSettingsButton.disabled = bulkProcessing || azureUploadProcessing;
+        deleteDraftButton.disabled = bulkProcessing || azureUploadProcessing || currentSource !== "draft";
+        revertButton.disabled =
+          bulkProcessing ||
+          azureUploadProcessing ||
+          (!isDirty && !(currentSource === "draft" && hasAnyRevertableRows()));
       }
 
       function promoteToDraftSource() {
@@ -789,18 +927,43 @@
 
       function setBulkProcessingActive(active) {
         bulkProcessing = active;
-        addRowButton.disabled = active;
-        bulkUploadButton.disabled = active;
-        saveButton.disabled = active;
-        validateButton.disabled = active || currentSource !== "draft";
-        deleteDraftButton.disabled = active || currentSource !== "draft";
+        addRowButton.disabled = active || azureUploadProcessing;
+        bulkUploadButton.disabled = active || azureUploadProcessing;
+        saveButton.disabled = active || azureUploadProcessing;
+        validateButton.disabled = active || azureUploadProcessing || currentSource !== "draft";
+        downloadButton.disabled = active || azureUploadProcessing;
+        azureMenuButton.disabled = active || azureUploadProcessing;
+        azureUploadButton.disabled = active || azureUploadProcessing;
+        azureSettingsButton.disabled = active || azureUploadProcessing;
+        deleteDraftButton.disabled = active || azureUploadProcessing || currentSource !== "draft";
         revertButton.disabled =
-          active || (!isDirty && !(currentSource === "draft" && hasAnyRevertableRows()));
-        searchInput.disabled = active;
-        sourceSelect.disabled = active;
+          active ||
+          azureUploadProcessing ||
+          (!isDirty && !(currentSource === "draft" && hasAnyRevertableRows()));
+        searchInput.disabled = active || azureUploadProcessing;
+        sourceSelect.disabled = active || azureUploadProcessing;
         bulkApplyButton.disabled = active;
         bulkCancelButton.disabled = active;
         bulkCloseButton.disabled = active;
+      }
+
+      function setAzureUploadProcessingActive(active) {
+        azureUploadProcessing = active;
+        addRowButton.disabled = active || bulkProcessing;
+        bulkUploadButton.disabled = active || bulkProcessing;
+        saveButton.disabled = active || bulkProcessing;
+        validateButton.disabled = active || bulkProcessing || currentSource !== "draft";
+        downloadButton.disabled = active || bulkProcessing;
+        azureMenuButton.disabled = active || bulkProcessing;
+        azureUploadButton.disabled = active || bulkProcessing;
+        azureSettingsButton.disabled = active || bulkProcessing;
+        deleteDraftButton.disabled = active || bulkProcessing || currentSource !== "draft";
+        revertButton.disabled =
+          active ||
+          bulkProcessing ||
+          (!isDirty && !(currentSource === "draft" && hasAnyRevertableRows()));
+        searchInput.disabled = active || bulkProcessing;
+        sourceSelect.disabled = active || bulkProcessing;
       }
 
       function openBulkProgress(total) {
@@ -888,7 +1051,7 @@
           .filter(Boolean);
 
         if (!values.length) {
-          showStatus("Paste at least one operating system value to bulk upload.", "info");
+          showStatus("Paste at least one operating system to add.", "info");
           return;
         }
 
@@ -981,8 +1144,8 @@
           if (cancelled) {
             showStatus(
               addedRows.length
-                ? `Bulk upload cancelled after adding ${addedRows.length} operating systems.`
-                : "Bulk upload cancelled.",
+                ? `Adding OS cancelled after adding ${addedRows.length} operating systems.`
+                : "Adding operating systems cancelled.",
               "info"
             );
           } else {
@@ -998,8 +1161,8 @@
           if (signal.aborted) {
             showStatus(
               addedRows.length
-                ? `Bulk upload cancelled after adding ${addedRows.length} operating systems.`
-                : "Bulk upload cancelled.",
+                ? `Adding OS cancelled after adding ${addedRows.length} operating systems.`
+                : "Adding operating systems cancelled.",
               "info"
             );
           } else {
@@ -1465,6 +1628,322 @@
         }
       }
 
+      async function downloadLookup() {
+        showStatus("Preparing download...");
+
+        try {
+          const response = await fetch(
+            `/api/lookup/download?source=${encodeURIComponent(currentSource)}`
+          );
+
+          if (!response.ok) {
+            if (response.status === 404 && currentSource === "draft") {
+              throw new Error("Draft lookup CSV not found. Save a draft first.");
+            }
+            throw new Error("Unable to download lookup file.");
+          }
+
+          const blob = await response.blob();
+          const url = URL.createObjectURL(blob);
+          const anchor = document.createElement("a");
+          anchor.href = url;
+          anchor.download = "eol_lookup.csv";
+          document.body.appendChild(anchor);
+          anchor.click();
+          anchor.remove();
+          URL.revokeObjectURL(url);
+          showStatus(
+            `Downloaded ${sourceLabel(currentSource)} lookup as eol_lookup.csv.`,
+            "success"
+          );
+        } catch (error) {
+          showStatus(error.message, "error");
+        }
+      }
+
+      function isAzureConfigComplete(config) {
+        return Boolean(
+          String(config?.account_name ?? "").trim() &&
+            String(config?.container_name ?? "").trim() &&
+            String(config?.blob_name ?? "").trim()
+        );
+      }
+
+      function validateAzureConfig(config) {
+        if (!isAzureConfigComplete(config)) {
+          return "Enter storage account, container, and blob path.";
+        }
+        if (config.blob_name.startsWith("/")) {
+          return "Blob path must not start with /.";
+        }
+        return null;
+      }
+
+      function populateAzureConfigForm(config) {
+        azureAccountNameInput.value = config.account_name || "";
+        azureContainerNameInput.value = config.container_name || "";
+        azureBlobNameInput.value = config.blob_name || "";
+      }
+
+      async function loadAzureConfig() {
+        const response = await fetch("/api/azure/settings");
+        if (!response.ok) {
+          throw new Error("Unable to load Azure settings.");
+        }
+        return await response.json();
+      }
+
+      async function saveAzureConfig(config) {
+        const response = await fetch("/api/azure/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(config),
+        });
+
+        if (!response.ok) {
+          let detail = "Unable to save Azure settings.";
+          try {
+            const payload = await response.json();
+            if (payload?.detail) {
+              detail = Array.isArray(payload.detail)
+                ? payload.detail.map((item) => item.msg || item).join(" ")
+                : String(payload.detail);
+            }
+          } catch {
+            // Keep default message when response is not JSON.
+          }
+          throw new Error(detail);
+        }
+
+        return await response.json();
+      }
+
+      function readAzureConfigFromForm() {
+        return {
+          account_name: azureAccountNameInput.value.trim(),
+          container_name: azureContainerNameInput.value.trim(),
+          blob_name: azureBlobNameInput.value.trim(),
+        };
+      }
+
+      function closeAzureMenu() {
+        azureMenu.classList.add("hidden");
+        azureMenuButton.setAttribute("aria-expanded", "false");
+      }
+
+      function toggleAzureMenu() {
+        if (azureMenuButton.disabled) {
+          return;
+        }
+
+        const willOpen = azureMenu.classList.contains("hidden");
+        if (willOpen) {
+          azureMenu.classList.remove("hidden");
+          azureMenuButton.setAttribute("aria-expanded", "true");
+        } else {
+          closeAzureMenu();
+        }
+      }
+
+      async function openAzureSettingsDialog() {
+        closeAzureMenu();
+        try {
+          populateAzureConfigForm(await loadAzureConfig());
+        } catch (error) {
+          populateAzureConfigForm({});
+          showStatus(error.message, "error");
+        }
+        azureSettingsDialog.showModal();
+        setTimeout(() => azureAccountNameInput.focus(), 0);
+      }
+
+      function closeAzureSettingsDialog() {
+        if (azureSettingsDialog.open) {
+          azureSettingsDialog.close();
+        }
+      }
+
+      async function saveAzureSettings() {
+        const config = readAzureConfigFromForm();
+        const validationError = validateAzureConfig(config);
+        if (validationError) {
+          showStatus(validationError, isAzureConfigComplete(config) ? "error" : "info");
+          return;
+        }
+
+        try {
+          await saveAzureConfig(config);
+          closeAzureSettingsDialog();
+          showStatus("Azure settings saved to _config/azure.json.", "success");
+        } catch (error) {
+          showStatus(error.message, "error");
+        }
+      }
+
+      async function handleAzureUploadClick() {
+        closeAzureMenu();
+
+        try {
+          const config = await loadAzureConfig();
+          const validationError = validateAzureConfig(config);
+          if (validationError) {
+            await openAzureSettingsDialog();
+            showStatus(
+              isAzureConfigComplete(config)
+                ? validationError
+                : "Configure Azure settings before uploading.",
+              isAzureConfigComplete(config) ? "error" : "info"
+            );
+            return;
+          }
+
+          await startAzureUpload();
+        } catch (error) {
+          showStatus(error.message, "error");
+        }
+      }
+
+      function resetAzureProgressDialog() {
+        azureProgressText.textContent = "Preparing upload...";
+        azureProgressBar.style.width = "0%";
+        azureProgressStage.textContent = "Waiting for Azure CLI...";
+        azureProgressOutput.textContent = "";
+        azureProgressCancel.hidden = false;
+        azureProgressClose.hidden = true;
+      }
+
+      function openAzureProgressDialog() {
+        resetAzureProgressDialog();
+        azureProgressDialog.showModal();
+      }
+
+      function closeAzureProgressDialog() {
+        if (azureProgressDialog.open) {
+          azureProgressDialog.close();
+        }
+      }
+
+      function updateAzureProgress(message, percent = null) {
+        if (message) {
+          azureProgressStage.textContent = message;
+          azureProgressOutput.textContent = azureProgressOutput.textContent
+            ? `${azureProgressOutput.textContent}\n${message}`
+            : message;
+          azureProgressOutput.scrollTop = azureProgressOutput.scrollHeight;
+        }
+
+        if (percent != null && !Number.isNaN(percent)) {
+          const safePercent = Math.max(0, Math.min(100, percent));
+          azureProgressBar.style.width = `${safePercent}%`;
+          azureProgressText.textContent = `${safePercent.toFixed(1)}% uploaded`;
+        }
+      }
+
+      function finishAzureProgress(success, message) {
+        azureProgressCancel.hidden = true;
+        azureProgressClose.hidden = false;
+        if (success) {
+          azureProgressBar.style.width = "100%";
+          azureProgressText.textContent = "Upload complete";
+        }
+        if (message) {
+          azureProgressStage.textContent = message;
+        }
+      }
+
+      async function startAzureUpload() {
+        if (azureUploadProcessing) {
+          return;
+        }
+
+        openAzureProgressDialog();
+
+        azureAbortController = new AbortController();
+        setAzureUploadProcessingActive(true);
+
+        let success = false;
+        let finalMessage = "Azure upload failed.";
+
+        try {
+          const response = await fetch("/api/azure/upload", {
+            method: "POST",
+            headers: {
+              Accept: "text/event-stream",
+            },
+            signal: azureAbortController.signal,
+          });
+
+          if (!response.ok) {
+            let detail = "Unable to start Azure upload.";
+            try {
+              const payload = await response.json();
+              if (payload?.detail) {
+                detail = Array.isArray(payload.detail)
+                  ? payload.detail.map((item) => item.msg || item).join(" ")
+                  : String(payload.detail);
+              }
+            } catch {
+              // Keep default message when response is not JSON.
+            }
+            throw new Error(detail);
+          }
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              break;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const chunks = buffer.split("\n\n");
+            buffer = chunks.pop() || "";
+
+            for (const chunk of chunks) {
+              const line = chunk
+                .split("\n")
+                .map((entry) => entry.trim())
+                .find((entry) => entry.startsWith("data: "));
+              if (!line) {
+                continue;
+              }
+
+              const event = JSON.parse(line.slice(6));
+              if (event.type === "start") {
+                updateAzureProgress(event.message, 0);
+              } else if (event.type === "progress") {
+                updateAzureProgress(event.message, event.percent);
+              } else if (event.type === "complete") {
+                success = true;
+                finalMessage = event.message || "Azure upload completed successfully.";
+                if (Array.isArray(event.output) && event.output.length) {
+                  event.output.forEach((entry) => updateAzureProgress(entry));
+                }
+              } else if (event.type === "error") {
+                finalMessage = event.message || finalMessage;
+                if (Array.isArray(event.output) && event.output.length) {
+                  event.output.forEach((entry) => updateAzureProgress(entry));
+                }
+              }
+            }
+          }
+        } catch (error) {
+          if (error.name === "AbortError") {
+            finalMessage = "Azure upload cancelled.";
+          } else {
+            finalMessage = error.message || finalMessage;
+          }
+        } finally {
+          finishAzureProgress(success, finalMessage);
+          setAzureUploadProcessingActive(false);
+          azureAbortController = null;
+          showStatus(finalMessage, success ? "success" : "error");
+        }
+      }
+
       async function deleteDraft() {
         if (currentSource !== "draft") {
           showStatus("Switch to the draft source before deleting it.", "info");
@@ -1556,6 +2035,31 @@
 
       saveButton.addEventListener("click", saveRows);
       validateButton.addEventListener("click", validateRows);
+      downloadButton.addEventListener("click", downloadLookup);
+      azureMenuButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        toggleAzureMenu();
+      });
+      azureMenu.addEventListener("click", (event) => {
+        event.stopPropagation();
+      });
+      document.addEventListener("click", closeAzureMenu);
+      azureUploadButton.addEventListener("click", handleAzureUploadClick);
+      azureSettingsButton.addEventListener("click", openAzureSettingsDialog);
+      azureSaveSettingsButton.addEventListener("click", saveAzureSettings);
+      azureCancelButton.addEventListener("click", closeAzureSettingsDialog);
+      azureCloseButton.addEventListener("click", closeAzureSettingsDialog);
+      azureProgressCancel.addEventListener("click", () => {
+        if (azureAbortController) {
+          azureAbortController.abort();
+        }
+      });
+      azureProgressClose.addEventListener("click", closeAzureProgressDialog);
+      azureProgressDialog.addEventListener("cancel", (event) => {
+        if (azureUploadProcessing) {
+          event.preventDefault();
+        }
+      });
       deleteDraftButton.addEventListener("click", deleteDraft);
       sourceSelect.addEventListener("change", async () => {
         if (isDirty) {

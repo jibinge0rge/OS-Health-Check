@@ -56,10 +56,10 @@ select {
 
 .hero {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
-  padding: 28px;
+  gap: 20px;
+  padding: 24px 28px;
   margin-bottom: 20px;
 }
 
@@ -86,13 +86,91 @@ h1 {
 .stats {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
+}
+
+.hero-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: min(100%, 560px);
+}
+
+.action-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-left: 10px;
+  border-left: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.action-group:first-child {
+  padding-left: 0;
+  border-left: 0;
+}
+
+.export-actions {
+  padding-left: 0;
+  border-left: 0;
+}
+
+.compact-button {
+  padding: 7px 11px;
+  font-size: 13px;
+  border-radius: 9px;
+  white-space: nowrap;
+}
+
+.menu-anchor {
+  position: relative;
+}
+
+.action-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 140px;
+  padding: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.98);
+  box-shadow: var(--shadow);
+  z-index: 30;
+}
+
+.action-menu.hidden {
+  display: none;
+}
+
+.action-menu button {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  text-align: left;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.action-menu button:hover:not(:disabled) {
+  background: rgba(51, 65, 85, 0.72);
+}
+
+.action-menu button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .toolbar-right {
   display: flex;
   align-items: center;
-  gap: 18px;
+  flex-wrap: wrap;
+  gap: 14px;
 }
 
 .source-controls,
@@ -380,6 +458,61 @@ h1 {
   margin: 12px 0 20px;
   color: var(--muted);
   font-size: 14px;
+}
+
+.modal-note {
+  margin: 0 0 18px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.modal-note code {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.modal-field input {
+  width: 100%;
+  padding: 12px 14px;
+  color: var(--text);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.9);
+}
+
+.modal-field input:focus {
+  outline: none;
+  border-color: rgba(96, 165, 250, 0.55);
+  box-shadow: 0 0 0 4px rgba(96, 165, 250, 0.16);
+}
+
+.azure-progress-dialog .modal-card {
+  min-width: min(640px, calc(100vw - 32px));
+}
+
+.azure-progress-output {
+  max-height: 220px;
+  margin: 0 0 20px;
+  padding: 14px 16px;
+  overflow: auto;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 14px;
+  background: rgba(2, 6, 23, 0.72);
+  color: #cbd5e1;
+  font: 12px/1.5 Consolas, "Courier New", monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .progress-track {
@@ -736,13 +869,17 @@ input[type="date"] {
     align-items: stretch;
   }
 
+  .hero-actions,
+  .stats {
+    justify-content: flex-start;
+  }
+
   .toolbar-right {
     justify-content: space-between;
   }
 
-  .hero-actions,
-  .stats {
-    justify-content: space-between;
+  .export-actions {
+    width: 100%;
   }
 
   .summary-grid {
