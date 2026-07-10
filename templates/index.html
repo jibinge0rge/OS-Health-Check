@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OS Health Check</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=5" />
   </head>
   <body>
     <main class="app-shell">
@@ -18,7 +18,49 @@
           </p>
         </div>
         <div class="hero-actions">
-          <div class="action-group">
+          <button id="save-button" class="primary-button compact-button">Save Draft</button>
+          <button id="validate-button" class="ghost-button compact-button" disabled>Validate</button>
+          <button id="revert-button" class="ghost-button compact-button" disabled>Revert</button>
+          <button id="delete-draft-button" class="ghost-button compact-button" disabled>Delete draft</button>
+          <button
+            id="refresh-eol-button"
+            class="ghost-button compact-button"
+            type="button"
+            title="Look up EOL and EOAS dates and statuses for all entries"
+          >
+            Refresh EOL/EOAS
+          </button>
+          <div class="menu-anchor">
+            <button
+              id="azure-menu-button"
+              class="ghost-button compact-button"
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded="false"
+              aria-controls="azure-menu"
+            >
+              Azure
+            </button>
+            <div id="azure-menu" class="action-menu hidden" role="menu" aria-label="Azure actions">
+              <button id="azure-upload-button" type="button" role="menuitem">Upload</button>
+              <button id="azure-settings-button" type="button" role="menuitem">Settings</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="toolbar">
+        <div class="toolbar-left">
+          <label class="search-field">
+            <span>Search</span>
+            <input
+              id="search-input"
+              type="search"
+              placeholder="Filter by any column"
+            />
+          </label>
+
+          <div class="toolbar-actions action-group">
             <button
               id="add-row-button"
               class="ghost-button compact-button"
@@ -35,36 +77,6 @@
             >
               Add multiple OS
             </button>
-            <button
-              id="refresh-eol-button"
-              class="ghost-button compact-button"
-              type="button"
-              title="Look up EOL and EOAS dates and statuses for all entries"
-            >
-              Refresh EOL/EOAS
-            </button>
-          </div>
-          <div class="action-group">
-            <button id="save-button" class="primary-button compact-button">Save Draft</button>
-            <button id="validate-button" class="ghost-button compact-button" disabled>Validate</button>
-            <button id="revert-button" class="ghost-button compact-button" disabled>Revert</button>
-            <button id="delete-draft-button" class="ghost-button compact-button" disabled>Delete draft</button>
-          </div>
-        </div>
-      </section>
-
-      <section class="toolbar">
-        <label class="search-field">
-          <span>Search</span>
-          <input
-            id="search-input"
-            type="search"
-            placeholder="Filter by any column"
-          />
-        </label>
-
-        <div class="toolbar-right">
-          <div class="export-actions action-group">
             <button id="download-button" class="ghost-button compact-button" type="button" title="Download current source rows (respects table filters)">Download</button>
             <button
               id="download-delta-button"
@@ -75,27 +87,10 @@
             >
               Download Delta
             </button>
-            <div class="menu-anchor">
-              <button
-                id="azure-menu-button"
-                class="ghost-button compact-button"
-                type="button"
-                aria-haspopup="menu"
-                aria-expanded="false"
-                aria-controls="azure-menu"
-              >
-                Azure
-              </button>
-              <div id="azure-menu" class="action-menu hidden" role="menu" aria-label="Azure actions">
-                <button id="azure-upload-button" type="button" role="menuitem">Upload</button>
-                <button id="azure-settings-button" type="button" role="menuitem">Settings</button>
-              </div>
-            </div>
-            <button id="match-settings-button" class="ghost-button compact-button" type="button">
-              Matching
-            </button>
           </div>
+        </div>
 
+        <div class="toolbar-right">
           <div class="source-controls">
             <label class="source-field">
               <span class="source-inline-label">Source</span>
@@ -119,6 +114,11 @@
           <p class="summary-label">Total Operating Systems</p>
           <p id="total-rows-card" class="summary-value">0</p>
           <p class="summary-note">Current lookup entries</p>
+        </article>
+        <article class="summary-card warning">
+          <p class="summary-label">Missing Normalization</p>
+          <p id="unnormalized-count-card" class="summary-value">0</p>
+          <p class="summary-note">Missing detailed name or normalized OS</p>
         </article>
         <article class="summary-card danger">
           <p class="summary-label">EOL</p>
@@ -388,42 +388,6 @@
       </div>
     </dialog>
 
-    <dialog id="match-settings-dialog" class="modal">
-      <form method="dialog" class="modal-card">
-        <div class="modal-header">
-          <div>
-            <p class="eyebrow">Normalization matching</p>
-            <h2>Matching settings</h2>
-          </div>
-          <button id="match-close-button" class="ghost-button" value="cancel">Close</button>
-        </div>
-
-        <p class="modal-note">
-          Higher values require a closer match before auto-filling normalized fields.
-          Edition and qualifier words must align, so similar names like
-          Windows 11 Pro and Windows 11 Pro Enterprise are not treated as the same.
-        </p>
-
-        <label class="modal-field">
-          <span>Fuzzy match threshold (%)</span>
-          <input
-            id="fuzzy-threshold-input"
-            type="number"
-            min="50"
-            max="100"
-            step="1"
-          />
-        </label>
-
-        <div class="modal-actions">
-          <button id="match-cancel-button" class="ghost-button" value="cancel">Cancel</button>
-          <button id="match-save-settings-button" class="primary-button" type="button">
-            Save settings
-          </button>
-        </div>
-      </form>
-    </dialog>
-
     <dialog id="azure-settings-dialog" class="modal">
       <form method="dialog" class="modal-card">
         <div class="modal-header">
@@ -517,7 +481,7 @@
       const BULK_BATCH_SIZE = 12;
       const BULK_CONCURRENCY = 3;
       const DEFAULT_FUZZY_MATCH_THRESHOLD = 95;
-      let fuzzyMatchThreshold = DEFAULT_FUZZY_MATCH_THRESHOLD;
+      const fuzzyMatchThreshold = DEFAULT_FUZZY_MATCH_THRESHOLD;
       let allRows = [];
       let filteredRows = [];
       let originalRows = [];
@@ -551,7 +515,6 @@
       const azureMenu = document.getElementById("azure-menu");
       const azureUploadButton = document.getElementById("azure-upload-button");
       const azureSettingsButton = document.getElementById("azure-settings-button");
-      const matchSettingsButton = document.getElementById("match-settings-button");
       const deleteDraftButton = document.getElementById("delete-draft-button");
       const addRowButton = document.getElementById("add-row-button");
       const bulkUploadButton = document.getElementById("bulk-upload-button");
@@ -571,6 +534,7 @@
       const revertButton = document.getElementById("revert-button");
       const statusBanner = document.getElementById("status-banner");
       const totalRowsCard = document.getElementById("total-rows-card");
+      const unnormalizedCountCard = document.getElementById("unnormalized-count-card");
       const eolCountCard = document.getElementById("eol-count-card");
       const eoasCountCard = document.getElementById("eoas-count-card");
       const shownRowsCard = document.getElementById("shown-rows-card");
@@ -602,11 +566,6 @@
       const azureCloseButton = document.getElementById("azure-close-button");
       const azureCancelButton = document.getElementById("azure-cancel-button");
       const azureSaveSettingsButton = document.getElementById("azure-save-settings-button");
-      const matchSettingsDialog = document.getElementById("match-settings-dialog");
-      const matchCloseButton = document.getElementById("match-close-button");
-      const matchCancelButton = document.getElementById("match-cancel-button");
-      const matchSaveSettingsButton = document.getElementById("match-save-settings-button");
-      const fuzzyThresholdInput = document.getElementById("fuzzy-threshold-input");
       const azureAccountNameInput = document.getElementById("azure-account-name-input");
       const azureContainerNameInput = document.getElementById("azure-container-name-input");
       const azureBlobNameInput = document.getElementById("azure-blob-name-input");
@@ -698,10 +657,14 @@
         downloadButton.disabled = bulkProcessing || azureUploadProcessing;
         downloadDeltaButton.disabled =
           bulkProcessing || azureUploadProcessing || currentSource !== "draft";
-        azureMenuButton.disabled = bulkProcessing || azureUploadProcessing;
-        matchSettingsButton.disabled = bulkProcessing || azureUploadProcessing;
-        azureUploadButton.disabled = bulkProcessing || azureUploadProcessing;
-        azureSettingsButton.disabled = bulkProcessing || azureUploadProcessing;
+        const azureAvailable =
+          currentSource === "data" && !bulkProcessing && !azureUploadProcessing;
+        azureMenuButton.disabled = !azureAvailable;
+        azureUploadButton.disabled = !azureAvailable;
+        azureSettingsButton.disabled = !azureAvailable;
+        if (!azureAvailable) {
+          closeAzureMenu();
+        }
         refreshEolButton.disabled = bulkProcessing || azureUploadProcessing;
         deleteDraftButton.disabled = bulkProcessing || azureUploadProcessing || currentSource !== "draft";
         revertButton.disabled =
@@ -1013,8 +976,28 @@
       }
 
       async function applyAiNormalizationToRows(rows, candidates, { signal } = {}) {
+        await resolveAmbiguousOsForRows(rows, { signal });
+
+        rows.forEach((row) => {
+          if (isAmbiguousOsRow(row)) {
+            return;
+          }
+          if (
+            String(row.normalized_os_detailed_name ?? "").trim() ||
+            String(row.normalized_os ?? "").trim()
+          ) {
+            return;
+          }
+          const { fuzzyMatched, ...suggestion } = inferFuzzyNormalizationValues(
+            row.os_string,
+            row.__id,
+            candidates
+          );
+          applyNormalizationSuggestion(row, suggestion);
+        });
+
         const rowsNeedingAi = rows.filter((row) => {
-          if (isAmbiguousOs(row.os_string)) {
+          if (isAmbiguousOsRow(row)) {
             return false;
           }
           return (
@@ -1068,8 +1051,7 @@
       }
 
       function applyFuzzyNormalization(row, osValue, candidates = allRows) {
-        if (isAmbiguousOs(osValue)) {
-          applyAmbiguousOsFields(row);
+        if (containsOsSlash(osValue)) {
           return;
         }
 
@@ -1087,9 +1069,12 @@
         candidates = allRows,
         { useAi = false, signal } = {}
       ) {
-        if (isAmbiguousOs(osValue)) {
-          applyAmbiguousOsFields(row);
-          return;
+        if (containsOsSlash(osValue)) {
+          const [ambiguous] = await detectAmbiguousOsBatch([osValue], signal);
+          if (ambiguous) {
+            applyAmbiguousOsFields(row);
+            return;
+          }
         }
 
         const suggestion = useAi
@@ -1106,8 +1091,61 @@
         applyNormalizationSuggestion(row, suggestion);
       }
 
-      function isAmbiguousOs(osValue) {
+      function containsOsSlash(osValue) {
         return String(osValue ?? "").includes("/");
+      }
+
+      function isAmbiguousOsRow(row) {
+        const detailed = String(row.normalized_os_detailed_name ?? "").trim().toLowerCase();
+        const normalized = String(row.normalized_os ?? "").trim().toLowerCase();
+        return detailed === "ambiguous os" || normalized === "ambiguous os";
+      }
+
+      async function detectAmbiguousOsBatch(osStrings, signal) {
+        if (!osStrings.length) {
+          return [];
+        }
+
+        try {
+          const response = await fetch("/api/ambiguous-os-detect", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              items: osStrings.map((os_string) => ({ os_string })),
+            }),
+            signal,
+          });
+
+          if (!response.ok) {
+            return osStrings.map(() => false);
+          }
+
+          const payload = await response.json();
+          const results = Array.isArray(payload.results) ? payload.results : [];
+          return osStrings.map((_, index) => Boolean(results[index]));
+        } catch (error) {
+          if (signal?.aborted) {
+            throw error;
+          }
+          return osStrings.map(() => false);
+        }
+      }
+
+      async function resolveAmbiguousOsForRows(rows, { signal } = {}) {
+        const slashRows = rows.filter((row) => containsOsSlash(row.os_string));
+        if (!slashRows.length) {
+          return;
+        }
+
+        const flags = await detectAmbiguousOsBatch(
+          slashRows.map((row) => row.os_string),
+          signal
+        );
+        slashRows.forEach((row, index) => {
+          if (flags[index]) {
+            applyAmbiguousOsFields(row);
+          }
+        });
       }
 
       function applyAmbiguousOsFields(row) {
@@ -1279,7 +1317,7 @@
       ) {
         const uiRows = rows.filter(
           (row) =>
-            (includeExisting || row.__sourceIndex == null) && !isAmbiguousOs(row.os_string)
+            (includeExisting || row.__sourceIndex == null) && !isAmbiguousOsRow(row)
         );
         if (!uiRows.length) {
           return { updated: 0, failed: 0 };
@@ -1404,8 +1442,16 @@
         );
       }
 
+      function isUnnormalizedRow(row) {
+        return (
+          !String(row.normalized_os_detailed_name ?? "").trim() ||
+          !String(row.normalized_os ?? "").trim()
+        );
+      }
+
       function updateSummaryCards() {
         totalRowsCard.textContent = String(allRows.length);
+        unnormalizedCountCard.textContent = String(allRows.filter(isUnnormalizedRow).length);
         shownRowsCard.textContent = String(filteredRows.length);
         eolCountCard.textContent = String(filteredRows.filter(isEolRow).length);
         eoasCountCard.textContent = String(filteredRows.filter(isEoasRow).length);
@@ -1510,7 +1556,7 @@
           ...blankRow(),
           ...values,
         };
-        if (row.os_string) {
+        if (row.os_string && !containsOsSlash(row.os_string)) {
           applyFuzzyNormalization(row, row.os_string, candidates);
         }
         return row;
@@ -1525,10 +1571,14 @@
         validateButton.disabled = active || azureUploadProcessing || currentSource !== "draft";
         downloadButton.disabled = active || azureUploadProcessing;
         downloadDeltaButton.disabled = active || azureUploadProcessing || currentSource !== "draft";
-        azureMenuButton.disabled = active || azureUploadProcessing;
-        matchSettingsButton.disabled = active || azureUploadProcessing;
-        azureUploadButton.disabled = active || azureUploadProcessing;
-        azureSettingsButton.disabled = active || azureUploadProcessing;
+        const azureAvailable =
+          currentSource === "data" && !active && !azureUploadProcessing;
+        azureMenuButton.disabled = !azureAvailable;
+        azureUploadButton.disabled = !azureAvailable;
+        azureSettingsButton.disabled = !azureAvailable;
+        if (!azureAvailable) {
+          closeAzureMenu();
+        }
         deleteDraftButton.disabled = active || azureUploadProcessing || currentSource !== "draft";
         revertButton.disabled =
           active ||
@@ -1553,10 +1603,14 @@
         validateButton.disabled = active || bulkProcessing || currentSource !== "draft";
         downloadButton.disabled = active || bulkProcessing;
         downloadDeltaButton.disabled = active || bulkProcessing || currentSource !== "draft";
-        azureMenuButton.disabled = active || bulkProcessing;
-        matchSettingsButton.disabled = active || bulkProcessing;
-        azureUploadButton.disabled = active || bulkProcessing;
-        azureSettingsButton.disabled = active || bulkProcessing;
+        const azureAvailable =
+          currentSource === "data" && !active && !bulkProcessing;
+        azureMenuButton.disabled = !azureAvailable;
+        azureUploadButton.disabled = !azureAvailable;
+        azureSettingsButton.disabled = !azureAvailable;
+        if (!azureAvailable) {
+          closeAzureMenu();
+        }
         deleteDraftButton.disabled = active || bulkProcessing || currentSource !== "draft";
         revertButton.disabled =
           active ||
@@ -2035,12 +2089,10 @@
         }
 
         const targetRows = allRows.filter(
-          (row) => String(row.os_string ?? "").trim() && !isAmbiguousOs(row.os_string)
+          (row) => String(row.os_string ?? "").trim() && !isAmbiguousOsRow(row)
         );
 
-        const ambiguousSkipped = allRows.filter((row) =>
-          isAmbiguousOs(row.os_string)
-        ).length;
+        const ambiguousSkipped = allRows.filter((row) => isAmbiguousOsRow(row)).length;
         const emptySkipped = allRows.length - targetRows.length - ambiguousSkipped;
 
         if (!targetRows.length) {
@@ -2577,8 +2629,8 @@
         }
 
         updateRowValue(rowId, header, osValue);
-        if (!isAmbiguousOs(osValue)) {
-          await applySuggestedNormalization(targetRow, osValue, allRows, { useAi: true });
+        await applySuggestedNormalization(targetRow, osValue, allRows, { useAi: true });
+        if (!isAmbiguousOsRow(targetRow)) {
           showStatus("Looking up EOL data...");
           await applyEolFromApi([targetRow]);
         }
@@ -2900,81 +2952,6 @@
         azureBlobNameInput.value = config.blob_name || "";
       }
 
-      function clampFuzzyThreshold(value) {
-        const parsed = Number(value);
-        if (Number.isNaN(parsed)) {
-          return DEFAULT_FUZZY_MATCH_THRESHOLD;
-        }
-        return Math.max(50, Math.min(100, Math.round(parsed)));
-      }
-
-      function populateMatchSettingsForm(threshold = fuzzyMatchThreshold) {
-        fuzzyThresholdInput.value = String(clampFuzzyThreshold(threshold));
-      }
-
-      async function loadAppSettings() {
-        const response = await fetch("/api/app/settings");
-        if (!response.ok) {
-          throw new Error("Unable to load matching settings.");
-        }
-
-        const payload = await response.json();
-        fuzzyMatchThreshold = clampFuzzyThreshold(payload.fuzzy_match_threshold);
-        populateMatchSettingsForm(fuzzyMatchThreshold);
-      }
-
-      async function saveAppSettings() {
-        const response = await fetch("/api/app/settings", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            fuzzy_match_threshold: clampFuzzyThreshold(fuzzyThresholdInput.value),
-          }),
-        });
-
-        if (!response.ok) {
-          let detail = "Unable to save matching settings.";
-          try {
-            const payload = await response.json();
-            if (payload?.detail) {
-              detail = Array.isArray(payload.detail)
-                ? payload.detail.map((item) => item.msg || item).join(" ")
-                : String(payload.detail);
-            }
-          } catch {
-            // Keep default message when response is not JSON.
-          }
-          throw new Error(detail);
-        }
-
-        const payload = await response.json();
-        fuzzyMatchThreshold = clampFuzzyThreshold(payload.fuzzy_match_threshold);
-        populateMatchSettingsForm(fuzzyMatchThreshold);
-        return payload;
-      }
-
-      function openMatchSettingsDialog() {
-        populateMatchSettingsForm();
-        matchSettingsDialog.showModal();
-        setTimeout(() => fuzzyThresholdInput.focus(), 0);
-      }
-
-      function closeMatchSettingsDialog() {
-        if (matchSettingsDialog.open) {
-          matchSettingsDialog.close();
-        }
-      }
-
-      async function saveMatchSettings() {
-        try {
-          await saveAppSettings();
-          closeMatchSettingsDialog();
-          showStatus("Matching settings saved.", "success");
-        } catch (error) {
-          showStatus(error.message, "error");
-        }
-      }
-
       async function loadAzureConfig() {
         const response = await fetch("/api/azure/settings");
         if (!response.ok) {
@@ -3022,7 +2999,7 @@
       }
 
       function toggleAzureMenu() {
-        if (azureMenuButton.disabled) {
+        if (azureMenuButton.disabled || currentSource !== "data") {
           return;
         }
 
@@ -3036,6 +3013,9 @@
       }
 
       async function openAzureSettingsDialog() {
+        if (currentSource !== "data") {
+          return;
+        }
         closeAzureMenu();
         try {
           populateAzureConfigForm(await loadAzureConfig());
@@ -3071,19 +3051,31 @@
       }
 
       async function handleAzureUploadClick() {
+        if (currentSource !== "data") {
+          return;
+        }
         closeAzureMenu();
 
         try {
           const config = await loadAzureConfig();
+          if (!isAzureConfigComplete(config)) {
+            const openSettings = await askConfirm({
+              eyebrow: "Azure upload",
+              title: "Configure Azure settings first",
+              message:
+                "Azure settings are not configured. Set the storage account, container, and blob path before uploading.",
+              confirmLabel: "Open settings",
+            });
+            if (openSettings) {
+              await openAzureSettingsDialog();
+            }
+            return;
+          }
+
           const validationError = validateAzureConfig(config);
           if (validationError) {
             await openAzureSettingsDialog();
-            showStatus(
-              isAzureConfigComplete(config)
-                ? validationError
-                : "Configure Azure settings before uploading.",
-              isAzureConfigComplete(config) ? "error" : "info"
-            );
+            showStatus(validationError, "error");
             return;
           }
 
@@ -3355,10 +3347,6 @@
       azureSaveSettingsButton.addEventListener("click", saveAzureSettings);
       azureCancelButton.addEventListener("click", closeAzureSettingsDialog);
       azureCloseButton.addEventListener("click", closeAzureSettingsDialog);
-      matchSettingsButton.addEventListener("click", openMatchSettingsDialog);
-      matchSaveSettingsButton.addEventListener("click", saveMatchSettings);
-      matchCancelButton.addEventListener("click", closeMatchSettingsDialog);
-      matchCloseButton.addEventListener("click", closeMatchSettingsDialog);
       azureProgressCancel.addEventListener("click", () => {
         if (azureAbortController) {
           azureAbortController.abort();
@@ -3485,9 +3473,6 @@
       });
 
       updateSourceUi();
-      loadAppSettings().catch((error) => {
-        showStatus(error.message, "error");
-      });
       loadRows("data");
     </script>
   </body>

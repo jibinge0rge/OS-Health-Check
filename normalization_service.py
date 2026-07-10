@@ -120,6 +120,92 @@ def _pair_from_index(index: int | None, allowed_pairs: list[dict[str, str]]) -> 
     }
 
 
+def detect_ambiguous_os_batch(os_strings: list[str]) -> list[bool]:
+    """Return True when an OS string lists multiple distinct products separated by '/'."""
+    cleaned_strings = [_clean(value) for value in os_strings]
+    results = [False for _ in cleaned_strings]
+    indexed_items = [
+        {"item_index": index, "os_string": value}
+        for index, value in enumerate(cleaned_strings)
+        if value and "/" in value
+    ]
+    if not indexed_items:
+        return results
+
+    api_key = _clean(os.environ.get("OPENAI_API_KEY"))
+    if not api_key:
+        return results
+
+    model = _clean(os.environ.get("OPENAI_MODEL")) or DEFAULT_MODEL
+    client = OpenAI(api_key=api_key)
+
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Decide whether each operating system string lists multiple distinct "
+                        "operating systems or products separated by '/'. "
+                        "Return ambiguous=true only when '/' separates different OS products "
+                        "or major OS families that should not share one lifecycle record. "
+                        "Return ambiguous=false when '/' is part of a single product name, "
+                        "version path, model range, protocol list, or similar. "
+                        "Examples of ambiguous=true: "
+                        "'AIX 5.x / AIX 6.x / Sidewinder G2', "
+                        "'Cisco IOS 12.1 / Cisco IOS 12.2', "
+                        "'EulerOS / Ubuntu / Fedora'. "
+                        "Examples of ambiguous=false: "
+                        "'Debian GNU/Linux 10', "
+                        "'FreeBSD/12.2-STABLE', "
+                        "'Canon LBP245/246/248 /P', "
+                        "'EPSON 11a/b/g/n & 10/100 Print Server', "
+                        "'FUJIFILM Apeos C325/328 dw'. "
+                        'Respond with JSON: {"results":[{"item_index":0,"ambiguous":true}]}'
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps({"items": indexed_items}, ensure_ascii=True),
+                },
+            ],
+        )
+    except Exception:
+        return results
+
+    content = _clean(response.choices[0].message.content)
+    if not content:
+        return results
+
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        return results
+
+    payload_results = payload.get("results")
+    if not isinstance(payload_results, list):
+        return results
+
+    for item in payload_results:
+        if not isinstance(item, dict):
+            continue
+
+        item_index = _parse_index(item.get("item_index"))
+        if item_index is None or item_index < 0 or item_index >= len(cleaned_strings):
+            continue
+
+        ambiguous = item.get("ambiguous")
+        if isinstance(ambiguous, bool):
+            results[item_index] = ambiguous
+        elif isinstance(ambiguous, str):
+            results[item_index] = ambiguous.strip().lower() in {"true", "1", "yes"}
+
+    return results
+
+
 def suggest_normalization_batch(
     os_strings: list[str],
     allowed_pairs: list[dict[str, str]],
