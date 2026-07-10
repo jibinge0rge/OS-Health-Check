@@ -1,0 +1,1592 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OS Health Check</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">OS Health Check</p>
+          <h1>Lookup Editor</h1>
+          <p class="subtitle">
+            Edit the OS normalization and lifecycle lookup in one place.
+          </p>
+        </div>
+        <div class="hero-actions">
+          <button id="revert-button" class="ghost-button" disabled>Revert changes</button>
+          <button id="bulk-upload-button" class="secondary-button">Bulk OS Addition</button>
+          <button id="add-row-button" class="secondary-button">Add OS</button>
+          <button id="save-button" class="primary-button">Save Draft</button>
+          <button id="validate-button" class="ghost-button" disabled>Validate changes</button>
+          <button id="delete-draft-button" class="ghost-button" disabled>Delete Draft</button>
+        </div>
+      </section>
+
+      <section class="toolbar">
+        <label class="search-field">
+          <span>Search</span>
+          <input
+            id="search-input"
+            type="search"
+            placeholder="Filter by any column"
+          />
+        </label>
+
+        <div class="toolbar-right">
+          <div class="source-controls">
+            <label class="source-field">
+              <span class="source-inline-label">Source</span>
+              <select id="source-select">
+                <option value="data" selected>Data</option>
+                <option value="draft">Draft</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="stats">
+            <span id="source-indicator" class="pill">Data</span>
+            <span id="row-count">0 rows</span>
+            <span id="dirty-indicator" class="pill">Saved</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="summary-grid">
+        <article class="summary-card">
+          <p class="summary-label">Total Operating Systems</p>
+          <p id="total-rows-card" class="summary-value">0</p>
+          <p class="summary-note">Current lookup entries</p>
+        </article>
+        <article class="summary-card danger">
+          <p class="summary-label">EOL</p>
+          <p id="eol-count-card" class="summary-value">0</p>
+          <p class="summary-note">By status or past EOL date</p>
+        </article>
+        <article class="summary-card warning">
+          <p class="summary-label">EOAS</p>
+          <p id="eoas-count-card" class="summary-value">0</p>
+          <p class="summary-note">By status or past EOAS date</p>
+        </article>
+        <article class="summary-card info">
+          <p class="summary-label">Shown Operating Systems</p>
+          <p id="shown-rows-card" class="summary-value">0</p>
+          <p class="summary-note">After current filter</p>
+        </article>
+      </section>
+
+      <section class="table-card">
+        <div id="status-banner" class="status-banner hidden"></div>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr id="header-row">
+                {% for header in headers %}
+                <th data-header="{{ header }}">{{ header }}</th>
+                {% endfor %}
+                <th class="actions-column">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="table-body"></tbody>
+          </table>
+        </div>
+        <div class="pagination-bar">
+          <div class="pagination-left">
+            <label class="page-size-field">
+              <span>Show</span>
+              <select id="page-size-select">
+                <option value="10">10</option>
+                <option value="20" selected>20</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+              <span>per page</span>
+            </label>
+          </div>
+          <div class="pagination-right">
+            <span id="page-status" class="page-status">Page 1 of 1</span>
+            <button id="prev-page-button" class="ghost-button" type="button">Previous</button>
+            <button id="next-page-button" class="ghost-button" type="button">Next</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="bulk-upload-dialog" class="modal">
+      <form method="dialog" class="modal-card">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">Bulk OS Addition</p>
+            <h2>Add Multiple Operating Systems</h2>
+          </div>
+          <button id="bulk-close-button" class="ghost-button" value="cancel">Close</button>
+        </div>
+
+        <label class="bulk-upload-field">
+          <span>One operating system per line</span>
+          <textarea
+            id="bulk-upload-textarea"
+            placeholder="Windows Server 2022&#10;Ubuntu 24.04&#10;RHEL 9.4"
+          ></textarea>
+        </label>
+
+        <div class="modal-actions">
+          <button id="bulk-cancel-button" class="ghost-button" value="cancel">Cancel</button>
+          <button id="bulk-apply-button" class="primary-button" type="button">Add entries</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="bulk-progress-dialog" class="modal bulk-progress-dialog">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">Bulk OS Addition</p>
+            <h2>Processing Operating Systems</h2>
+          </div>
+        </div>
+
+        <p id="bulk-progress-text" class="bulk-progress-text">0 of 0 processed</p>
+        <div class="progress-track" aria-hidden="true">
+          <div id="bulk-progress-bar" class="progress-fill"></div>
+        </div>
+        <p id="bulk-progress-stage" class="bulk-progress-stage">Preparing...</p>
+
+        <div class="modal-actions">
+          <button id="bulk-progress-cancel" class="ghost-button" type="button">Cancel</button>
+        </div>
+      </div>
+    </dialog>
+
+    <script>
+      const headers = {{ headers | tojson }};
+      const headerLabels = {
+        os_string: "OS",
+        normalized_os_detailed_name: "Normalized OS Detailed Name",
+        normalized_os: "Normalized OS",
+        eol_date: "EOL Date",
+        eol_status: "EOL Status",
+        eoas_date: "EOAS Date",
+        eoas_status: "EOAS Status",
+      };
+      const dateHeaders = new Set(["eol_date", "eoas_date"]);
+      const booleanStatusHeaders = new Set(["eol_status", "eoas_status"]);
+      const booleanStatusOptions = [
+        { value: "", label: "", hidden: true },
+        { value: "true", label: "True" },
+        { value: "false", label: "False" },
+      ];
+      const BULK_BATCH_SIZE = 8;
+      let allRows = [];
+      let filteredRows = [];
+      let originalRows = [];
+      let dataBaselineRows = [];
+      let isDirty = false;
+      let pageSize = 20;
+      let currentPage = 1;
+      let currentSource = "data";
+      let statusTimer = null;
+      let bulkProcessing = false;
+      let bulkAbortController = null;
+
+      const tableBody = document.getElementById("table-body");
+      const rowCount = document.getElementById("row-count");
+      const dirtyIndicator = document.getElementById("dirty-indicator");
+      const sourceIndicator = document.getElementById("source-indicator");
+      const searchInput = document.getElementById("search-input");
+      const saveButton = document.getElementById("save-button");
+      const validateButton = document.getElementById("validate-button");
+      const deleteDraftButton = document.getElementById("delete-draft-button");
+      const addRowButton = document.getElementById("add-row-button");
+      const bulkUploadButton = document.getElementById("bulk-upload-button");
+      const revertButton = document.getElementById("revert-button");
+      const statusBanner = document.getElementById("status-banner");
+      const totalRowsCard = document.getElementById("total-rows-card");
+      const eolCountCard = document.getElementById("eol-count-card");
+      const eoasCountCard = document.getElementById("eoas-count-card");
+      const shownRowsCard = document.getElementById("shown-rows-card");
+      const bulkUploadDialog = document.getElementById("bulk-upload-dialog");
+      const bulkUploadTextarea = document.getElementById("bulk-upload-textarea");
+      const bulkApplyButton = document.getElementById("bulk-apply-button");
+      const bulkCancelButton = document.getElementById("bulk-cancel-button");
+      const bulkCloseButton = document.getElementById("bulk-close-button");
+      const bulkProgressDialog = document.getElementById("bulk-progress-dialog");
+      const bulkProgressText = document.getElementById("bulk-progress-text");
+      const bulkProgressBar = document.getElementById("bulk-progress-bar");
+      const bulkProgressStage = document.getElementById("bulk-progress-stage");
+      const bulkProgressCancel = document.getElementById("bulk-progress-cancel");
+      const sourceSelect = document.getElementById("source-select");
+      const pageSizeSelect = document.getElementById("page-size-select");
+      const pageStatus = document.getElementById("page-status");
+      const prevPageButton = document.getElementById("prev-page-button");
+      const nextPageButton = document.getElementById("next-page-button");
+
+      function showStatus(message, tone = "info") {
+        if (statusTimer) {
+          window.clearTimeout(statusTimer);
+          statusTimer = null;
+        }
+        statusBanner.textContent = message;
+        statusBanner.className = `status-banner ${tone}`;
+        const dismissAfterMs = tone === "error" ? 5000 : 2500;
+        statusTimer = window.setTimeout(() => {
+          clearStatus();
+        }, dismissAfterMs);
+      }
+
+      function clearStatus() {
+        if (statusTimer) {
+          window.clearTimeout(statusTimer);
+          statusTimer = null;
+        }
+        statusBanner.textContent = "";
+        statusBanner.className = "status-banner hidden";
+      }
+
+      function setDirty(nextDirty) {
+        isDirty = nextDirty;
+        dirtyIndicator.textContent = nextDirty ? "Unsaved" : "Saved";
+        dirtyIndicator.classList.toggle("dirty", nextDirty);
+        revertButton.disabled = !nextDirty && !(currentSource === "draft" && hasAnyRevertableRows());
+        updateSourceUi();
+      }
+
+      function sourceLabel(source) {
+        return source === "draft" ? "Draft" : "Data";
+      }
+
+      function updateSourceUi() {
+        sourceSelect.value = currentSource;
+        sourceIndicator.textContent = sourceLabel(currentSource);
+        sourceIndicator.classList.toggle("draft-pill", currentSource === "draft");
+        validateButton.disabled = bulkProcessing || currentSource !== "draft";
+        deleteDraftButton.disabled = bulkProcessing || currentSource !== "draft";
+        revertButton.disabled = bulkProcessing || (!isDirty && !(currentSource === "draft" && hasAnyRevertableRows()));
+      }
+
+      function promoteToDraftSource() {
+        if (currentSource === "draft") {
+          return;
+        }
+
+        currentSource = "draft";
+        updateSourceUi();
+      }
+
+      function blankRow() {
+        return Object.fromEntries(headers.map((header) => [header, ""]));
+      }
+
+      function cloneRows(rows) {
+        return rows.map((row) => ({ ...row }));
+      }
+
+      function dataBaselineKey(value) {
+        return String(value ?? "").trim().toLowerCase();
+      }
+
+      function findDataBaselineRow(row) {
+        if (row.__dataSourceIndex != null && dataBaselineRows[row.__dataSourceIndex]) {
+          return dataBaselineRows[row.__dataSourceIndex];
+        }
+
+        const osKey = dataBaselineKey(row.os_string);
+        if (!osKey) {
+          return null;
+        }
+
+        return (
+          dataBaselineRows.find((candidate) => dataBaselineKey(candidate.os_string) === osKey) ?? null
+        );
+      }
+
+      function epochToDateInput(value) {
+        const normalized = String(value ?? "").trim();
+        if (!/^\d{10}$/.test(normalized)) {
+          return "";
+        }
+
+        const date = new Date(Number(normalized) * 1000);
+        if (Number.isNaN(date.getTime())) {
+          return "";
+        }
+
+        const year = date.getUTCFullYear();
+        const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+        const day = String(date.getUTCDate()).padStart(2, "0");
+        return `${year}-${month}-${day}`;
+      }
+
+      function dateInputToEpoch(value) {
+        if (!value) {
+          return "";
+        }
+
+        const normalized = String(value).trim();
+        if (!normalized) {
+          return "";
+        }
+
+        const parsed = Date.parse(`${normalized}T00:00:00Z`);
+        if (Number.isNaN(parsed)) {
+          return "";
+        }
+
+        return String(Math.floor(parsed / 1000));
+      }
+
+      function toDisplayValue(header, value) {
+        if (!dateHeaders.has(header)) {
+          return value ?? "";
+        }
+        return epochToDateInput(value);
+      }
+
+      function toStoredValue(header, value) {
+        if (booleanStatusHeaders.has(header)) {
+          const normalized = String(value ?? "").trim().toLowerCase();
+          return ["true", "false"].includes(normalized) ? normalized : "";
+        }
+        if (!dateHeaders.has(header)) {
+          return value;
+        }
+        return dateInputToEpoch(value);
+      }
+
+      function normalizeForMatch(value) {
+        return String(value ?? "")
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, " ")
+          .trim()
+          .replace(/\s+/g, " ");
+      }
+
+      function tokenize(value) {
+        const normalized = normalizeForMatch(value);
+        return normalized ? normalized.split(" ") : [];
+      }
+
+      function overlapScore(leftValue, rightValue) {
+        const leftTokens = new Set(tokenize(leftValue));
+        const rightTokens = new Set(tokenize(rightValue));
+        if (!leftTokens.size || !rightTokens.size) {
+          return 0;
+        }
+
+        let matches = 0;
+        leftTokens.forEach((token) => {
+          if (rightTokens.has(token)) {
+            matches += 1;
+          }
+        });
+
+        return matches / Math.max(leftTokens.size, rightTokens.size);
+      }
+
+      function scoreCandidate(osValue, candidate) {
+        const query = normalizeForMatch(osValue);
+        const osKey = normalizeForMatch(candidate.os_string);
+        const detailedKey = normalizeForMatch(candidate.normalized_os_detailed_name);
+        const normalizedKey = normalizeForMatch(candidate.normalized_os);
+
+        if (!query) {
+          return 0;
+        }
+
+        let score = 0;
+        if (query === osKey) score += 220;
+        if (query === detailedKey) score += 180;
+        if (query === normalizedKey) score += 180;
+        if (osKey.includes(query) || query.includes(osKey)) score += 80;
+        if (detailedKey.includes(query) || query.includes(detailedKey)) score += 60;
+        if (normalizedKey.includes(query) || query.includes(normalizedKey)) score += 60;
+
+        score += overlapScore(osValue, candidate.os_string) * 100;
+        score += overlapScore(osValue, candidate.normalized_os_detailed_name) * 70;
+        score += overlapScore(osValue, candidate.normalized_os) * 70;
+
+        return score;
+      }
+
+      function inferNormalizationValues(osValue, excludeRowId = null, candidates = allRows) {
+        const fallbackValue = String(osValue ?? "").trim();
+        if (!fallbackValue) {
+          return {
+            normalized_os_detailed_name: "",
+            normalized_os: "",
+            detailedAuto: true,
+            normalizedAuto: true,
+          };
+        }
+
+        let bestCandidate = null;
+        let bestScore = 0;
+        candidates.forEach((candidate) => {
+          if (candidate.__id === excludeRowId) {
+            return;
+          }
+          if (!candidate.normalized_os_detailed_name && !candidate.normalized_os) {
+            return;
+          }
+
+          const score = scoreCandidate(fallbackValue, candidate);
+          if (score > bestScore) {
+            bestScore = score;
+            bestCandidate = candidate;
+          }
+        });
+
+        if (!bestCandidate || bestScore < 85) {
+          return {
+            normalized_os_detailed_name: fallbackValue,
+            normalized_os: fallbackValue,
+            detailedAuto: true,
+            normalizedAuto: true,
+          };
+        }
+
+        return {
+          normalized_os_detailed_name:
+            bestCandidate.normalized_os_detailed_name || fallbackValue,
+          normalized_os: bestCandidate.normalized_os || fallbackValue,
+          detailedAuto: true,
+          normalizedAuto: true,
+        };
+      }
+
+      function isAmbiguousOs(osValue) {
+        return String(osValue ?? "").includes("/");
+      }
+
+      function applyAmbiguousOsFields(row) {
+        if (row.__normalizedDetailedAuto || !String(row.normalized_os_detailed_name ?? "").trim()) {
+          row.normalized_os_detailed_name = "Ambiguous OS";
+          row.__normalizedDetailedAuto = true;
+        }
+        if (row.__normalizedOsAuto || !String(row.normalized_os ?? "").trim()) {
+          row.normalized_os = "Ambiguous OS";
+          row.__normalizedOsAuto = true;
+        }
+        if (row.__eolDateAuto || !String(row.eol_date ?? "").trim()) {
+          row.eol_date = "";
+          row.__eolDateAuto = true;
+        }
+        if (row.__eolStatusAuto || !String(row.eol_status ?? "").trim()) {
+          row.eol_status = "";
+          row.__eolStatusAuto = true;
+        }
+        if (row.__eoasDateAuto || !String(row.eoas_date ?? "").trim()) {
+          row.eoas_date = "";
+          row.__eoasDateAuto = true;
+        }
+        if (row.__eoasStatusAuto || !String(row.eoas_status ?? "").trim()) {
+          row.eoas_status = "";
+          row.__eoasStatusAuto = true;
+        }
+      }
+
+      function applySuggestedNormalization(row, osValue, candidates = allRows) {
+        if (isAmbiguousOs(osValue)) {
+          applyAmbiguousOsFields(row);
+          return;
+        }
+
+        const suggestion = inferNormalizationValues(osValue, row.__id, candidates);
+
+        if (row.__normalizedDetailedAuto || !String(row.normalized_os_detailed_name ?? "").trim()) {
+          row.normalized_os_detailed_name = suggestion.normalized_os_detailed_name;
+          row.__normalizedDetailedAuto = suggestion.detailedAuto;
+        }
+
+        if (row.__normalizedOsAuto || !String(row.normalized_os ?? "").trim()) {
+          row.normalized_os = suggestion.normalized_os;
+          row.__normalizedOsAuto = suggestion.normalizedAuto;
+        }
+      }
+
+      function isEmptyEolPayload(data) {
+        return !(
+          String(data?.eol_date ?? "").trim() ||
+          String(data?.eol_status ?? "").trim() ||
+          String(data?.eoas_date ?? "").trim() ||
+          String(data?.eoas_status ?? "").trim()
+        );
+      }
+
+      function rowHasEolData(row) {
+        return !isEmptyEolPayload(row);
+      }
+
+      function normalizeLookupKey(value) {
+        return String(value ?? "").trim().toLowerCase();
+      }
+
+      function findExistingEolValues(
+        detailedName,
+        normalizedOs,
+        excludeRowId = null,
+        candidates = allRows
+      ) {
+        const detailedKey = normalizeLookupKey(detailedName);
+        const normalizedKey = normalizeLookupKey(normalizedOs);
+
+        if (!detailedKey || !normalizedKey) {
+          return null;
+        }
+        if (detailedKey === "ambiguous os" || normalizedKey === "ambiguous os") {
+          return null;
+        }
+
+        return (
+          candidates.find((candidate) => {
+            if (candidate.__id === excludeRowId) {
+              return false;
+            }
+            if (!rowHasEolData(candidate)) {
+              return false;
+            }
+
+            return (
+              normalizeLookupKey(candidate.normalized_os_detailed_name) === detailedKey &&
+              normalizeLookupKey(candidate.normalized_os) === normalizedKey
+            );
+          }) ?? null
+        );
+      }
+
+      function applyExistingEolFallback(row, candidates = allRows) {
+        const existing = findExistingEolValues(
+          row.normalized_os_detailed_name,
+          row.normalized_os,
+          row.__id,
+          candidates
+        );
+        if (!existing) {
+          return false;
+        }
+
+        applyEolResultToRow(row, {
+          eol_date: existing.eol_date ?? "",
+          eol_status: existing.eol_status ?? "",
+          eoas_date: existing.eoas_date ?? "",
+          eoas_status: existing.eoas_status ?? "",
+        });
+        return true;
+      }
+
+      function applyEolResultToRow(row, data) {
+        if (row.__eolDateAuto || !String(row.eol_date ?? "").trim()) {
+          row.eol_date = data.eol_date || "";
+          row.__eolDateAuto = true;
+        }
+        if (row.__eolStatusAuto || !String(row.eol_status ?? "").trim()) {
+          row.eol_status = data.eol_status || "";
+          row.__eolStatusAuto = true;
+        }
+        if (row.__eoasDateAuto || !String(row.eoas_date ?? "").trim()) {
+          row.eoas_date = data.eoas_date || "";
+          row.__eoasDateAuto = true;
+        }
+        if (row.__eoasStatusAuto || !String(row.eoas_status ?? "").trim()) {
+          row.eoas_status = data.eoas_status || "";
+          row.__eoasStatusAuto = true;
+        }
+      }
+
+      async function applyEolFromApi(rows, { signal, fallbackCandidates } = {}) {
+        const uiRows = rows.filter(
+          (row) => row.__sourceIndex == null && !isAmbiguousOs(row.os_string)
+        );
+        if (!uiRows.length) {
+          return;
+        }
+
+        const items = uiRows.map((row) => ({
+          os_string: row.os_string ?? "",
+          normalized_os_detailed_name: row.normalized_os_detailed_name ?? "",
+          normalized_os: row.normalized_os ?? "",
+        }));
+
+        try {
+          const response = await fetch("/api/eol-lookup", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ items }),
+            signal,
+          });
+
+          if (!response.ok) {
+            throw new Error("Unable to look up EOL data.");
+          }
+
+          const payload = await response.json();
+          uiRows.forEach((row, index) => {
+            const apiResult = payload.results[index] ?? {};
+            applyEolResultToRow(row, apiResult);
+            if (isEmptyEolPayload(apiResult)) {
+              applyExistingEolFallback(row, fallbackCandidates ?? uiRows.concat(allRows));
+            }
+          });
+        } catch (error) {
+          if (signal?.aborted) {
+            throw error;
+          }
+          showStatus(error.message, "error");
+          uiRows.forEach((row) =>
+            applyExistingEolFallback(row, fallbackCandidates ?? uiRows.concat(allRows))
+          );
+        }
+      }
+
+      async function yieldToUi() {
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      }
+
+      function normalizeStatus(value) {
+        return String(value ?? "").trim().toLowerCase();
+      }
+
+      function isPastOrTodayEpoch(value) {
+        const normalized = String(value ?? "").trim();
+        if (!/^\d{10}$/.test(normalized)) {
+          return false;
+        }
+
+        const todayEpoch = Math.floor(Date.now() / 1000);
+        return Number(normalized) <= todayEpoch;
+      }
+
+      function isEolRow(row) {
+        const status = normalizeStatus(row.eol_status);
+        return (
+          status === "true" ||
+          isPastOrTodayEpoch(row.eol_date)
+        );
+      }
+
+      function isEoasRow(row) {
+        const status = normalizeStatus(row.eoas_status);
+        return (
+          status === "true" ||
+          isPastOrTodayEpoch(row.eoas_date)
+        );
+      }
+
+      function updateSummaryCards() {
+        totalRowsCard.textContent = String(allRows.length);
+        shownRowsCard.textContent = String(filteredRows.length);
+        eolCountCard.textContent = String(allRows.filter(isEolRow).length);
+        eoasCountCard.textContent = String(allRows.filter(isEoasRow).length);
+      }
+
+      function updateRowValue(rowId, header, nextValue) {
+        const targetRow = allRows.find((row) => row.__id === rowId);
+        if (!targetRow) {
+          return false;
+        }
+
+        if ((targetRow[header] ?? "") !== nextValue) {
+          promoteToDraftSource();
+        }
+        targetRow[header] = nextValue;
+        if (header === "os_string") {
+          applySuggestedNormalization(targetRow, nextValue);
+        }
+        syncDirtyState();
+        updateRowActionState(rowId);
+        return true;
+      }
+
+      function rowsEqual(leftRow, rightRow) {
+        return headers.every((header) => (leftRow?.[header] ?? "") === (rightRow?.[header] ?? ""));
+      }
+
+      function rowHasChanges(row) {
+        if (row.__sourceIndex == null) {
+          return headers.some((header) => String(row[header] ?? "").trim() !== "");
+        }
+
+        return !rowsEqual(row, originalRows[row.__sourceIndex]);
+      }
+
+      function rowDiffersFromData(row) {
+        const dataBaselineRow = findDataBaselineRow(row);
+        if (!dataBaselineRow) {
+          return headers.some((header) => String(row[header] ?? "").trim() !== "");
+        }
+
+        return !rowsEqual(row, dataBaselineRow);
+      }
+
+      function rowCanRevert(row) {
+        if (currentSource === "draft") {
+          return rowDiffersFromData(row);
+        }
+
+        return rowHasChanges(row);
+      }
+
+      function getRowIndicatorType(row) {
+        const dataBaselineRow = findDataBaselineRow(row);
+        if (!dataBaselineRow) {
+          return "new";
+        }
+
+        return rowDiffersFromData(row) ? "updated" : "";
+      }
+
+      function hasAnyChanges() {
+        if (allRows.length !== originalRows.length) {
+          return true;
+        }
+
+        return allRows.some((row) => rowHasChanges(row));
+      }
+
+      function hasAnyRevertableRows() {
+        return allRows.some((row) => rowCanRevert(row));
+      }
+
+      function syncDirtyState() {
+        setDirty(hasAnyChanges());
+      }
+
+      function updateRowActionState(rowId) {
+        const row = allRows.find((item) => item.__id === rowId);
+        if (!row) {
+          return;
+        }
+
+        const revertRowButton = document.querySelector(
+          `.revert-row-button[data-row-id="${rowId}"]`
+        );
+        if (revertRowButton) {
+          revertRowButton.disabled = !rowCanRevert(row);
+        }
+      }
+
+      function createNewRow(values = {}, candidates = allRows) {
+        const row = {
+          __id: crypto.randomUUID?.() ?? `row-${Date.now()}-${Math.random()}`,
+          __sourceIndex: null,
+          __normalizedDetailedAuto: true,
+          __normalizedOsAuto: true,
+          __eolDateAuto: true,
+          __eolStatusAuto: true,
+          __eoasDateAuto: true,
+          __eoasStatusAuto: true,
+          ...blankRow(),
+          ...values,
+        };
+        if (row.os_string) {
+          applySuggestedNormalization(row, row.os_string, candidates);
+        }
+        return row;
+      }
+
+      function setBulkProcessingActive(active) {
+        bulkProcessing = active;
+        addRowButton.disabled = active;
+        bulkUploadButton.disabled = active;
+        saveButton.disabled = active;
+        validateButton.disabled = active || currentSource !== "draft";
+        deleteDraftButton.disabled = active || currentSource !== "draft";
+        revertButton.disabled =
+          active || (!isDirty && !(currentSource === "draft" && hasAnyRevertableRows()));
+        searchInput.disabled = active;
+        sourceSelect.disabled = active;
+        bulkApplyButton.disabled = active;
+        bulkCancelButton.disabled = active;
+        bulkCloseButton.disabled = active;
+      }
+
+      function openBulkProgress(total) {
+        updateBulkProgress(0, total, "Preparing operating systems...");
+        bulkProgressDialog.showModal();
+      }
+
+      function closeBulkProgress() {
+        if (bulkProgressDialog.open) {
+          bulkProgressDialog.close();
+        }
+      }
+
+      function updateBulkProgress(processed, total, stageText) {
+        const safeTotal = Math.max(total, 1);
+        const percent = Math.min(100, Math.round((processed / safeTotal) * 100));
+        bulkProgressText.textContent = `${processed} of ${total} processed`;
+        bulkProgressBar.style.width = `${percent}%`;
+        bulkProgressStage.textContent = stageText || "Processing...";
+      }
+
+      function getNormalizationCandidates() {
+        return allRows.filter(
+          (row) => row.normalized_os_detailed_name || row.normalized_os
+        );
+      }
+
+      function normalizeOsKey(value) {
+        return String(value ?? "").trim().toLowerCase();
+      }
+
+      function existingOsKeys(excludeRowId = null) {
+        const keys = new Set();
+        allRows.forEach((row) => {
+          if (row.__id === excludeRowId) {
+            return;
+          }
+          const key = normalizeOsKey(row.os_string);
+          if (key) {
+            keys.add(key);
+          }
+        });
+        return keys;
+      }
+
+      function isDuplicateOs(osValue, excludeRowId = null) {
+        const key = normalizeOsKey(osValue);
+        if (!key) {
+          return false;
+        }
+        return existingOsKeys(excludeRowId).has(key);
+      }
+
+      function formatAddResultMessage(added, existed) {
+        if (added > 0 && existed > 0) {
+          return `Added ${added} operating systems. ${existed} already existed.`;
+        }
+        if (added > 0) {
+          return `Added ${added} operating systems.`;
+        }
+        if (existed > 0) {
+          return `${existed} operating systems already existed.`;
+        }
+        return "No operating systems were added.";
+      }
+
+      function openBulkUploadDialog() {
+        bulkUploadTextarea.value = "";
+        bulkUploadDialog.showModal();
+        setTimeout(() => bulkUploadTextarea.focus(), 0);
+      }
+
+      function closeBulkUploadDialog() {
+        bulkUploadDialog.close();
+      }
+
+      async function applyBulkUpload() {
+        if (bulkProcessing) {
+          return;
+        }
+
+        const values = bulkUploadTextarea.value
+          .split(/\r?\n/)
+          .map((value) => value.trim())
+          .filter(Boolean);
+
+        if (!values.length) {
+          showStatus("Paste at least one operating system value to bulk upload.", "info");
+          return;
+        }
+
+        const existing = existingOsKeys();
+        const seenInBatch = new Set();
+        const toAdd = [];
+        let existedCount = 0;
+
+        values.forEach((value) => {
+          const key = normalizeOsKey(value);
+          if (existing.has(key) || seenInBatch.has(key)) {
+            existedCount += 1;
+            return;
+          }
+          seenInBatch.add(key);
+          toAdd.push(value);
+        });
+
+        if (!toAdd.length) {
+          closeBulkUploadDialog();
+          showStatus(formatAddResultMessage(0, existedCount), "info");
+          return;
+        }
+
+        promoteToDraftSource();
+        closeBulkUploadDialog();
+        bulkAbortController = new AbortController();
+        const { signal } = bulkAbortController;
+        const normalizationCandidates = getNormalizationCandidates();
+        const addedRows = [];
+        let processed = 0;
+        let cancelled = false;
+
+        setBulkProcessingActive(true);
+        openBulkProgress(toAdd.length);
+
+        try {
+          for (let start = 0; start < toAdd.length; start += BULK_BATCH_SIZE) {
+            if (signal.aborted) {
+              cancelled = true;
+              break;
+            }
+
+            const batchValues = toAdd.slice(start, start + BULK_BATCH_SIZE);
+            updateBulkProgress(
+              processed,
+              toAdd.length,
+              `Normalizing ${processed + 1}-${processed + batchValues.length} of ${toAdd.length}...`
+            );
+            await yieldToUi();
+
+            const batchRows = [];
+            batchValues.forEach((osValue) => {
+              const row = createNewRow(
+                { os_string: osValue },
+                normalizationCandidates.concat(batchRows)
+              );
+              batchRows.push(row);
+            });
+
+            updateBulkProgress(
+              processed,
+              toAdd.length,
+              `Looking up EOL data for ${processed + 1}-${processed + batchValues.length} of ${toAdd.length}...`
+            );
+
+            await applyEolFromApi(batchRows, {
+              signal,
+              fallbackCandidates: normalizationCandidates.concat(batchRows),
+            });
+            allRows = [...batchRows, ...allRows];
+            addedRows.push(...batchRows);
+            normalizationCandidates.push(...batchRows);
+            processed += batchValues.length;
+
+            updateBulkProgress(
+              processed,
+              toAdd.length,
+              processed === toAdd.length
+                ? "Finalizing..."
+                : `Processed ${processed} of ${toAdd.length} operating systems`
+            );
+            totalRowsCard.textContent = String(allRows.length);
+            syncDirtyState();
+            await yieldToUi();
+          }
+
+          applyFilter();
+
+          if (cancelled) {
+            showStatus(
+              addedRows.length
+                ? `Bulk upload cancelled after adding ${addedRows.length} operating systems.`
+                : "Bulk upload cancelled.",
+              "info"
+            );
+          } else {
+            showStatus(
+              formatAddResultMessage(addedRows.length, existedCount),
+              existedCount > 0 ? "info" : "success"
+            );
+          }
+        } catch (error) {
+          if (addedRows.length) {
+            applyFilter();
+          }
+          if (signal.aborted) {
+            showStatus(
+              addedRows.length
+                ? `Bulk upload cancelled after adding ${addedRows.length} operating systems.`
+                : "Bulk upload cancelled.",
+              "info"
+            );
+          } else {
+            showStatus(error.message, "error");
+          }
+        } finally {
+          bulkAbortController = null;
+          setBulkProcessingActive(false);
+          closeBulkProgress();
+        }
+      }
+
+      function totalPages() {
+        return Math.max(1, Math.ceil(filteredRows.length / pageSize));
+      }
+
+      function paginatedRows() {
+        const start = (currentPage - 1) * pageSize;
+        return filteredRows.slice(start, start + pageSize);
+      }
+
+      function updatePaginationControls() {
+        const total = totalPages();
+        currentPage = Math.min(currentPage, total);
+        currentPage = Math.max(currentPage, 1);
+        pageStatus.textContent = `Page ${currentPage} of ${total}`;
+        prevPageButton.disabled = currentPage <= 1;
+        nextPageButton.disabled = currentPage >= total;
+      }
+
+      function applyFilter() {
+        const query = searchInput.value.trim().toLowerCase();
+        filteredRows = !query
+          ? allRows
+          : allRows.filter((row) =>
+              headers.some((header) => {
+                const rawValue = String(row[header] ?? "").toLowerCase();
+                const displayValue = String(toDisplayValue(header, row[header])).toLowerCase();
+                return rawValue.includes(query) || displayValue.includes(query);
+              })
+            );
+        currentPage = 1;
+        renderTable();
+      }
+
+      function updateCount() {
+        const start = filteredRows.length ? (currentPage - 1) * pageSize + 1 : 0;
+        const end = Math.min(currentPage * pageSize, filteredRows.length);
+        rowCount.textContent = `${start}-${end} shown / ${filteredRows.length} filtered / ${allRows.length} total`;
+        updateSummaryCards();
+        updatePaginationControls();
+      }
+
+      function renderTable() {
+        tableBody.innerHTML = "";
+
+        paginatedRows().forEach((row) => {
+          const tr = document.createElement("tr");
+
+          headers.forEach((header) => {
+            const td = document.createElement("td");
+            td.className = `cell-${header}`;
+            if (dateHeaders.has(header)) {
+              const wrapper = document.createElement("div");
+              wrapper.className = "date-input-wrapper";
+
+              const textInput = document.createElement("input");
+              textInput.type = "text";
+              textInput.value = toDisplayValue(header, row[header]);
+              textInput.placeholder = "";
+              textInput.dataset.rowId = row.__id;
+              textInput.dataset.header = header;
+              textInput.autocomplete = "off";
+              textInput.addEventListener("change", handleCellEdit);
+
+              const pickerButton = document.createElement("button");
+              pickerButton.type = "button";
+              pickerButton.className = "date-picker-button";
+              pickerButton.textContent = "Date";
+              pickerButton.title = "Open date picker";
+
+              const dateInput = document.createElement("input");
+              dateInput.type = "date";
+              dateInput.className = "date-picker-native";
+              dateInput.value = toDisplayValue(header, row[header]);
+              dateInput.tabIndex = -1;
+
+              pickerButton.addEventListener("click", () => {
+                if (typeof dateInput.showPicker === "function") {
+                  dateInput.showPicker();
+                } else {
+                  dateInput.click();
+                }
+              });
+
+              dateInput.addEventListener("input", () => {
+                textInput.value = dateInput.value;
+                updateRowValue(row.__id, header, toStoredValue(header, dateInput.value));
+              });
+
+              textInput.addEventListener("input", () => {
+                dateInput.value = textInput.value;
+              });
+
+              wrapper.appendChild(textInput);
+              wrapper.appendChild(pickerButton);
+              wrapper.appendChild(dateInput);
+              td.appendChild(wrapper);
+            } else if (booleanStatusHeaders.has(header)) {
+              const select = document.createElement("select");
+              select.dataset.rowId = row.__id;
+              select.dataset.header = header;
+              select.className = "status-select";
+              const normalizedStatusValue = toStoredValue(header, row[header]);
+
+              booleanStatusOptions.forEach((option) => {
+                const optionElement = document.createElement("option");
+                optionElement.value = option.value;
+                optionElement.textContent = option.label;
+                optionElement.hidden = Boolean(option.hidden);
+                if (normalizedStatusValue === option.value) {
+                  optionElement.selected = true;
+                }
+                select.appendChild(optionElement);
+              });
+
+              select.addEventListener("change", handleCellEdit);
+              td.appendChild(select);
+            } else {
+              const input = document.createElement("input");
+              input.type = "text";
+              input.value = toDisplayValue(header, row[header]);
+              input.placeholder = "";
+              input.dataset.rowId = row.__id;
+              input.dataset.header = header;
+              input.addEventListener("input", handleCellEdit);
+              if (header === "os_string") {
+                const wrapper = document.createElement("div");
+                wrapper.className = "os-input-wrapper";
+
+                const indicatorType = getRowIndicatorType(row);
+                if (indicatorType) {
+                  const indicator = document.createElement("span");
+                  indicator.className = `row-indicator row-indicator-${indicatorType}`;
+                  indicator.title =
+                    indicatorType === "new" ? "New operating system" : "Updated operating system";
+                  wrapper.appendChild(indicator);
+                }
+
+                input.addEventListener("change", finalizeOsEdit);
+                wrapper.appendChild(input);
+                td.appendChild(wrapper);
+              } else {
+                td.appendChild(input);
+              }
+            }
+            tr.appendChild(td);
+          });
+
+          const actionCell = document.createElement("td");
+          actionCell.className = "actions-column";
+          const actionStack = document.createElement("div");
+          actionStack.className = "row-actions";
+
+          const revertRowButton = document.createElement("button");
+          revertRowButton.className = "revert-row-button";
+          revertRowButton.textContent = "Revert";
+          revertRowButton.dataset.rowId = row.__id;
+          revertRowButton.addEventListener("click", () => revertRow(row.__id));
+
+          revertRowButton.disabled = !rowCanRevert(row);
+          if (row.__sourceIndex == null) {
+            revertRowButton.title =
+              currentSource === "draft"
+                ? "Remove this operating system from the draft"
+                : "Remove this new unsaved operating system";
+          } else {
+            revertRowButton.title =
+              currentSource === "draft"
+                ? "Revert this operating system to the data lookup version"
+                : "Revert this operating system to its last saved state";
+          }
+
+          const deleteButton = document.createElement("button");
+          deleteButton.className = "delete-button";
+          deleteButton.textContent = "Delete";
+          deleteButton.addEventListener("click", () => deleteRow(row.__id));
+          actionStack.appendChild(revertRowButton);
+          actionStack.appendChild(deleteButton);
+          actionCell.appendChild(actionStack);
+          tr.appendChild(actionCell);
+
+          tableBody.appendChild(tr);
+        });
+
+        updateCount();
+      }
+
+      function hydrateRows(rows) {
+        return rows.map((row, index) => ({
+          __id: crypto.randomUUID?.() ?? `row-${index}-${Date.now()}`,
+          __sourceIndex: index,
+          __dataSourceIndex: dataBaselineRows.findIndex(
+            (candidate) => dataBaselineKey(candidate.os_string) === dataBaselineKey(row.os_string)
+          ),
+          __normalizedDetailedAuto: false,
+          __normalizedOsAuto: false,
+          __eolDateAuto: false,
+          __eolStatusAuto: false,
+          __eoasDateAuto: false,
+          __eoasStatusAuto: false,
+          ...blankRow(),
+          ...row,
+        }));
+      }
+
+      function revertRows() {
+        if (currentSource === "draft") {
+          allRows = hydrateRows(cloneRows(dataBaselineRows));
+          promoteToDraftSource();
+          syncDirtyState();
+        } else {
+          allRows = hydrateRows(cloneRows(originalRows));
+          setDirty(false);
+        }
+        clearStatus();
+        applyFilter();
+      }
+
+      function handleCellEdit(event) {
+        const { rowId, header } = event.target.dataset;
+        const targetRow = allRows.find((row) => row.__id === rowId);
+        if (!targetRow) {
+          return;
+        }
+
+        if (header === "normalized_os_detailed_name") {
+          targetRow.__normalizedDetailedAuto = false;
+        }
+        if (header === "normalized_os") {
+          targetRow.__normalizedOsAuto = false;
+        }
+        if (header === "eol_date") {
+          targetRow.__eolDateAuto = false;
+        }
+        if (header === "eol_status") {
+          targetRow.__eolStatusAuto = false;
+        }
+        if (header === "eoas_date") {
+          targetRow.__eoasDateAuto = false;
+        }
+        if (header === "eoas_status") {
+          targetRow.__eoasStatusAuto = false;
+        }
+        updateRowValue(rowId, header, toStoredValue(header, event.target.value));
+      }
+
+      async function finalizeOsEdit(event) {
+        const { rowId, header } = event.target.dataset;
+        if (header !== "os_string") {
+          return;
+        }
+
+        const targetRow = allRows.find((row) => row.__id === rowId);
+        if (!targetRow) {
+          return;
+        }
+
+        const osValue = toStoredValue(header, event.target.value);
+        if (!String(osValue ?? "").trim()) {
+          updateRowValue(rowId, header, osValue);
+          renderTable();
+          return;
+        }
+
+        if (isDuplicateOs(osValue, rowId)) {
+          targetRow.os_string = "";
+          targetRow.normalized_os_detailed_name = "";
+          targetRow.normalized_os = "";
+          targetRow.__normalizedDetailedAuto = true;
+          targetRow.__normalizedOsAuto = true;
+          syncDirtyState();
+          renderTable();
+          showStatus(`"${osValue}" already exists in the lookup.`, "info");
+          return;
+        }
+
+        if (targetRow.__sourceIndex != null) {
+          updateRowValue(rowId, header, osValue);
+          renderTable();
+          return;
+        }
+
+        updateRowValue(rowId, header, osValue);
+        if (!isAmbiguousOs(osValue)) {
+          showStatus("Looking up EOL data...");
+          await applyEolFromApi([targetRow]);
+        }
+        syncDirtyState();
+        renderTable();
+      }
+
+      function deleteRow(rowId) {
+        const targetRow = allRows.find((row) => row.__id === rowId);
+        if (!targetRow) {
+          return;
+        }
+
+        const osLabel = String(targetRow.os_string ?? "").trim() || "this operating system";
+        if (!window.confirm(`Delete ${osLabel}?`)) {
+          return;
+        }
+
+        promoteToDraftSource();
+        allRows = allRows.filter((row) => row.__id !== rowId);
+        syncDirtyState();
+        applyFilter();
+      }
+
+      function revertRow(rowId) {
+        const rowIndex = allRows.findIndex((row) => row.__id === rowId);
+        if (rowIndex === -1) {
+          return;
+        }
+
+        const targetRow = allRows[rowIndex];
+        if (rowCanRevert(targetRow)) {
+          promoteToDraftSource();
+        }
+        if (currentSource === "draft") {
+          const dataBaselineRow = findDataBaselineRow(targetRow);
+          if (!dataBaselineRow) {
+            allRows.splice(rowIndex, 1);
+          } else {
+            allRows[rowIndex] = {
+              __id: targetRow.__id,
+              __sourceIndex: targetRow.__sourceIndex,
+              __dataSourceIndex: targetRow.__dataSourceIndex,
+              __normalizedDetailedAuto: false,
+              __normalizedOsAuto: false,
+              __eolDateAuto: false,
+              __eolStatusAuto: false,
+              __eoasDateAuto: false,
+              __eoasStatusAuto: false,
+              ...blankRow(),
+              ...dataBaselineRow,
+            };
+          }
+        } else if (targetRow.__sourceIndex == null) {
+          allRows.splice(rowIndex, 1);
+        } else {
+          const originalRow = originalRows[targetRow.__sourceIndex];
+          allRows[rowIndex] = {
+            __id: targetRow.__id,
+            __sourceIndex: targetRow.__sourceIndex,
+            __dataSourceIndex: targetRow.__dataSourceIndex,
+            __normalizedDetailedAuto: false,
+            __normalizedOsAuto: false,
+            __eolDateAuto: false,
+            __eolStatusAuto: false,
+            __eoasDateAuto: false,
+            __eoasStatusAuto: false,
+            ...blankRow(),
+            ...originalRow,
+          };
+        }
+
+        syncDirtyState();
+        applyFilter();
+      }
+
+      async function loadRows(source = currentSource) {
+        clearStatus();
+        showStatus(`Loading ${sourceLabel(source).toLowerCase()}...`);
+
+        try {
+          if (!dataBaselineRows.length || source === "data") {
+            const dataBaselineResponse = await fetch("/api/lookup?source=data");
+            if (!dataBaselineResponse.ok) {
+              throw new Error("Unable to load data lookup baseline.");
+            }
+
+            const dataBaselinePayload = await dataBaselineResponse.json();
+            dataBaselineRows = cloneRows(dataBaselinePayload.rows);
+          }
+
+          const response = await fetch(`/api/lookup?source=${encodeURIComponent(source)}`);
+          if (!response.ok) {
+            if (response.status === 404 && source === "draft") {
+              throw new Error("Draft not found. Save a draft first.");
+            }
+            throw new Error("Unable to load selected source.");
+          }
+
+          const payload = await response.json();
+          currentSource = payload.source === "draft" ? "draft" : "data";
+          originalRows = cloneRows(payload.rows);
+          allRows = hydrateRows(payload.rows);
+          setDirty(false);
+          updateSourceUi();
+          clearStatus();
+          applyFilter();
+        } catch (error) {
+          showStatus(error.message, "error");
+        }
+      }
+
+      async function saveRows() {
+        showStatus("Saving draft...");
+
+        const rows = allRows.map(({ __id, ...row }) => row);
+        try {
+          const response = await fetch("/api/lookup?source=draft", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ rows }),
+          });
+
+          if (!response.ok) {
+            throw new Error("Unable to save draft.");
+          }
+
+          currentSource = "draft";
+          originalRows = cloneRows(rows);
+          setDirty(false);
+          updateSourceUi();
+          showStatus("Draft saved successfully.", "success");
+        } catch (error) {
+          showStatus(error.message, "error");
+        }
+      }
+
+      async function validateRows() {
+        if (currentSource !== "draft") {
+          showStatus("Load the draft source before validating changes.", "info");
+          return;
+        }
+
+        const confirmed = window.confirm(
+          "Validate changes and overwrite Data with the current Draft?"
+        );
+        if (!confirmed) {
+          return;
+        }
+
+        showStatus("Validating Draft and updating Data...");
+
+        const rows = allRows.map(({ __id, ...row }) => row);
+        try {
+          const response = await fetch("/api/lookup/validate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ rows }),
+          });
+
+          if (!response.ok) {
+            throw new Error("Unable to validate changes.");
+          }
+
+          showStatus("Draft validated and _data lookup overwritten.", "success");
+        } catch (error) {
+          showStatus(error.message, "error");
+        }
+      }
+
+      async function deleteDraft() {
+        if (currentSource !== "draft") {
+          showStatus("Switch to the draft source before deleting it.", "info");
+          return;
+        }
+
+        const confirmed = window.confirm(
+          "Delete Draft and return to Data?"
+        );
+        if (!confirmed) {
+          return;
+        }
+
+        showStatus("Deleting draft...");
+
+        try {
+          const response = await fetch("/api/lookup/draft", {
+            method: "DELETE",
+          });
+
+          if (!response.ok) {
+            if (response.status === 404) {
+              throw new Error("Draft lookup not found.");
+            }
+            throw new Error("Unable to delete draft.");
+          }
+
+          currentSource = "data";
+          await loadRows("data");
+          showStatus("Draft deleted. Loaded Data.", "success");
+        } catch (error) {
+          showStatus(error.message, "error");
+        }
+      }
+
+      addRowButton.addEventListener("click", () => {
+        promoteToDraftSource();
+        allRows.unshift(createNewRow());
+        syncDirtyState();
+        applyFilter();
+      });
+
+      bulkUploadButton.addEventListener("click", openBulkUploadDialog);
+      bulkApplyButton.addEventListener("click", applyBulkUpload);
+      bulkCancelButton.addEventListener("click", closeBulkUploadDialog);
+      bulkCloseButton.addEventListener("click", closeBulkUploadDialog);
+      bulkProgressCancel.addEventListener("click", () => {
+        if (bulkAbortController) {
+          bulkAbortController.abort();
+        }
+      });
+      bulkProgressDialog.addEventListener("cancel", (event) => {
+        if (bulkProcessing) {
+          event.preventDefault();
+        }
+      });
+      pageSizeSelect.addEventListener("change", () => {
+        pageSize = Number(pageSizeSelect.value);
+        currentPage = 1;
+        renderTable();
+      });
+      prevPageButton.addEventListener("click", () => {
+        if (currentPage > 1) {
+          currentPage -= 1;
+          renderTable();
+        }
+      });
+      nextPageButton.addEventListener("click", () => {
+        if (currentPage < totalPages()) {
+          currentPage += 1;
+          renderTable();
+        }
+      });
+
+      revertButton.addEventListener("click", () => {
+        if (!hasAnyRevertableRows()) {
+          showStatus("There are no changes available to revert.", "info");
+          return;
+        }
+
+        revertRows();
+        showStatus(
+          currentSource === "draft"
+            ? "Reverted draft rows to the data lookup state."
+            : "Reverted to the last loaded lookup state.",
+          "success"
+        );
+      });
+
+      saveButton.addEventListener("click", saveRows);
+      validateButton.addEventListener("click", validateRows);
+      deleteDraftButton.addEventListener("click", deleteDraft);
+      sourceSelect.addEventListener("change", async () => {
+        if (isDirty) {
+          const confirmed = window.confirm(
+            "Discard unsaved changes and load the selected source?"
+          );
+          if (!confirmed) {
+            sourceSelect.value = currentSource;
+            return;
+          }
+        }
+
+        await loadRows(sourceSelect.value);
+      });
+      searchInput.addEventListener("input", applyFilter);
+
+      document.querySelectorAll("th[data-header]").forEach((th) => {
+        const header = th.dataset.header;
+        th.textContent = headerLabels[header] ?? header;
+      });
+
+      window.addEventListener("beforeunload", (event) => {
+        if (!isDirty) {
+          return;
+        }
+        event.preventDefault();
+        event.returnValue = "";
+      });
+
+      updateSourceUi();
+      loadRows("data");
+    </script>
+  </body>
+</html>
