@@ -210,8 +210,8 @@
         </div>
 
         <p class="modal-note">
-          Settings are saved to <code>_config/azure.json</code> in this project folder.
-          Uploads only <code>_data/eol_lookup.csv</code> using Azure CLI login auth.
+          Your Azure connection details are saved locally and reused for future uploads.
+          Upload uses your signed-in Azure account.
         </p>
 
         <label class="modal-field">
@@ -1774,7 +1774,7 @@
         try {
           await saveAzureConfig(config);
           closeAzureSettingsDialog();
-          showStatus("Azure settings saved to _config/azure.json.", "success");
+          showStatus("Azure settings saved.", "success");
         } catch (error) {
           showStatus(error.message, "error");
         }

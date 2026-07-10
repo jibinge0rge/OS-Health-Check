@@ -5,6 +5,8 @@ import csv
 import json
 import re
 import shutil
+import subprocess
+import threading
 from collections.abc import AsyncIterator
 from datetime import datetime
 from pathlib import Path
@@ -215,6 +217,36 @@ def parse_azure_progress_line(line: str) -> float | None:
     return float(match.group(1))
 
 
+def _stream_az_upload_to_queue(
+    command: list[str],
+    cwd: str,
+    output_queue: asyncio.Queue[str | None],
+    loop: asyncio.AbstractEventLoop,
+    process_holder: list[subprocess.Popen[str] | None],
+) -> None:
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            cwd=cwd,
+            text=True,
+            bufsize=1,
+        )
+        process_holder[0] = process
+        assert process.stdout is not None
+
+        for line in process.stdout:
+            loop.call_soon_threadsafe(output_queue.put_nowait, line.rstrip())
+
+        return_code = process.wait()
+        loop.call_soon_threadsafe(output_queue.put_nowait, f"__RETURN_CODE__:{return_code}")
+    except Exception as exc:
+        loop.call_soon_threadsafe(output_queue.put_nowait, f"__ERROR__:{exc}")
+    finally:
+        loop.call_soon_threadsafe(output_queue.put_nowait, None)
+
+
 async def azure_upload_events(payload: AzureUploadRequest) -> AsyncIterator[str]:
     if not DATA_PATH.exists():
         yield sse_event({"type": "error", "message": "Data lookup CSV not found at _data/eol_lookup.csv."})
@@ -258,36 +290,51 @@ async def azure_upload_events(payload: AzureUploadRequest) -> AsyncIterator[str]
         }
     )
 
-    process = await asyncio.create_subprocess_exec(
-        *command,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        cwd=str(BASE_DIR),
+    output_queue: asyncio.Queue[str | None] = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+    process_holder: list[subprocess.Popen[str] | None] = [None]
+    worker = threading.Thread(
+        target=_stream_az_upload_to_queue,
+        args=(command, str(BASE_DIR), output_queue, loop, process_holder),
+        daemon=True,
     )
+    worker.start()
 
     result_lines: list[str] = []
-    assert process.stdout is not None
+    return_code: int | None = None
 
     try:
         while True:
-            line_bytes = await process.stdout.readline()
-            if not line_bytes:
+            item = await output_queue.get()
+            if item is None:
                 break
 
-            line = line_bytes.decode("utf-8", errors="replace").rstrip()
-            if not line:
+            if item.startswith("__RETURN_CODE__:"):
+                return_code = int(item.split(":", 1)[1])
                 continue
 
-            result_lines.append(line)
+            if item.startswith("__ERROR__:"):
+                yield sse_event(
+                    {
+                        "type": "error",
+                        "message": item.split(":", 1)[1],
+                        "output": result_lines,
+                    }
+                )
+                return
+
+            if not item:
+                continue
+
+            result_lines.append(item)
             yield sse_event(
                 {
                     "type": "progress",
-                    "message": line,
-                    "percent": parse_azure_progress_line(line),
+                    "message": item,
+                    "percent": parse_azure_progress_line(item),
                 }
             )
 
-        return_code = await process.wait()
         if return_code == 0:
             yield sse_event(
                 {
@@ -301,14 +348,20 @@ async def azure_upload_events(payload: AzureUploadRequest) -> AsyncIterator[str]
         yield sse_event(
             {
                 "type": "error",
-                "message": f"Azure upload failed with exit code {return_code}.",
+                "message": (
+                    f"Azure upload failed with exit code {return_code}."
+                    if return_code is not None
+                    else "Azure upload failed."
+                ),
                 "output": result_lines,
             }
         )
     finally:
-        if process.returncode is None:
+        process = process_holder[0]
+        if process is not None and process.poll() is None:
             process.kill()
-            await process.wait()
+            process.wait()
+        worker.join(timeout=1)
 
 
 @app.get("/", response_class=HTMLResponse)
