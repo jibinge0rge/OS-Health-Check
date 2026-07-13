@@ -55,15 +55,28 @@ def pick_api_os_value(
     normalized_os_detailed_name: str,
     normalized_os: str,
 ) -> str:
+    value, _field = pick_api_os_value_with_field(
+        os_string, normalized_os_detailed_name, normalized_os
+    )
+    return value
+
+
+def pick_api_os_value_with_field(
+    os_string: str,
+    normalized_os_detailed_name: str,
+    normalized_os: str,
+) -> tuple[str, str]:
     normalized = _clean(normalized_os)
     detailed = _clean(normalized_os_detailed_name)
     source = _clean(os_string)
 
     if normalized:
-        return normalized
+        return normalized, "normalized_os"
     if detailed:
-        return detailed
-    return source
+        return detailed, "normalized_os_detailed_name"
+    if source:
+        return source, "os_string"
+    return "", ""
 
 
 @lru_cache(maxsize=1)
@@ -204,7 +217,9 @@ def lookup_os_eol(
     reference_date: str | None = None,
 ) -> dict[str, str]:
     today = reference_date or date.today().isoformat()
-    cleaned_name = pick_api_os_value(os_string, normalized_os_detailed_name, normalized_os)
+    cleaned_name, query_field = pick_api_os_value_with_field(
+        os_string, normalized_os_detailed_name, normalized_os
+    )
 
     empty_result = {
         "eol_date": "",
@@ -214,6 +229,11 @@ def lookup_os_eol(
         "normalized_os_detailed_name": "",
         "normalized_os": "",
         "api_note": "",
+        "query_used": cleaned_name,
+        "query_field": query_field,
+        "product_slug": "",
+        "release_name": "",
+        "release_label": "",
     }
 
     if not cleaned_name:
@@ -224,6 +244,8 @@ def lookup_os_eol(
     if not slug:
         empty_result["api_note"] = "Product not found in endoflife.date registry"
         return empty_result
+
+    empty_result["product_slug"] = slug
 
     try:
         if slug not in product_cache:
@@ -251,6 +273,8 @@ def lookup_os_eol(
     eol_from = selected_release.get("eolFrom")
     eoas_from = selected_release.get("eoasFrom")
     normalization = build_normalization_from_product(product_result, selected_release)
+    release_name = _clean(selected_release.get("name"))
+    release_label = _clean(selected_release.get("label"))
 
     eol_date = iso_date_to_epoch(eol_from)
     eoas_date = iso_date_to_epoch(eoas_from)
@@ -265,6 +289,11 @@ def lookup_os_eol(
         "normalized_os_detailed_name": normalization["normalized_os_detailed_name"],
         "normalized_os": normalization["normalized_os"],
         "api_note": "",
+        "query_used": cleaned_name,
+        "query_field": query_field,
+        "product_slug": slug,
+        "release_name": release_name,
+        "release_label": release_label,
     }
 
 
@@ -316,6 +345,11 @@ def lookup_os_eol_batch(
         )
         slug = resolve_product_slug(cleaned_name, valid_slugs) if cleaned_name else None
         if slug and slug not in product_cache and slug in fetch_errors:
+            _value, query_field = pick_api_os_value_with_field(
+                item.get("os_string", ""),
+                item.get("normalized_os_detailed_name", ""),
+                item.get("normalized_os", ""),
+            )
             results.append(
                 {
                     "eol_date": "",
@@ -325,6 +359,11 @@ def lookup_os_eol_batch(
                     "normalized_os_detailed_name": "",
                     "normalized_os": "",
                     "api_note": f"API error: {fetch_errors[slug]}",
+                    "query_used": cleaned_name,
+                    "query_field": query_field,
+                    "product_slug": slug,
+                    "release_name": "",
+                    "release_label": "",
                 }
             )
             continue

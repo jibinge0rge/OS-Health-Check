@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OS Health Check</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=9" />
+    <link rel="stylesheet" href="/static/styles.css?v=35" />
   </head>
   <body>
     <main class="app-shell">
@@ -18,22 +18,57 @@
           </p>
         </div>
         <div class="hero-actions">
-          <button id="save-button" class="primary-button compact-button">Save Draft</button>
-          <button id="validate-button" class="ghost-button compact-button" disabled>Validate</button>
-          <button id="revert-button" class="ghost-button compact-button" disabled>Revert</button>
-          <button id="delete-draft-button" class="ghost-button compact-button" disabled>Delete draft</button>
+          <button
+            id="edit-data-button"
+            class="primary-button compact-button data-only-control"
+            type="button"
+            title="Open Draft to add or modify the lookup"
+          >
+            Edit Data
+          </button>
+          <label
+            class="auto-save-toggle edit-only-control hidden"
+            title="Automatically save Draft shortly after changes"
+          >
+            <input id="auto-save-toggle" type="checkbox" checked />
+            <span>Auto-save</span>
+          </label>
+          <label
+            id="ai-match-toggle-wrap"
+            class="auto-save-toggle edit-only-control hidden"
+            title="Use AI to suggest normalization when fuzzy match fails"
+          >
+            <input id="ai-match-toggle" type="checkbox" checked />
+            <span>AI match</span>
+          </label>
+          <button id="save-button" class="primary-button compact-button edit-only-control hidden" disabled>
+            Save Draft
+          </button>
+          <button id="validate-button" class="secondary-button compact-button edit-only-control hidden" disabled>
+            Validate
+          </button>
+          <button id="revert-button" class="secondary-button compact-button edit-only-control hidden" disabled>
+            Revert
+          </button>
+          <button
+            id="delete-draft-button"
+            class="danger-button compact-button edit-only-control hidden"
+            disabled
+          >
+            Delete draft
+          </button>
           <button
             id="refresh-eol-button"
-            class="ghost-button compact-button"
+            class="secondary-button compact-button"
             type="button"
-            title="Look up EOL and EOAS dates and statuses for all entries"
+            title="Refresh EOL/EOAS on Draft if it exists, otherwise from Data into a new Draft"
           >
             Refresh EOL/EOAS
           </button>
-          <div class="menu-anchor">
+          <div class="menu-anchor data-only-control">
             <button
               id="azure-menu-button"
-              class="ghost-button compact-button"
+              class="secondary-button compact-button"
               type="button"
               aria-haspopup="menu"
               aria-expanded="false"
@@ -63,49 +98,66 @@
           <div class="toolbar-actions action-group">
             <button
               id="add-row-button"
-              class="ghost-button compact-button"
+              class="ghost-button compact-button edit-only-control hidden"
               type="button"
               title="Add a single operating system to the lookup"
+              disabled
             >
               Add OS
             </button>
             <button
               id="bulk-upload-button"
-              class="ghost-button compact-button"
+              class="ghost-button compact-button edit-only-control hidden"
               type="button"
               title="Add multiple operating systems to the lookup at once"
+              disabled
             >
               Add multiple OS
             </button>
             <button id="download-button" class="ghost-button compact-button" type="button" title="Download current source rows (respects table filters)">Download</button>
             <button
               id="download-delta-button"
-              class="ghost-button compact-button"
+              class="ghost-button compact-button edit-only-control hidden"
               type="button"
               title="Download only new or modified draft rows compared to Data (respects table filters)"
               disabled
             >
               Download Delta
             </button>
+            <button
+              id="show-delta-button"
+              class="ghost-button compact-button edit-only-control hidden"
+              type="button"
+              aria-pressed="false"
+              title="Show only new or modified draft rows compared to Data"
+              disabled
+            >
+              Show Delta
+            </button>
           </div>
         </div>
 
         <div class="toolbar-right">
-          <div class="source-controls">
-            <label class="source-field">
-              <span class="source-inline-label">Source</span>
-              <select id="source-select">
-                <option value="data" selected>Data</option>
-                <option value="draft">Draft</option>
-              </select>
-            </label>
-          </div>
+          <div class="toolbar-right-main">
+            <div class="source-controls">
+              <label class="source-field">
+                <span class="source-inline-label">Source</span>
+                <select id="source-select">
+                  <option value="data" selected>Data</option>
+                  <option value="draft">Draft</option>
+                </select>
+              </label>
+            </div>
 
-          <div class="stats">
-            <span id="source-indicator" class="pill">Data</span>
-            <span id="row-count">0 rows</span>
-            <span id="dirty-indicator" class="pill">Saved</span>
+            <div class="stats">
+              <span id="source-indicator" class="pill">Data</span>
+              <span id="row-count">0 rows</span>
+              <span id="dirty-indicator" class="pill">Saved</span>
+            </div>
           </div>
+          <p id="data-readonly-hint" class="source-hint">
+            Click Edit Data to add or modify the lookup
+          </p>
         </div>
       </section>
 
@@ -144,7 +196,17 @@
             <thead>
               <tr id="header-row">
                 {% for header in headers %}
-                <th data-header="{{ header }}">{{ header }}</th>
+                <th data-header="{{ header }}">
+                  <button
+                    type="button"
+                    class="sort-header-button"
+                    data-sort-header="{{ header }}"
+                    title="Sort by {{ header }}"
+                  >
+                    <span class="sort-header-label">{{ header }}</span>
+                    <span class="sort-indicator" aria-hidden="true"></span>
+                  </button>
+                </th>
                 {% endfor %}
                 <th class="actions-column">Actions</th>
               </tr>
@@ -192,13 +254,29 @@
                 </th>
                 {% endfor %}
                 <th class="actions-column">
-                  <button
-                    id="clear-column-filters-button"
-                    class="ghost-button compact-button"
-                    type="button"
-                  >
-                    Clear filters
-                  </button>
+                  <div class="column-filter-controls actions-filter-controls">
+                    <select
+                      id="evidence-filter"
+                      class="column-filter-mode"
+                      aria-label="Filter by evidence type"
+                      title="Filter rows by how values were matched"
+                    >
+                      <option value="" selected>All</option>
+                      <option value="fuzzy">Fuzzy</option>
+                      <option value="ai">AI</option>
+                      <option value="fuzzy+ai">Fuzzy + AI</option>
+                      <option value="manual">Manual</option>
+                      <option value="eol">EOL API</option>
+                      <option value="null">NULL</option>
+                    </select>
+                    <button
+                      id="clear-column-filters-button"
+                      class="ghost-button compact-button"
+                      type="button"
+                    >
+                      Clear
+                    </button>
+                  </div>
                 </th>
               </tr>
             </thead>
@@ -248,6 +326,27 @@
           <button id="confirm-ok-button" class="primary-button" value="confirm" type="submit">
             Continue
           </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="proof-dialog" class="modal proof-dialog">
+      <form method="dialog" class="modal-card proof-card">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">How this row was filled</p>
+            <h2>Evidence</h2>
+          </div>
+          <button id="proof-close-button" class="ghost-button" value="cancel" type="submit">
+            Close
+          </button>
+        </div>
+
+        <div id="proof-os-label" class="proof-os-label"></div>
+        <div id="proof-body" class="proof-body"></div>
+
+        <div class="modal-actions">
+          <button class="primary-button" value="cancel" type="submit">Close</button>
         </div>
       </form>
     </dialog>
@@ -486,7 +585,15 @@
       let filteredRows = [];
       let originalRows = [];
       let dataBaselineRows = [];
+      let dataEvidenceByOs = {};
+      let currentEvidenceByOs = {};
       let isDirty = false;
+      let autoSaveEnabled = true;
+      let autoSaveTimer = null;
+      let saveInFlight = false;
+      const AUTO_SAVE_DELAY_MS = 1800;
+      let aiMatchEnabled = true;
+      let aiMatchAvailable = false;
       let pageSize = 20;
       let currentPage = 1;
       let currentSource = "data";
@@ -501,6 +608,10 @@
       const columnFilters = Object.fromEntries(
         headers.map((header) => [header, { mode: "", text: "", from: "", to: "" }])
       );
+      let evidenceFilter = "";
+      let showDeltaOnly = false;
+      let sortHeader = "normalized_os";
+      let sortDirection = "asc";
 
       const tableBody = document.getElementById("table-body");
       const rowCount = document.getElementById("row-count");
@@ -508,9 +619,14 @@
       const sourceIndicator = document.getElementById("source-indicator");
       const searchInput = document.getElementById("search-input");
       const saveButton = document.getElementById("save-button");
+      const editDataButton = document.getElementById("edit-data-button");
+      const autoSaveToggle = document.getElementById("auto-save-toggle");
+      const aiMatchToggle = document.getElementById("ai-match-toggle");
+      const aiMatchToggleWrap = document.getElementById("ai-match-toggle-wrap");
       const validateButton = document.getElementById("validate-button");
       const downloadButton = document.getElementById("download-button");
       const downloadDeltaButton = document.getElementById("download-delta-button");
+      const showDeltaButton = document.getElementById("show-delta-button");
       const azureMenuButton = document.getElementById("azure-menu-button");
       const azureMenu = document.getElementById("azure-menu");
       const azureUploadButton = document.getElementById("azure-upload-button");
@@ -519,12 +635,17 @@
       const addRowButton = document.getElementById("add-row-button");
       const bulkUploadButton = document.getElementById("bulk-upload-button");
       const refreshEolButton = document.getElementById("refresh-eol-button");
+      const dataReadonlyHint = document.getElementById("data-readonly-hint");
       const confirmDialog = document.getElementById("confirm-dialog");
       const confirmForm = document.getElementById("confirm-form");
       const confirmEyebrow = document.getElementById("confirm-eyebrow");
       const confirmTitle = document.getElementById("confirm-title");
       const confirmMessage = document.getElementById("confirm-message");
       const confirmOkButton = document.getElementById("confirm-ok-button");
+      const proofDialog = document.getElementById("proof-dialog");
+      const proofOsLabel = document.getElementById("proof-os-label");
+      const proofBody = document.getElementById("proof-body");
+      const evidenceFilterSelect = document.getElementById("evidence-filter");
       const addOsDialog = document.getElementById("add-os-dialog");
       const addOsForm = document.getElementById("add-os-form");
       const addOsInput = document.getElementById("add-os-input");
@@ -637,49 +758,686 @@
         });
       }
 
+      function escapeHtml(value) {
+        return String(value ?? "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#39;");
+      }
+
+      function friendlyFieldLabel(fieldKey) {
+        if (!fieldKey) {
+          return "";
+        }
+        if (headerLabels[fieldKey]) {
+          return headerLabels[fieldKey];
+        }
+        if (fieldKey === "normalized pair") {
+          return "Normalized pair";
+        }
+        return String(fieldKey);
+      }
+
+      function proofMethodLabel(method) {
+        switch (method) {
+          case "fuzzy":
+            return "Fuzzy";
+          case "ai":
+            return "AI";
+          case "fuzzy+ai":
+            return "Fuzzy + AI";
+          case "eol":
+            return "EOL API";
+          case "ambiguous":
+            return "Ambiguous";
+          case "manual":
+            return "Manual";
+          case "api":
+            return "EOL API";
+          case "lookup-fallback":
+            return "Lookup copy";
+          case "loaded":
+            return "Loaded";
+          case "none":
+            return "Not set";
+          default:
+            return method || "Unknown";
+        }
+      }
+
+      function proofMethodTone(method) {
+        switch (method) {
+          case "fuzzy":
+            return "fuzzy";
+          case "ai":
+            return "ai";
+          case "fuzzy+ai":
+            return "combo";
+          case "manual":
+            return "manual";
+          case "eol":
+          case "api":
+            return "api";
+          case "lookup-fallback":
+            return "fallback";
+          case "ambiguous":
+            return "ambiguous";
+          case "loaded":
+            return "loaded";
+          default:
+            return "none";
+        }
+      }
+
+      function resolveDisplayMethod(fieldProof, currentValue) {
+        const method = fieldProof?.method || "none";
+        if (method && method !== "none") {
+          return method;
+        }
+        return String(currentValue ?? "").trim() ? "loaded" : "none";
+      }
+
+      function formatProofValue(header, value) {
+        const cleaned = String(value ?? "").trim();
+        if (!cleaned) {
+          return "";
+        }
+        if (dateHeaders.has(header)) {
+          return epochToDateInput(cleaned) || cleaned;
+        }
+        return cleaned;
+      }
+
+      function proofBadgeHtml(method, { score = null, extra = "" } = {}) {
+        const tone = proofMethodTone(method);
+        const label = proofMethodLabel(method);
+        const scoreText =
+          score != null && score !== "" ? `<span class="proof-badge-score">${escapeHtml(String(score))}%</span>` : "";
+        const extraText = extra ? `<span class="proof-badge-extra">${escapeHtml(extra)}</span>` : "";
+        return `<span class="proof-badge proof-badge--${escapeHtml(tone)}">${escapeHtml(
+          label
+        )}${scoreText}${extraText}</span>`;
+      }
+
+      function proofKvHtml(rows) {
+        const items = rows.filter(([, value]) => String(value ?? "").trim());
+        if (!items.length) {
+          return "";
+        }
+        return `<dl class="proof-kv">${items
+          .map(
+            ([label, value]) =>
+              `<div class="proof-kv-row"><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(
+                String(value)
+              )}</dd></div>`
+          )
+          .join("")}</dl>`;
+      }
+
+      function formatMatchedEntryHtml(matchedFrom, { title = "Matched from" } = {}) {
+        if (!matchedFrom) {
+          return "";
+        }
+        const kv = proofKvHtml([
+          ["OS", matchedFrom.os_string],
+          ["Detailed name", matchedFrom.normalized_os_detailed_name],
+          ["Normalized OS", matchedFrom.normalized_os],
+        ]);
+        if (!kv) {
+          return "";
+        }
+        return `<div class="proof-panel"><p class="proof-panel-title">${escapeHtml(title)}</p>${kv}</div>`;
+      }
+
+      function formatQuerySourceHtml(proofMeta) {
+        if (!proofMeta) {
+          return "";
+        }
+        const queryUsed = String(proofMeta.queryUsed ?? "").trim();
+        const queryField = friendlyFieldLabel(proofMeta.queryField);
+        const rows = [];
+        if (queryUsed) {
+          rows.push([
+            "Queried with",
+            queryField ? `${queryUsed} (${queryField})` : queryUsed,
+          ]);
+        }
+        if (proofMeta.productSlug) {
+          rows.push(["Product", proofMeta.productSlug]);
+        }
+        const release = [proofMeta.releaseLabel, proofMeta.releaseName]
+          .map((value) => String(value ?? "").trim())
+          .filter(Boolean)
+          .filter((value, index, all) => all.indexOf(value) === index)
+          .join(" / ");
+        if (release) {
+          rows.push(["Release", release]);
+        }
+        const kv = proofKvHtml(rows);
+        return kv ? `<div class="proof-panel"><p class="proof-panel-title">API query</p>${kv}</div>` : "";
+      }
+
+      function describeNormalizationMethod(fieldProof, currentValue) {
+        const method = resolveDisplayMethod(fieldProof, currentValue);
+        const value = String(currentValue ?? "").trim();
+
+        if (method === "manual") {
+          return {
+            method,
+            summary: "Edited by hand in this session.",
+            detailHtml: "",
+          };
+        }
+        if (method === "loaded") {
+          return {
+            method,
+            summary: "Came from the saved lookup. No match evidence is stored for this row.",
+            detailHtml: "",
+          };
+        }
+        if (method === "none") {
+          return {
+            method,
+            summary: "No normalized value is set.",
+            detailHtml: "",
+          };
+        }
+        if (method === "fuzzy" || method === "ai" || method === "fuzzy+ai") {
+          const scoreNote =
+            fieldProof?.score != null ? ` Match score ${fieldProof.score}%.` : "";
+          return {
+            method,
+            score: fieldProof?.score,
+            summary:
+              method === "ai"
+                ? `AI chose an existing normalized pair.${scoreNote}`
+                : method === "fuzzy+ai"
+                  ? `Fuzzy found a candidate and AI confirmed it.${scoreNote}`
+                  : `Fuzzy matched an existing lookup entry.${scoreNote}`,
+            detailHtml: formatMatchedEntryHtml(fieldProof?.matchedFrom),
+          };
+        }
+        if (method === "eol") {
+          return {
+            method,
+            summary: "Filled from the endoflife.date lookup.",
+            detailHtml: `${formatQuerySourceHtml(fieldProof)}${formatMatchedEntryHtml(
+              fieldProof?.matchedFrom,
+              { title: "Values returned" }
+            )}`,
+          };
+        }
+        if (method === "ambiguous") {
+          return {
+            method,
+            summary:
+              fieldProof?.note || "Marked as Ambiguous OS because the OS value contains '/'.",
+            detailHtml: "",
+          };
+        }
+        return {
+          method,
+          summary: proofMethodLabel(method),
+          detailHtml: "",
+        };
+      }
+
+      function sameNormalizationEvidence(left, right) {
+        if (!left || !right) {
+          return false;
+        }
+        if ((left.method || "none") !== (right.method || "none")) {
+          return false;
+        }
+        if (String(left.score ?? "") !== String(right.score ?? "")) {
+          return false;
+        }
+        const leftMatch = JSON.stringify(left.matchedFrom || {});
+        const rightMatch = JSON.stringify(right.matchedFrom || {});
+        if (leftMatch !== rightMatch) {
+          return false;
+        }
+        return (
+          String(left.queryUsed ?? "") === String(right.queryUsed ?? "") &&
+          String(left.queryField ?? "") === String(right.queryField ?? "") &&
+          String(left.productSlug ?? "") === String(right.productSlug ?? "") &&
+          String(left.releaseName ?? "") === String(right.releaseName ?? "") &&
+          String(left.releaseLabel ?? "") === String(right.releaseLabel ?? "")
+        );
+      }
+
+      function formatNormalizationEvidenceHtml(proof, row) {
+        const detailed = proof.detailed || { method: "none" };
+        const normalized = proof.normalized || { method: "none" };
+        const detailedValue = row.normalized_os_detailed_name;
+        const normalizedValue = row.normalized_os;
+
+        if (sameNormalizationEvidence(detailed, normalized)) {
+          const described = describeNormalizationMethod(detailed, detailedValue || normalizedValue);
+          return `
+            <section class="proof-section">
+              <div class="proof-section-head">
+                <h3>Normalization</h3>
+                ${proofBadgeHtml(described.method, { score: described.score })}
+              </div>
+              <p class="proof-summary">${escapeHtml(described.summary)}</p>
+              <div class="proof-result-grid">
+                <div class="proof-result-card">
+                  <span class="proof-result-label">Detailed name</span>
+                  <strong>${escapeHtml(String(detailedValue ?? "").trim() || "—")}</strong>
+                </div>
+                <div class="proof-result-card">
+                  <span class="proof-result-label">Normalized OS</span>
+                  <strong>${escapeHtml(String(normalizedValue ?? "").trim() || "—")}</strong>
+                </div>
+              </div>
+              ${described.detailHtml}
+            </section>
+          `;
+        }
+
+        const detailedDescribed = describeNormalizationMethod(detailed, detailedValue);
+        const normalizedDescribed = describeNormalizationMethod(normalized, normalizedValue);
+        return `
+          <section class="proof-section">
+            <div class="proof-section-head">
+              <h3>Normalization</h3>
+              <div class="proof-badge-row">
+                ${proofBadgeHtml(detailedDescribed.method, {
+                  score: detailedDescribed.score,
+                  extra: "Detailed",
+                })}
+                ${proofBadgeHtml(normalizedDescribed.method, {
+                  score: normalizedDescribed.score,
+                  extra: "Normalized",
+                })}
+              </div>
+            </div>
+            <div class="proof-split">
+              <div class="proof-split-col">
+                <p class="proof-panel-title">Detailed name</p>
+                <div class="proof-result-card">
+                  <strong>${escapeHtml(String(detailedValue ?? "").trim() || "—")}</strong>
+                </div>
+                <p class="proof-summary">${escapeHtml(detailedDescribed.summary)}</p>
+                ${detailedDescribed.detailHtml}
+              </div>
+              <div class="proof-split-col">
+                <p class="proof-panel-title">Normalized OS</p>
+                <div class="proof-result-card">
+                  <strong>${escapeHtml(String(normalizedValue ?? "").trim() || "—")}</strong>
+                </div>
+                <p class="proof-summary">${escapeHtml(normalizedDescribed.summary)}</p>
+                ${normalizedDescribed.detailHtml}
+              </div>
+            </div>
+          </section>
+        `;
+      }
+
+      function formatLifecycleEvidenceHtml(eolProof, row) {
+        const rawMethod = eolProof?.method || "none";
+        let method = rawMethod;
+        let summary = "";
+        let detailHtml = "";
+
+        if (rawMethod === "manual") {
+          method = "manual";
+          summary = "EOL/EOAS fields were edited by hand in this session.";
+        } else if (rawMethod === "api") {
+          method = "api";
+          summary = "Dates and statuses came from the endoflife.date API.";
+          const got = eolProof.got || {};
+          detailHtml = `${formatQuerySourceHtml(eolProof)}<div class="proof-panel"><p class="proof-panel-title">Values applied</p>${proofKvHtml(
+            [
+              ["EOL date", formatProofValue("eol_date", got.eol_date || row.eol_date)],
+              ["EOL status", got.eol_status || row.eol_status],
+              ["EOAS date", formatProofValue("eoas_date", got.eoas_date || row.eoas_date)],
+              ["EOAS status", got.eoas_status || row.eoas_status],
+            ]
+          )}</div>`;
+        } else if (rawMethod === "lookup-fallback") {
+          method = "lookup-fallback";
+          summary =
+            "API had no data, so dates/statuses were copied from an existing lookup entry with the same normalized pair.";
+          const got = eolProof.got || {};
+          detailHtml = `${formatMatchedEntryHtml(eolProof.fallbackFrom, {
+            title: "Copied from",
+          })}<div class="proof-panel"><p class="proof-panel-title">Values applied</p>${proofKvHtml(
+            [
+              ["EOL date", formatProofValue("eol_date", got.eol_date || row.eol_date)],
+              ["EOL status", got.eol_status || row.eol_status],
+              ["EOAS date", formatProofValue("eoas_date", got.eoas_date || row.eoas_date)],
+              ["EOAS status", got.eoas_status || row.eoas_status],
+            ]
+          )}</div>`;
+        } else {
+          const note = eolProof?.apiNote || eolProof?.note;
+          if (note) {
+            method = "none";
+            summary = note;
+          } else if (rowHasEolData(row)) {
+            method = "loaded";
+            summary =
+              "EOL/EOAS values came from the saved lookup. No lifecycle evidence is stored for this row.";
+          } else {
+            method = "none";
+            summary = "No EOL/EOAS dates or statuses are set.";
+          }
+        }
+
+        return `
+          <section class="proof-section">
+            <div class="proof-section-head">
+              <h3>EOL / EOAS</h3>
+              ${proofBadgeHtml(method)}
+            </div>
+            <p class="proof-summary">${escapeHtml(summary)}</p>
+            <div class="proof-result-grid proof-result-grid--4">
+              <div class="proof-result-card">
+                <span class="proof-result-label">EOL date</span>
+                <strong>${escapeHtml(formatProofValue("eol_date", row.eol_date) || "—")}</strong>
+              </div>
+              <div class="proof-result-card">
+                <span class="proof-result-label">EOL status</span>
+                <strong>${escapeHtml(String(row.eol_status ?? "").trim() || "—")}</strong>
+              </div>
+              <div class="proof-result-card">
+                <span class="proof-result-label">EOAS date</span>
+                <strong>${escapeHtml(formatProofValue("eoas_date", row.eoas_date) || "—")}</strong>
+              </div>
+              <div class="proof-result-card">
+                <span class="proof-result-label">EOAS status</span>
+                <strong>${escapeHtml(String(row.eoas_status ?? "").trim() || "—")}</strong>
+              </div>
+            </div>
+            ${detailHtml}
+          </section>
+        `;
+      }
+
+      function collectEvidenceMethods(proof, row) {
+        const methods = [];
+        const detailedMethod = resolveDisplayMethod(
+          proof.detailed,
+          row.normalized_os_detailed_name
+        );
+        const normalizedMethod = resolveDisplayMethod(proof.normalized, row.normalized_os);
+        if (detailedMethod !== "none") {
+          methods.push(detailedMethod);
+        }
+        if (normalizedMethod !== "none" && normalizedMethod !== detailedMethod) {
+          methods.push(normalizedMethod);
+        }
+
+        const eolMethod = proof.eol?.method || "none";
+        if (eolMethod === "api" || eolMethod === "lookup-fallback" || eolMethod === "manual") {
+          methods.push(eolMethod);
+        } else if (rowHasEolData(row) && eolMethod === "none") {
+          methods.push("loaded");
+        }
+        return methods;
+      }
+
+      function showProofDialog(row) {
+        const proof = ensureProof(row);
+        const osLabel = String(row.os_string ?? "").trim() || "(empty OS)";
+        const methods = collectEvidenceMethods(proof, row);
+        const methodBadges =
+          methods.length > 0
+            ? methods.map((method) => proofBadgeHtml(method)).join("")
+            : proofBadgeHtml("none");
+
+        proofOsLabel.innerHTML = `
+          <div class="proof-hero">
+            <div class="proof-hero-text">
+              <span class="proof-hero-label">Operating system</span>
+              <strong class="proof-hero-os">${escapeHtml(osLabel)}</strong>
+            </div>
+            <div class="proof-hero-methods" aria-label="Match methods">${methodBadges}</div>
+          </div>
+        `;
+        proofBody.innerHTML = [
+          formatNormalizationEvidenceHtml(proof, row),
+          formatLifecycleEvidenceHtml(proof.eol, row),
+          `<p class="proof-footnote">Evidence is stored on the server next to the lookup (not inside the CSV), so it persists across devices.</p>`,
+        ].join("");
+        proofDialog.showModal();
+      }
+
+      function cancelScheduledAutoSave() {
+        if (autoSaveTimer) {
+          window.clearTimeout(autoSaveTimer);
+          autoSaveTimer = null;
+        }
+      }
+
+      function scheduleAutoSave() {
+        cancelScheduledAutoSave();
+        if (
+          !autoSaveEnabled ||
+          !isDirty ||
+          !isLookupEditable() ||
+          bulkProcessing ||
+          azureUploadProcessing ||
+          saveInFlight
+        ) {
+          return;
+        }
+
+        autoSaveTimer = window.setTimeout(() => {
+          autoSaveTimer = null;
+          if (
+            autoSaveEnabled &&
+            isDirty &&
+            isLookupEditable() &&
+            !bulkProcessing &&
+            !azureUploadProcessing
+          ) {
+            void saveRows({ mode: "auto" });
+          }
+        }, AUTO_SAVE_DELAY_MS);
+      }
+
       function setDirty(nextDirty) {
         isDirty = nextDirty;
-        dirtyIndicator.textContent = nextDirty ? "Unsaved" : "Saved";
-        dirtyIndicator.classList.toggle("dirty", nextDirty);
+        if (!saveInFlight) {
+          dirtyIndicator.textContent = nextDirty ? "Unsaved" : "Saved";
+          dirtyIndicator.classList.toggle("dirty", nextDirty);
+        }
         revertButton.disabled = !nextDirty && !(currentSource === "draft" && hasAnyRevertableRows());
         updateSourceUi();
+        if (nextDirty) {
+          scheduleAutoSave();
+        } else {
+          cancelScheduledAutoSave();
+        }
       }
 
       function sourceLabel(source) {
         return source === "draft" ? "Draft" : "Data";
       }
 
+      function isAiMatchingEnabled() {
+        return Boolean(aiMatchEnabled && aiMatchAvailable);
+      }
+
+      function syncAiMatchToggleUi({ busy = false, editable = isLookupEditable() } = {}) {
+        if (!aiMatchToggleWrap || !aiMatchToggle) {
+          return;
+        }
+
+        aiMatchToggleWrap.classList.toggle("hidden", !editable);
+        aiMatchToggle.checked = Boolean(aiMatchEnabled);
+        aiMatchToggle.disabled = busy || !editable || !aiMatchAvailable;
+
+        if (!aiMatchAvailable) {
+          aiMatchToggleWrap.title =
+            "AI match unavailable: set OPENAI_API_KEY on the server. Fuzzy match still works.";
+          aiMatchToggleWrap.classList.remove("is-unavailable");
+          // Keep visual distinct when key missing
+          aiMatchToggleWrap.classList.add("is-unavailable");
+        } else if (!aiMatchEnabled) {
+          aiMatchToggleWrap.title = "AI match is off. Only fuzzy matching will be used.";
+          aiMatchToggleWrap.classList.remove("is-unavailable");
+        } else {
+          aiMatchToggleWrap.title =
+            "Use AI to suggest normalization when fuzzy match fails";
+          aiMatchToggleWrap.classList.remove("is-unavailable");
+        }
+      }
+
+      async function loadAppSettings() {
+        try {
+          const response = await fetch("/api/settings");
+          if (!response.ok) {
+            throw new Error("Unable to load app settings.");
+          }
+          const payload = await response.json();
+          aiMatchEnabled = payload.ai_enabled !== false;
+          aiMatchAvailable = Boolean(payload.ai_available);
+        } catch {
+          aiMatchEnabled = true;
+          aiMatchAvailable = false;
+        }
+        if (aiMatchToggle) {
+          aiMatchToggle.checked = aiMatchEnabled;
+        }
+        syncAiMatchToggleUi();
+      }
+
+      async function saveAiMatchSetting(enabled) {
+        const response = await fetch("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ai_enabled: Boolean(enabled) }),
+        });
+        if (!response.ok) {
+          throw new Error("Unable to save AI match setting.");
+        }
+        const payload = await response.json();
+        aiMatchEnabled = payload.ai_enabled !== false;
+        aiMatchAvailable = Boolean(payload.ai_available);
+        syncAiMatchToggleUi();
+        return payload;
+      }
+
+      function isLookupEditable() {
+        return currentSource === "draft";
+      }
+
+      function setModeControlVisibility(editable) {
+        document.querySelectorAll(".edit-only-control").forEach((element) => {
+          element.classList.toggle("hidden", !editable);
+        });
+        document.querySelectorAll(".data-only-control").forEach((element) => {
+          element.classList.toggle("hidden", editable);
+        });
+      }
+
       function updateSourceUi() {
+        const editable = isLookupEditable();
+        const busy = bulkProcessing || azureUploadProcessing;
+        const onData = currentSource === "data";
+
         sourceSelect.value = currentSource;
         sourceIndicator.textContent = sourceLabel(currentSource);
         sourceIndicator.classList.toggle("draft-pill", currentSource === "draft");
-        validateButton.disabled = bulkProcessing || azureUploadProcessing || currentSource !== "draft";
-        downloadButton.disabled = bulkProcessing || azureUploadProcessing;
-        downloadDeltaButton.disabled =
-          bulkProcessing || azureUploadProcessing || currentSource !== "draft";
-        const azureAvailable =
-          currentSource === "data" && !bulkProcessing && !azureUploadProcessing;
+        if (dataReadonlyHint) {
+          dataReadonlyHint.classList.toggle("hidden", editable);
+        }
+
+        setModeControlVisibility(editable);
+
+        editDataButton.disabled = busy || editable;
+        saveButton.disabled = busy || !editable || saveInFlight;
+        validateButton.disabled = busy || !editable;
+        if (autoSaveToggle) {
+          autoSaveToggle.disabled = busy || !editable;
+        }
+        syncAiMatchToggleUi({ busy, editable });
+        downloadButton.disabled = busy;
+        downloadDeltaButton.disabled = busy || !editable;
+        showDeltaButton.disabled = busy || !editable;
+        addRowButton.disabled = busy || !editable;
+        bulkUploadButton.disabled = busy || !editable;
+        // Refresh is available on Data (opens Draft as needed) and while editing.
+        refreshEolButton.disabled = busy;
+        deleteDraftButton.disabled = busy || !editable;
+
+        if (!editable && showDeltaOnly) {
+          setShowDeltaOnly(false, { apply: false });
+        } else if (editable && currentSource === "draft") {
+          syncShowDeltaButton();
+        }
+
+        const azureAvailable = onData && !busy;
         azureMenuButton.disabled = !azureAvailable;
         azureUploadButton.disabled = !azureAvailable;
         azureSettingsButton.disabled = !azureAvailable;
         if (!azureAvailable) {
           closeAzureMenu();
         }
-        refreshEolButton.disabled = bulkProcessing || azureUploadProcessing;
-        deleteDraftButton.disabled = bulkProcessing || azureUploadProcessing || currentSource !== "draft";
+
         revertButton.disabled =
-          bulkProcessing ||
-          azureUploadProcessing ||
-          (!isDirty && !(currentSource === "draft" && hasAnyRevertableRows()));
+          busy || (!isDirty && !(editable && hasAnyRevertableRows()));
+        syncShowDeltaButton();
       }
 
       function promoteToDraftSource() {
-        if (currentSource === "draft") {
+        return isLookupEditable();
+      }
+
+      async function startEditData() {
+        if (bulkProcessing || azureUploadProcessing) {
+          return;
+        }
+        if (isLookupEditable()) {
+          showStatus("Already editing in Draft.", "info");
           return;
         }
 
-        currentSource = "draft";
-        updateSourceUi();
+        showStatus("Opening Draft for editing...");
+        try {
+          const draftResponse = await fetch("/api/lookup?source=draft");
+          if (draftResponse.ok) {
+            await loadRows("draft");
+            showStatus("Draft opened for editing.", "success");
+            return;
+          }
+          if (draftResponse.status !== 404) {
+            throw new Error("Unable to open Draft for editing.");
+          }
+
+          const cleanRows = allRows.map((row) =>
+            Object.fromEntries(headers.map((header) => [header, row[header] ?? ""]))
+          );
+          const sessionEvidenceByOs = {};
+          allRows.forEach((row) => {
+            const osKey = String(row.os_string ?? "").trim();
+            if (!osKey || !isMeaningfulProof(row.__proof)) {
+              return;
+            }
+            sessionEvidenceByOs[osKey] = {
+              detailed: cloneProofValue(row.__proof.detailed),
+              normalized: cloneProofValue(row.__proof.normalized),
+              eol: cloneProofValue(row.__proof.eol),
+            };
+          });
+          currentSource = "draft";
+          originalRows = cloneRows(cleanRows);
+          currentEvidenceByOs = { ...dataEvidenceByOs, ...sessionEvidenceByOs };
+          allRows = hydrateRows(cleanRows, currentEvidenceByOs);
+          setDirty(false);
+          setShowDeltaOnly(true, { apply: false });
+          updateSourceUi();
+          applyFilter();
+          showStatus("Editing from Data. Changes auto-save to Draft when Auto-save is on.", "info");
+        } catch (error) {
+          showStatus(error.message, "error");
+        }
       }
 
       function blankRow() {
@@ -762,9 +1520,23 @@
         return dateInputToEpoch(value);
       }
 
+      function collapseTrailingVersionZeros(version) {
+        const parts = String(version).split(".");
+        while (parts.length > 1 && /^0+$/.test(parts[parts.length - 1])) {
+          parts.pop();
+        }
+        return parts.join(".");
+      }
+
+      function protectVersions(text) {
+        return String(text).replace(/\b\d+(?:\.\d+)+\b/g, (match) => {
+          const collapsed = collapseTrailingVersionZeros(match);
+          return `v${collapsed.replace(/\./g, "x")}`;
+        });
+      }
+
       function normalizeForMatch(value) {
-        return String(value ?? "")
-          .toLowerCase()
+        return protectVersions(String(value ?? "").toLowerCase())
           .replace(/[^a-z0-9]+/g, " ")
           .trim()
           .replace(/\s+/g, " ");
@@ -775,7 +1547,68 @@
         return normalized ? normalized.split(" ") : [];
       }
 
+      const vendorPatterns = [
+        ["cisco", [/\bcisco\b/i, /\bios[\s-]?xe\b/i, /\bios[\s-]?xr\b/i, /\bnx[\s-]?os\b/i, /\bciscoios\b/i, /\bciscoxe\b/i, /\bciscoxr\b/i]],
+        ["apple", [/\bapple\b/i, /\biphone\b/i, /\bipad\b/i, /\bipod\b/i, /\bmacos\b/i, /\bmac\s*os\b/i, /\bvisionos\b/i, /\bappleios\b/i]],
+        ["microsoft", [/\bmicrosoft\b/i, /\bwindows\b/i, /\bwin(?:dows)?(?:\s|$)/i, /\bmsft\b/i]],
+        ["android", [/\bandroid\b/i]],
+        ["redhat", [/\bred\s*hat\b/i, /\brhel\b/i, /\bredhat\b/i]],
+        ["ubuntu", [/\bubuntu\b/i]],
+        ["debian", [/\bdebian\b/i]],
+        ["centos", [/\bcentos\b/i]],
+        ["oracle", [/\boracle\b/i, /\bsolaris\b/i]],
+        ["vmware", [/\bvmware\b/i, /\besxi\b/i, /\bvsphere\b/i]],
+        ["amazon", [/\bamazon\s*linux\b/i, /\bamzn\b/i]],
+        ["suse", [/\bsuse\b/i, /\bsles\b/i, /\bopensuse\b/i]],
+        ["fortinet", [/\bfortinet\b/i, /\bfortios\b/i, /\bfortigate\b/i]],
+        ["paloalto", [/\bpalo\s*alto\b/i, /\bpan[\s-]?os\b/i]],
+        ["ibm", [/\bibm\b/i, /\baix\b/i]],
+        ["hp", [/\bhp[\s-]?ux\b/i, /\bhewlett\b/i]],
+        ["freebsd", [/\bfreebsd\b/i]],
+        ["f5", [/\bf5\b/i, /\bbig[\s-]?ip\b/i]],
+        ["citrix", [/\bcitrix\b/i, /\bxenserver\b/i]],
+      ];
+
+      function vendorTags(value) {
+        const text = String(value ?? "").trim().toLowerCase();
+        if (!text) {
+          return new Set();
+        }
+        const tags = new Set();
+        vendorPatterns.forEach(([vendor, patterns]) => {
+          if (patterns.some((pattern) => pattern.test(text))) {
+            tags.add(vendor);
+          }
+        });
+        if (!tags.has("apple") && !tags.has("cisco")) {
+          if (/\bios\b/i.test(text) && !/\bios[\s-]?x[er]\b/i.test(text)) {
+            if (/\b(?:iphone|ipad|ipod|apple)\b/i.test(text) || /\bios\s+\d+\b/i.test(text)) {
+              tags.add("apple");
+            }
+          }
+        }
+        return tags;
+      }
+
+      function vendorsCompatible(left, right) {
+        const leftTags = vendorTags(left);
+        const rightTags = vendorTags(right);
+        if (!leftTags.size || !rightTags.size) {
+          return true;
+        }
+        for (const tag of leftTags) {
+          if (rightTags.has(tag)) {
+            return true;
+          }
+        }
+        return false;
+      }
+
       function strictMatchPercent(queryValue, candidateValue) {
+        if (!vendorsCompatible(queryValue, candidateValue)) {
+          return 0;
+        }
+
         const query = normalizeForMatch(queryValue);
         const candidate = normalizeForMatch(candidateValue);
         if (!query || !candidate) {
@@ -813,11 +1646,151 @@
           return 0;
         }
 
+        const detailed = candidate.normalized_os_detailed_name;
+        const normalized = candidate.normalized_os;
+        if (!vendorsCompatible(osValue, `${detailed || ""} ${normalized || ""}`)) {
+          return 0;
+        }
+
+        // Score only against normalized fields — not raw os_string —
+        // to avoid false hits like "Linux 2.0.3x 3" for "Linux Linux 3.2.0".
         return Math.max(
-          strictMatchPercent(osValue, candidate.os_string),
-          strictMatchPercent(osValue, candidate.normalized_os_detailed_name),
-          strictMatchPercent(osValue, candidate.normalized_os)
+          strictMatchPercent(osValue, detailed),
+          strictMatchPercent(osValue, normalized)
         );
+      }
+
+      function emptyFieldProof() {
+        return { method: "none" };
+      }
+
+      function emptyEolProof() {
+        return { method: "none" };
+      }
+
+      function emptyProof() {
+        return {
+          detailed: emptyFieldProof(),
+          normalized: emptyFieldProof(),
+          eol: emptyEolProof(),
+        };
+      }
+
+      function cloneProofValue(value) {
+        if (value == null) {
+          return value;
+        }
+        try {
+          return JSON.parse(JSON.stringify(value));
+        } catch {
+          return value;
+        }
+      }
+
+      function proofFromStored(stored) {
+        const proof = emptyProof();
+        if (!stored || typeof stored !== "object") {
+          return proof;
+        }
+        if (stored.detailed && typeof stored.detailed === "object") {
+          proof.detailed = cloneProofValue(stored.detailed);
+        }
+        if (stored.normalized && typeof stored.normalized === "object") {
+          proof.normalized = cloneProofValue(stored.normalized);
+        }
+        if (stored.eol && typeof stored.eol === "object") {
+          proof.eol = cloneProofValue(stored.eol);
+        }
+        return proof;
+      }
+
+      function isMeaningfulProof(proof) {
+        if (!proof || typeof proof !== "object") {
+          return false;
+        }
+        return [proof.detailed, proof.normalized, proof.eol].some((part) => {
+          const method = String(part?.method ?? "none").trim();
+          return Boolean(method && method !== "none");
+        });
+      }
+
+      function evidenceByOsFromPayload(payload) {
+        const byOs = payload?.evidence?.by_os;
+        if (!byOs || typeof byOs !== "object") {
+          return {};
+        }
+        const mapped = {};
+        Object.entries(byOs).forEach(([key, value]) => {
+          const osKey = String(key ?? "").trim();
+          if (!osKey || !value || typeof value !== "object") {
+            return;
+          }
+          mapped[osKey] = cloneProofValue(value);
+        });
+        return mapped;
+      }
+
+      function buildEvidencePayload(rows = allRows) {
+        const byOs = {};
+        rows.forEach((row) => {
+          const osKey = String(row.os_string ?? "").trim();
+          if (!osKey) {
+            return;
+          }
+          const proof = ensureProof(row);
+          if (!isMeaningfulProof(proof)) {
+            return;
+          }
+          byOs[osKey] = {
+            detailed: cloneProofValue(proof.detailed),
+            normalized: cloneProofValue(proof.normalized),
+            eol: cloneProofValue(proof.eol),
+          };
+        });
+        return {
+          by_os: byOs,
+          updated_at: new Date().toISOString(),
+        };
+      }
+
+      function ensureProof(row) {
+        if (!row.__proof) {
+          row.__proof = emptyProof();
+        }
+        if (!row.__proof.detailed) {
+          row.__proof.detailed = emptyFieldProof();
+        }
+        if (!row.__proof.normalized) {
+          row.__proof.normalized = emptyFieldProof();
+        }
+        if (!row.__proof.eol) {
+          row.__proof.eol = emptyEolProof();
+        }
+        return row.__proof;
+      }
+
+      function matchedFromSnapshot(candidate) {
+        return {
+          os_string: String(candidate?.os_string ?? "").trim(),
+          normalized_os_detailed_name: String(candidate?.normalized_os_detailed_name ?? "").trim(),
+          normalized_os: String(candidate?.normalized_os ?? "").trim(),
+        };
+      }
+
+      function setManualFieldProof(row, header) {
+        const proof = ensureProof(row);
+        if (header === "normalized_os_detailed_name") {
+          proof.detailed = { method: "manual" };
+        } else if (header === "normalized_os") {
+          proof.normalized = { method: "manual" };
+        } else if (
+          header === "eol_date" ||
+          header === "eol_status" ||
+          header === "eoas_date" ||
+          header === "eoas_status"
+        ) {
+          proof.eol = { method: "manual" };
+        }
       }
 
       function emptyNormalizationSuggestion() {
@@ -898,6 +1871,8 @@
           detailedAuto: true,
           normalizedAuto: true,
           fuzzyMatched: true,
+          matchScore: bestScore,
+          matchedFrom: matchedFromSnapshot(bestCandidate),
         };
       }
 
@@ -940,6 +1915,32 @@
         });
       }
 
+      function buildNormalizationProof(method, suggestion) {
+        if (!method || method === "none") {
+          return emptyFieldProof();
+        }
+
+        const proof = { method };
+        if (suggestion?.matchScore != null) {
+          proof.score = suggestion.matchScore;
+        }
+        if (suggestion?.matchedFrom) {
+          proof.matchedFrom = { ...suggestion.matchedFrom };
+        } else if (
+          String(suggestion?.normalized_os_detailed_name ?? "").trim() ||
+          String(suggestion?.normalized_os ?? "").trim()
+        ) {
+          proof.matchedFrom = {
+            os_string: "",
+            normalized_os_detailed_name: String(
+              suggestion.normalized_os_detailed_name ?? ""
+            ).trim(),
+            normalized_os: String(suggestion.normalized_os ?? "").trim(),
+          };
+        }
+        return proof;
+      }
+
       async function inferNormalizationValues(
         osValue,
         excludeRowId = null,
@@ -949,12 +1950,16 @@
         const fuzzySuggestion = inferFuzzyNormalizationValues(osValue, excludeRowId, candidates);
         if (fuzzySuggestion.fuzzyMatched) {
           const { fuzzyMatched, ...suggestion } = fuzzySuggestion;
-          return suggestion;
+          return { ...suggestion, matchMethod: "fuzzy" };
+        }
+
+        if (!isAiMatchingEnabled()) {
+          return { ...emptyNormalizationSuggestion(), matchMethod: "none" };
         }
 
         const allowedPairs = buildAllowedPairs(candidates, excludeRowId);
         if (!allowedPairs.length) {
-          return emptyNormalizationSuggestion();
+          return { ...emptyNormalizationSuggestion(), matchMethod: "none" };
         }
 
         try {
@@ -964,6 +1969,12 @@
               ...aiSuggestion,
               detailedAuto: true,
               normalizedAuto: true,
+              matchMethod: "ai",
+              matchedFrom: {
+                os_string: "",
+                normalized_os_detailed_name: aiSuggestion.normalized_os_detailed_name,
+                normalized_os: aiSuggestion.normalized_os,
+              },
             };
           }
         } catch (error) {
@@ -972,7 +1983,7 @@
           }
         }
 
-        return emptyNormalizationSuggestion();
+        return { ...emptyNormalizationSuggestion(), matchMethod: "none" };
       }
 
       async function applyAiNormalizationToRows(rows, candidates, { signal } = {}) {
@@ -993,8 +2004,15 @@
             row.__id,
             candidates
           );
-          applyNormalizationSuggestion(row, suggestion);
+          applyNormalizationSuggestion(row, {
+            ...suggestion,
+            matchMethod: fuzzyMatched ? "fuzzy" : "none",
+          });
         });
+
+        if (!isAiMatchingEnabled()) {
+          return;
+        }
 
         const rowsNeedingAi = rows.filter((row) => {
           if (isAmbiguousOsRow(row)) {
@@ -1027,26 +2045,36 @@
             return;
           }
 
-          if (row.__normalizedDetailedAuto || !String(row.normalized_os_detailed_name ?? "").trim()) {
-            row.normalized_os_detailed_name = aiSuggestion.normalized_os_detailed_name;
-            row.__normalizedDetailedAuto = true;
-          }
-          if (row.__normalizedOsAuto || !String(row.normalized_os ?? "").trim()) {
-            row.normalized_os = aiSuggestion.normalized_os;
-            row.__normalizedOsAuto = true;
-          }
+          applyNormalizationSuggestion(row, {
+            ...aiSuggestion,
+            detailedAuto: true,
+            normalizedAuto: true,
+            matchMethod: "ai",
+            matchedFrom: {
+              os_string: "",
+              normalized_os_detailed_name: aiSuggestion.normalized_os_detailed_name,
+              normalized_os: aiSuggestion.normalized_os,
+            },
+          });
         });
       }
 
       function applyNormalizationSuggestion(row, suggestion) {
+        const proof = ensureProof(row);
+        const fieldProof = buildNormalizationProof(suggestion.matchMethod || "none", suggestion);
+        const hasDetailed = Boolean(String(suggestion.normalized_os_detailed_name ?? "").trim());
+        const hasNormalized = Boolean(String(suggestion.normalized_os ?? "").trim());
+
         if (row.__normalizedDetailedAuto || !String(row.normalized_os_detailed_name ?? "").trim()) {
           row.normalized_os_detailed_name = suggestion.normalized_os_detailed_name;
           row.__normalizedDetailedAuto = suggestion.detailedAuto;
+          proof.detailed = hasDetailed ? { ...fieldProof } : emptyFieldProof();
         }
 
         if (row.__normalizedOsAuto || !String(row.normalized_os ?? "").trim()) {
           row.normalized_os = suggestion.normalized_os;
           row.__normalizedOsAuto = suggestion.normalizedAuto;
+          proof.normalized = hasNormalized ? { ...fieldProof } : emptyFieldProof();
         }
       }
 
@@ -1060,7 +2088,10 @@
           row.__id,
           candidates
         );
-        applyNormalizationSuggestion(row, suggestion);
+        applyNormalizationSuggestion(row, {
+          ...suggestion,
+          matchMethod: fuzzyMatched ? "fuzzy" : "none",
+        });
       }
 
       async function applySuggestedNormalization(
@@ -1085,7 +2116,10 @@
                 row.__id,
                 candidates
               );
-              return fuzzySuggestion;
+              return {
+                ...fuzzySuggestion,
+                matchMethod: fuzzyMatched ? "fuzzy" : "none",
+              };
             })();
 
         applyNormalizationSuggestion(row, suggestion);
@@ -1149,13 +2183,21 @@
       }
 
       function applyAmbiguousOsFields(row) {
+        const ambiguousProof = {
+          method: "ambiguous",
+          note: "Marked Ambiguous OS because the OS value contains '/' and AI confirmed it is ambiguous.",
+        };
+        const proof = ensureProof(row);
+
         if (row.__normalizedDetailedAuto || !String(row.normalized_os_detailed_name ?? "").trim()) {
           row.normalized_os_detailed_name = "Ambiguous OS";
           row.__normalizedDetailedAuto = true;
+          proof.detailed = { ...ambiguousProof };
         }
         if (row.__normalizedOsAuto || !String(row.normalized_os ?? "").trim()) {
           row.normalized_os = "Ambiguous OS";
           row.__normalizedOsAuto = true;
+          proof.normalized = { ...ambiguousProof };
         }
         if (row.__eolDateAuto || !String(row.eol_date ?? "").trim()) {
           row.eol_date = "";
@@ -1173,6 +2215,10 @@
           row.eoas_status = "";
           row.__eoasStatusAuto = true;
         }
+        proof.eol = {
+          method: "none",
+          note: "EOL/EOAS lookup skipped for Ambiguous OS.",
+        };
       }
 
       function isEmptyEolPayload(data) {
@@ -1244,7 +2290,19 @@
             eoas_date: existing.eoas_date ?? "",
             eoas_status: existing.eoas_status ?? "",
           },
-          { forceLifecycle }
+          {
+            forceLifecycle,
+            proofMeta: {
+              method: "lookup-fallback",
+              queryUsed: `${String(row.normalized_os_detailed_name ?? "").trim()} / ${String(row.normalized_os ?? "").trim()}`,
+              queryField: "normalized pair",
+              productSlug: "",
+              releaseName: "",
+              releaseLabel: "",
+              apiNote: "",
+              fallbackFrom: matchedFromSnapshot(existing),
+            },
+          }
         );
         return true;
       }
@@ -1254,13 +2312,26 @@
         return status === "true" || status === "false";
       }
 
-      function applyEolResultToRow(row, data, { forceLifecycle = false } = {}) {
+      function applyEolResultToRow(row, data, { forceLifecycle = false, proofMeta = null } = {}) {
+        const proof = ensureProof(row);
+        const appliedNormalized = { detailed: false, normalized: false };
+        const got = {
+          eol_date: "",
+          eol_status: "",
+          eoas_date: "",
+          eoas_status: "",
+          normalized_os_detailed_name: "",
+          normalized_os: "",
+        };
+
         if (
           (row.__normalizedDetailedAuto || !String(row.normalized_os_detailed_name ?? "").trim()) &&
           String(data.normalized_os_detailed_name ?? "").trim()
         ) {
           row.normalized_os_detailed_name = data.normalized_os_detailed_name;
           row.__normalizedDetailedAuto = true;
+          appliedNormalized.detailed = true;
+          got.normalized_os_detailed_name = String(data.normalized_os_detailed_name).trim();
         }
         if (
           (row.__normalizedOsAuto || !String(row.normalized_os ?? "").trim()) &&
@@ -1268,6 +2339,8 @@
         ) {
           row.normalized_os = data.normalized_os;
           row.__normalizedOsAuto = true;
+          appliedNormalized.normalized = true;
+          got.normalized_os = String(data.normalized_os).trim();
         }
 
         const apiEolDate = String(data.eol_date ?? "").trim();
@@ -1279,6 +2352,7 @@
             // Date is authoritative: clear any previous true/false status.
             row.eol_status = "";
             row.__eolStatusAuto = true;
+            got.eol_date = apiEolDate;
           }
         } else if (!existingEolDate) {
           if (
@@ -1287,6 +2361,7 @@
           ) {
             row.eol_status = data.eol_status || "";
             row.__eolStatusAuto = true;
+            got.eol_status = String(data.eol_status || "").trim();
           }
         }
 
@@ -1299,6 +2374,7 @@
             // Date is authoritative: clear any previous true/false status.
             row.eoas_status = "";
             row.__eoasStatusAuto = true;
+            got.eoas_date = apiEoasDate;
           }
         } else if (!existingEoasDate) {
           if (
@@ -1307,8 +2383,58 @@
           ) {
             row.eoas_status = data.eoas_status || "";
             row.__eoasStatusAuto = true;
+            got.eoas_status = String(data.eoas_status || "").trim();
           }
         }
+
+        if (proofMeta) {
+          const eolProof = {
+            method: proofMeta.method || "api",
+            queryUsed: proofMeta.queryUsed || "",
+            queryField: proofMeta.queryField || "",
+            productSlug: proofMeta.productSlug || "",
+            releaseName: proofMeta.releaseName || "",
+            releaseLabel: proofMeta.releaseLabel || "",
+            apiNote: proofMeta.apiNote || "",
+            got,
+          };
+          if (proofMeta.fallbackFrom) {
+            eolProof.fallbackFrom = { ...proofMeta.fallbackFrom };
+          }
+          proof.eol = eolProof;
+
+          const eolFieldProof = {
+            method: "eol",
+            queryUsed: eolProof.queryUsed,
+            queryField: eolProof.queryField,
+            productSlug: eolProof.productSlug,
+            releaseName: eolProof.releaseName,
+            releaseLabel: eolProof.releaseLabel,
+            matchedFrom: {
+              os_string: "",
+              normalized_os_detailed_name: got.normalized_os_detailed_name,
+              normalized_os: got.normalized_os,
+            },
+          };
+          if (appliedNormalized.detailed) {
+            proof.detailed = { ...eolFieldProof };
+          }
+          if (appliedNormalized.normalized) {
+            proof.normalized = { ...eolFieldProof };
+          }
+        }
+      }
+
+      function buildEolProofMetaFromApi(apiResult) {
+        return {
+          method: "api",
+          queryUsed: String(apiResult.query_used ?? "").trim(),
+          queryField: String(apiResult.query_field ?? "").trim(),
+          productSlug: String(apiResult.product_slug ?? "").trim(),
+          releaseName: String(apiResult.release_name ?? "").trim(),
+          releaseLabel: String(apiResult.release_label ?? "").trim(),
+          apiNote: String(apiResult.api_note ?? "").trim(),
+        };
       }
 
       async function applyEolFromApi(
@@ -1355,10 +2481,31 @@
               if (usedFallback) {
                 updated += 1;
               } else {
+                const proof = ensureProof(row);
+                proof.eol = {
+                  method: "none",
+                  queryUsed: String(apiResult.query_used ?? "").trim(),
+                  queryField: String(apiResult.query_field ?? "").trim(),
+                  productSlug: String(apiResult.product_slug ?? "").trim(),
+                  releaseName: "",
+                  releaseLabel: "",
+                  apiNote: String(apiResult.api_note ?? "No EOL/EOAS data found.").trim(),
+                  got: {
+                    eol_date: "",
+                    eol_status: "",
+                    eoas_date: "",
+                    eoas_status: "",
+                    normalized_os_detailed_name: "",
+                    normalized_os: "",
+                  },
+                };
                 failed += 1;
               }
             } else {
-              applyEolResultToRow(row, apiResult, { forceLifecycle });
+              applyEolResultToRow(row, apiResult, {
+                forceLifecycle,
+                proofMeta: buildEolProofMetaFromApi(apiResult),
+              });
               updated += 1;
             }
           });
@@ -1458,14 +2605,16 @@
       }
 
       function updateRowValue(rowId, header, nextValue) {
+        if (!isLookupEditable()) {
+          showStatus("Click Edit Data to add or modify the lookup.", "info");
+          return false;
+        }
+
         const targetRow = allRows.find((row) => row.__id === rowId);
         if (!targetRow) {
           return false;
         }
 
-        if ((targetRow[header] ?? "") !== nextValue) {
-          promoteToDraftSource();
-        }
         targetRow[header] = nextValue;
         if (header === "os_string") {
           applyFuzzyNormalization(targetRow, nextValue);
@@ -1497,11 +2646,14 @@
       }
 
       function rowCanRevert(row) {
-        if (currentSource === "draft") {
-          return rowDiffersFromData(row);
+        if (currentSource !== "draft") {
+          return false;
         }
+        return rowDiffersFromData(row);
+      }
 
-        return rowHasChanges(row);
+      function rowCanDelete() {
+        return currentSource === "draft";
       }
 
       function getRowIndicatorType(row) {
@@ -1541,6 +2693,13 @@
         if (revertRowButton) {
           revertRowButton.disabled = !rowCanRevert(row);
         }
+
+        const deleteButton = document.querySelector(
+          `.delete-button[data-row-id="${rowId}"]`
+        );
+        if (deleteButton) {
+          deleteButton.disabled = !rowCanDelete();
+        }
       }
 
       function createNewRow(values = {}, candidates = allRows) {
@@ -1553,6 +2712,7 @@
           __eolStatusAuto: true,
           __eoasDateAuto: true,
           __eoasStatusAuto: true,
+          __proof: emptyProof(),
           ...blankRow(),
           ...values,
         };
@@ -1564,60 +2724,30 @@
 
       function setBulkProcessingActive(active) {
         bulkProcessing = active;
-        addRowButton.disabled = active || azureUploadProcessing;
-        bulkUploadButton.disabled = active || azureUploadProcessing;
-        refreshEolButton.disabled = active || azureUploadProcessing;
-        saveButton.disabled = active || azureUploadProcessing;
-        validateButton.disabled = active || azureUploadProcessing || currentSource !== "draft";
-        downloadButton.disabled = active || azureUploadProcessing;
-        downloadDeltaButton.disabled = active || azureUploadProcessing || currentSource !== "draft";
-        const azureAvailable =
-          currentSource === "data" && !active && !azureUploadProcessing;
-        azureMenuButton.disabled = !azureAvailable;
-        azureUploadButton.disabled = !azureAvailable;
-        azureSettingsButton.disabled = !azureAvailable;
-        if (!azureAvailable) {
-          closeAzureMenu();
+        if (active) {
+          cancelScheduledAutoSave();
         }
-        deleteDraftButton.disabled = active || azureUploadProcessing || currentSource !== "draft";
-        revertButton.disabled =
-          active ||
-          azureUploadProcessing ||
-          (!isDirty && !(currentSource === "draft" && hasAnyRevertableRows()));
+        updateSourceUi();
         searchInput.disabled = active || azureUploadProcessing;
         sourceSelect.disabled = active || azureUploadProcessing;
+        evidenceFilterSelect.disabled = active || azureUploadProcessing;
         bulkApplyButton.disabled = active;
         bulkCancelButton.disabled = active;
         bulkCloseButton.disabled = active;
         addOsApplyButton.disabled = active;
         addOsCancelButton.disabled = active;
         addOsCloseButton.disabled = active;
+        if (!active && isDirty) {
+          scheduleAutoSave();
+        }
       }
 
       function setAzureUploadProcessingActive(active) {
         azureUploadProcessing = active;
-        addRowButton.disabled = active || bulkProcessing;
-        bulkUploadButton.disabled = active || bulkProcessing;
-        refreshEolButton.disabled = active || bulkProcessing;
-        saveButton.disabled = active || bulkProcessing;
-        validateButton.disabled = active || bulkProcessing || currentSource !== "draft";
-        downloadButton.disabled = active || bulkProcessing;
-        downloadDeltaButton.disabled = active || bulkProcessing || currentSource !== "draft";
-        const azureAvailable =
-          currentSource === "data" && !active && !bulkProcessing;
-        azureMenuButton.disabled = !azureAvailable;
-        azureUploadButton.disabled = !azureAvailable;
-        azureSettingsButton.disabled = !azureAvailable;
-        if (!azureAvailable) {
-          closeAzureMenu();
-        }
-        deleteDraftButton.disabled = active || bulkProcessing || currentSource !== "draft";
-        revertButton.disabled =
-          active ||
-          bulkProcessing ||
-          (!isDirty && !(currentSource === "draft" && hasAnyRevertableRows()));
+        updateSourceUi();
         searchInput.disabled = active || bulkProcessing;
         sourceSelect.disabled = active || bulkProcessing;
+        evidenceFilterSelect.disabled = active || bulkProcessing;
       }
 
       function openBulkProgress(
@@ -1708,6 +2838,10 @@
       }
 
       function openAddOsDialog() {
+        if (!isLookupEditable()) {
+          showStatus("Click Edit Data to add or modify the lookup.", "info");
+          return;
+        }
         addOsInput.value = "";
         addOsDialog.showModal();
         setTimeout(() => addOsInput.focus(), 0);
@@ -1862,6 +2996,10 @@
       }
 
       function openBulkUploadDialog() {
+        if (!isLookupEditable()) {
+          showStatus("Click Edit Data to add or modify the lookup.", "info");
+          return;
+        }
         bulkUploadTextarea.value = "";
         resetBulkFileImport();
         setBulkSourceMode("paste");
@@ -1877,6 +3015,10 @@
 
       async function addOperatingSystems(values, { closeDialog } = {}) {
         if (bulkProcessing) {
+          return;
+        }
+        if (!isLookupEditable()) {
+          showStatus("Click Edit Data to add or modify the lookup.", "info");
           return;
         }
 
@@ -2083,8 +3225,62 @@
         await addOperatingSystems(values, { closeDialog: closeBulkUploadDialog });
       }
 
+      async function ensureDraftWorkspaceForEolRefresh() {
+        // Already editing Draft: keep in-memory rows (including unsaved adds/edits).
+        if (currentSource === "draft") {
+          return true;
+        }
+
+        showStatus("Preparing Draft for EOL/EOAS refresh...");
+        try {
+          const draftResponse = await fetch("/api/lookup?source=draft");
+          if (draftResponse.ok) {
+            // Prefer existing Draft so Data refresh cannot wipe draft changes.
+            await loadRows("draft");
+            showStatus("Using existing Draft for EOL/EOAS refresh.", "info");
+            return true;
+          }
+          if (draftResponse.status !== 404) {
+            throw new Error("Unable to check Draft before EOL/EOAS refresh.");
+          }
+
+          // No Draft yet — copy current Data into Draft, then refresh there.
+          const cleanRows = allRows.map((row) =>
+            Object.fromEntries(headers.map((header) => [header, row[header] ?? ""]))
+          );
+          const sessionEvidenceByOs = {};
+          allRows.forEach((row) => {
+            const osKey = String(row.os_string ?? "").trim();
+            if (!osKey || !isMeaningfulProof(row.__proof)) {
+              return;
+            }
+            sessionEvidenceByOs[osKey] = {
+              detailed: cloneProofValue(row.__proof.detailed),
+              normalized: cloneProofValue(row.__proof.normalized),
+              eol: cloneProofValue(row.__proof.eol),
+            };
+          });
+          currentSource = "draft";
+          originalRows = cloneRows(cleanRows);
+          currentEvidenceByOs = { ...dataEvidenceByOs, ...sessionEvidenceByOs };
+          allRows = hydrateRows(cleanRows, currentEvidenceByOs);
+          setDirty(false);
+          setShowDeltaOnly(true, { apply: false });
+          updateSourceUi();
+          applyFilter();
+          showStatus("Created Draft from Data for EOL/EOAS refresh.", "info");
+          return true;
+        } catch (error) {
+          showStatus(error.message, "error");
+          return false;
+        }
+      }
+
       async function refreshAllEolData() {
         if (bulkProcessing) {
+          return;
+        }
+        if (!(await ensureDraftWorkspaceForEolRefresh())) {
           return;
         }
 
@@ -2269,6 +3465,57 @@
         return true;
       }
 
+      function getRowEvidenceKinds(row) {
+        const proof = row.__proof || {};
+        const methods = [
+          proof.detailed?.method || "none",
+          proof.normalized?.method || "none",
+          proof.eol?.method || "none",
+        ];
+        const kinds = new Set();
+
+        methods.forEach((method) => {
+          if (method === "fuzzy") {
+            kinds.add("fuzzy");
+          } else if (method === "ai") {
+            kinds.add("ai");
+          } else if (method === "fuzzy+ai") {
+            kinds.add("fuzzy+ai");
+            kinds.add("fuzzy");
+            kinds.add("ai");
+          } else if (method === "manual") {
+            kinds.add("manual");
+          } else if (method === "eol" || method === "api") {
+            kinds.add("eol");
+          }
+        });
+
+        if (
+          !kinds.has("fuzzy") &&
+          !kinds.has("ai") &&
+          !kinds.has("fuzzy+ai") &&
+          !kinds.has("manual") &&
+          !kinds.has("eol")
+        ) {
+          kinds.add("null");
+        }
+
+        return kinds;
+      }
+
+      function rowMatchesEvidenceFilter(row) {
+        if (!evidenceFilter) {
+          return true;
+        }
+        return getRowEvidenceKinds(row).has(evidenceFilter);
+      }
+
+      function syncEvidenceFilterInput() {
+        if (evidenceFilterSelect) {
+          evidenceFilterSelect.value = evidenceFilter || "";
+        }
+      }
+
       function rowMatchesColumnFilter(row, header) {
         const filter = columnFilters[header];
         if (!filter) {
@@ -2355,11 +3602,132 @@
         headers.forEach((header) => {
           columnFilters[header] = { mode: "", text: "", from: "", to: "" };
         });
+        evidenceFilter = "";
         syncColumnFilterInputs();
+        syncEvidenceFilterInput();
         applyFilter();
       }
 
-      function applyFilter() {
+      function syncShowDeltaButton() {
+        if (!showDeltaButton) {
+          return;
+        }
+        showDeltaButton.setAttribute("aria-pressed", String(showDeltaOnly));
+        showDeltaButton.classList.toggle("is-active", showDeltaOnly);
+        showDeltaButton.textContent = showDeltaOnly ? "Showing Delta" : "Show Delta";
+      }
+
+      function setShowDeltaOnly(enabled, { apply = true } = {}) {
+        showDeltaOnly = Boolean(enabled) && currentSource === "draft";
+        syncShowDeltaButton();
+        if (apply) {
+          applyFilter();
+        }
+      }
+
+      function rowMatchesDeltaFilter(row) {
+        if (!showDeltaOnly) {
+          return true;
+        }
+        return Boolean(getRowIndicatorType(row));
+      }
+
+      function compareSortValues(header, leftRow, rightRow) {
+        const leftRaw = leftRow?.[header] ?? "";
+        const rightRaw = rightRow?.[header] ?? "";
+        const leftEmpty = !String(leftRaw).trim();
+        const rightEmpty = !String(rightRaw).trim();
+
+        if (leftEmpty && rightEmpty) {
+          return 0;
+        }
+        if (leftEmpty) {
+          return 1;
+        }
+        if (rightEmpty) {
+          return -1;
+        }
+
+        if (dateHeaders.has(header)) {
+          const leftNum = Number(String(leftRaw).trim());
+          const rightNum = Number(String(rightRaw).trim());
+          if (Number.isFinite(leftNum) && Number.isFinite(rightNum)) {
+            return leftNum - rightNum;
+          }
+        }
+
+        const leftDisplay = String(toDisplayValue(header, leftRaw)).trim().toLowerCase();
+        const rightDisplay = String(toDisplayValue(header, rightRaw)).trim().toLowerCase();
+        return leftDisplay.localeCompare(rightDisplay, undefined, {
+          numeric: true,
+          sensitivity: "base",
+        });
+      }
+
+      function sortFilteredRows() {
+        if (!sortHeader) {
+          return;
+        }
+
+        const direction = sortDirection === "desc" ? -1 : 1;
+        filteredRows.sort((leftRow, rightRow) => {
+          const compared = compareSortValues(sortHeader, leftRow, rightRow);
+          if (compared !== 0) {
+            return compared * direction;
+          }
+
+          const osCompared = compareSortValues("os_string", leftRow, rightRow);
+          if (osCompared !== 0) {
+            return osCompared;
+          }
+
+          return String(leftRow.__id ?? "").localeCompare(String(rightRow.__id ?? ""));
+        });
+      }
+
+      function syncSortHeaders() {
+        document.querySelectorAll(".sort-header-button").forEach((button) => {
+          const header = button.dataset.sortHeader;
+          const indicator = button.querySelector(".sort-indicator");
+          const isActive = header === sortHeader;
+          button.classList.toggle("is-active", isActive);
+          button.setAttribute("aria-pressed", String(isActive));
+          if (indicator) {
+            if (!isActive) {
+              indicator.textContent = "";
+            } else {
+              indicator.textContent = sortDirection === "desc" ? "↓" : "↑";
+            }
+          }
+          const label = headerLabels[header] ?? header;
+          button.title =
+            isActive && sortDirection === "asc"
+              ? `Sorted by ${label} (ascending). Click for descending.`
+              : isActive
+                ? `Sorted by ${label} (descending). Click for ascending.`
+                : `Sort by ${label}`;
+        });
+      }
+
+      function setSort(header, { toggle = true, apply = true } = {}) {
+        if (!headers.includes(header)) {
+          return;
+        }
+
+        if (toggle && sortHeader === header) {
+          sortDirection = sortDirection === "asc" ? "desc" : "asc";
+        } else {
+          sortHeader = header;
+          sortDirection = "asc";
+        }
+
+        syncSortHeaders();
+        if (apply) {
+          applyFilter({ resetPage: false });
+        }
+      }
+
+      function applyFilter({ resetPage = true } = {}) {
         const query = searchInput.value.trim().toLowerCase();
         filteredRows = allRows.filter((row) => {
           const matchesSearch =
@@ -2374,9 +3742,23 @@
             return false;
           }
 
+          if (!rowMatchesEvidenceFilter(row)) {
+            return false;
+          }
+
+          if (!rowMatchesDeltaFilter(row)) {
+            return false;
+          }
+
           return headers.every((header) => rowMatchesColumnFilter(row, header));
         });
-        currentPage = 1;
+        sortFilteredRows();
+        if (resetPage) {
+          currentPage = 1;
+        } else {
+          const maxPage = Math.max(1, Math.ceil(filteredRows.length / pageSize) || 1);
+          currentPage = Math.min(currentPage, maxPage);
+        }
         renderTable();
       }
 
@@ -2388,8 +3770,29 @@
         updatePaginationControls();
       }
 
+      function createActionIcon(paths) {
+        const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        svg.setAttribute("viewBox", "0 0 24 24");
+        svg.setAttribute("aria-hidden", "true");
+        svg.setAttribute("focusable", "false");
+        svg.classList.add("action-icon");
+        paths.forEach((d) => {
+          const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+          path.setAttribute("d", d);
+          path.setAttribute("fill", "none");
+          path.setAttribute("stroke", "currentColor");
+          path.setAttribute("stroke-width", "2");
+          path.setAttribute("stroke-linecap", "round");
+          path.setAttribute("stroke-linejoin", "round");
+          svg.appendChild(path);
+        });
+        return svg;
+      }
+
       function renderTable() {
         tableBody.innerHTML = "";
+        const editable = isLookupEditable();
+        document.body.classList.toggle("lookup-readonly", !editable);
 
         paginatedRows().forEach((row) => {
           const tr = document.createElement("tr");
@@ -2408,21 +3811,28 @@
               textInput.dataset.rowId = row.__id;
               textInput.dataset.header = header;
               textInput.autocomplete = "off";
+              textInput.readOnly = !editable;
+              textInput.disabled = !editable;
               textInput.addEventListener("change", handleCellEdit);
 
               const pickerButton = document.createElement("button");
               pickerButton.type = "button";
               pickerButton.className = "date-picker-button";
               pickerButton.textContent = "Date";
-              pickerButton.title = "Open date picker";
+              pickerButton.title = editable ? "Open date picker" : "Editing is only available in Draft";
+              pickerButton.disabled = !editable;
 
               const dateInput = document.createElement("input");
               dateInput.type = "date";
               dateInput.className = "date-picker-native";
               dateInput.value = toDisplayValue(header, row[header]);
               dateInput.tabIndex = -1;
+              dateInput.disabled = !editable;
 
               pickerButton.addEventListener("click", () => {
+                if (!editable) {
+                  return;
+                }
                 if (typeof dateInput.showPicker === "function") {
                   dateInput.showPicker();
                 } else {
@@ -2448,6 +3858,7 @@
               select.dataset.rowId = row.__id;
               select.dataset.header = header;
               select.className = "status-select";
+              select.disabled = !editable;
               const normalizedStatusValue = toStoredValue(header, row[header]);
 
               booleanStatusOptions.forEach((option) => {
@@ -2472,6 +3883,8 @@
               input.placeholder = "";
               input.dataset.rowId = row.__id;
               input.dataset.header = header;
+              input.readOnly = !editable;
+              input.disabled = !editable;
               input.addEventListener("input", (event) => {
                 event.target.title = event.target.value;
                 handleCellEdit(event);
@@ -2505,30 +3918,60 @@
           actionStack.className = "row-actions";
 
           const revertRowButton = document.createElement("button");
-          revertRowButton.className = "revert-row-button";
-          revertRowButton.textContent = "Revert";
+          revertRowButton.className = "revert-row-button action-icon-button";
+          revertRowButton.type = "button";
           revertRowButton.dataset.rowId = row.__id;
+          revertRowButton.setAttribute("aria-label", "Revert");
+          revertRowButton.appendChild(
+            createActionIcon([
+              "M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8",
+              "M3 3v5h5",
+            ])
+          );
           revertRowButton.addEventListener("click", () => revertRow(row.__id));
 
           revertRowButton.disabled = !rowCanRevert(row);
-          if (row.__sourceIndex == null) {
-            revertRowButton.title =
-              currentSource === "draft"
-                ? "Remove this operating system from the draft"
-                : "Remove this new unsaved operating system";
+          if (currentSource !== "draft") {
+            revertRowButton.title = "Revert is only available in Draft";
+          } else if (row.__sourceIndex == null) {
+            revertRowButton.title = "Remove this operating system from the draft";
+          } else if (!rowCanRevert(row)) {
+            revertRowButton.title = "No changes to revert for this operating system";
           } else {
-            revertRowButton.title =
-              currentSource === "draft"
-                ? "Revert this operating system to the data lookup version"
-                : "Revert this operating system to its last saved state";
+            revertRowButton.title = "Revert this operating system to the data lookup version";
           }
 
           const deleteButton = document.createElement("button");
-          deleteButton.className = "delete-button";
-          deleteButton.textContent = "Delete";
+          deleteButton.className = "delete-button action-icon-button";
+          deleteButton.type = "button";
+          deleteButton.dataset.rowId = row.__id;
+          deleteButton.setAttribute("aria-label", "Delete");
+          deleteButton.disabled = !rowCanDelete();
+          deleteButton.title =
+            currentSource === "draft"
+              ? "Delete"
+              : "Delete is only available in Draft";
+          deleteButton.appendChild(
+            createActionIcon([
+              "M3 6h18",
+              "M8 6V4h8v2",
+              "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6",
+              "M10 11v6",
+              "M14 11v6",
+            ])
+          );
           deleteButton.addEventListener("click", () => deleteRow(row.__id));
+
+          const proofButton = document.createElement("button");
+          proofButton.className = "proof-button";
+          proofButton.textContent = "Evidence";
+          proofButton.type = "button";
+          proofButton.title = "Show how normalized OS and EOL values were matched";
+          proofButton.addEventListener("click", () => showProofDialog(row));
+
           actionStack.appendChild(revertRowButton);
           actionStack.appendChild(deleteButton);
+          actionStack.appendChild(proofButton);
           actionCell.appendChild(actionStack);
           tr.appendChild(actionCell);
 
@@ -2538,31 +3981,37 @@
         updateCount();
       }
 
-      function hydrateRows(rows) {
-        return rows.map((row, index) => ({
-          __id: crypto.randomUUID?.() ?? `row-${index}-${Date.now()}`,
-          __sourceIndex: index,
-          __dataSourceIndex: dataBaselineRows.findIndex(
-            (candidate) => dataBaselineKey(candidate.os_string) === dataBaselineKey(row.os_string)
-          ),
-          __normalizedDetailedAuto: false,
-          __normalizedOsAuto: false,
-          __eolDateAuto: false,
-          __eolStatusAuto: false,
-          __eoasDateAuto: false,
-          __eoasStatusAuto: false,
-          ...blankRow(),
-          ...row,
-        }));
+      function hydrateRows(rows, evidenceByOs = currentEvidenceByOs) {
+        return rows.map((row, index) => {
+          const osKey = String(row.os_string ?? "").trim();
+          const storedProof = osKey ? evidenceByOs[osKey] : null;
+          return {
+            __id: crypto.randomUUID?.() ?? `row-${index}-${Date.now()}`,
+            __sourceIndex: index,
+            __dataSourceIndex: dataBaselineRows.findIndex(
+              (candidate) => dataBaselineKey(candidate.os_string) === dataBaselineKey(row.os_string)
+            ),
+            __normalizedDetailedAuto: false,
+            __normalizedOsAuto: false,
+            __eolDateAuto: false,
+            __eolStatusAuto: false,
+            __eoasDateAuto: false,
+            __eoasStatusAuto: false,
+            __proof: proofFromStored(storedProof),
+            ...blankRow(),
+            ...row,
+          };
+        });
       }
 
       function revertRows() {
         if (currentSource === "draft") {
-          allRows = hydrateRows(cloneRows(dataBaselineRows));
+          currentEvidenceByOs = { ...dataEvidenceByOs };
+          allRows = hydrateRows(cloneRows(dataBaselineRows), currentEvidenceByOs);
           promoteToDraftSource();
           syncDirtyState();
         } else {
-          allRows = hydrateRows(cloneRows(originalRows));
+          allRows = hydrateRows(cloneRows(originalRows), currentEvidenceByOs);
           setDirty(false);
         }
         clearStatus();
@@ -2570,6 +4019,12 @@
       }
 
       function handleCellEdit(event) {
+        if (!isLookupEditable()) {
+          showStatus("Click Edit Data to add or modify the lookup.", "info");
+          applyFilter({ resetPage: false });
+          return;
+        }
+
         const { rowId, header } = event.target.dataset;
         const targetRow = allRows.find((row) => row.__id === rowId);
         if (!targetRow) {
@@ -2578,26 +4033,39 @@
 
         if (header === "normalized_os_detailed_name") {
           targetRow.__normalizedDetailedAuto = false;
+          setManualFieldProof(targetRow, header);
         }
         if (header === "normalized_os") {
           targetRow.__normalizedOsAuto = false;
+          setManualFieldProof(targetRow, header);
         }
         if (header === "eol_date") {
           targetRow.__eolDateAuto = false;
+          setManualFieldProof(targetRow, header);
         }
         if (header === "eol_status") {
           targetRow.__eolStatusAuto = false;
+          setManualFieldProof(targetRow, header);
         }
         if (header === "eoas_date") {
           targetRow.__eoasDateAuto = false;
+          setManualFieldProof(targetRow, header);
         }
         if (header === "eoas_status") {
           targetRow.__eoasStatusAuto = false;
+          setManualFieldProof(targetRow, header);
         }
         updateRowValue(rowId, header, toStoredValue(header, event.target.value));
+        if (evidenceFilter) {
+          applyFilter({ resetPage: false });
+        }
       }
 
       async function finalizeOsEdit(event) {
+        if (!isLookupEditable()) {
+          return;
+        }
+
         const { rowId, header } = event.target.dataset;
         if (header !== "os_string") {
           return;
@@ -2611,7 +4079,7 @@
         const osValue = toStoredValue(header, event.target.value);
         if (!String(osValue ?? "").trim()) {
           updateRowValue(rowId, header, osValue);
-          renderTable();
+          applyFilter({ resetPage: false });
           return;
         }
 
@@ -2622,14 +4090,14 @@
           targetRow.__normalizedDetailedAuto = true;
           targetRow.__normalizedOsAuto = true;
           syncDirtyState();
-          renderTable();
+          applyFilter({ resetPage: false });
           showStatus(`"${osValue}" already exists in the lookup.`, "info");
           return;
         }
 
         if (targetRow.__sourceIndex != null) {
           updateRowValue(rowId, header, osValue);
-          renderTable();
+          applyFilter({ resetPage: false });
           return;
         }
 
@@ -2640,10 +4108,15 @@
           await applyEolFromApi([targetRow]);
         }
         syncDirtyState();
-        renderTable();
+        applyFilter({ resetPage: false });
       }
 
       async function deleteRow(rowId) {
+        if (!rowCanDelete()) {
+          showStatus("Delete is only available in Draft.", "info");
+          return;
+        }
+
         const targetRow = allRows.find((row) => row.__id === rowId);
         if (!targetRow) {
           return;
@@ -2674,9 +4147,14 @@
         }
 
         const targetRow = allRows[rowIndex];
-        if (rowCanRevert(targetRow)) {
-          promoteToDraftSource();
+        if (!rowCanRevert(targetRow)) {
+          if (currentSource !== "draft") {
+            showStatus("Revert is only available in Draft.", "info");
+          }
+          return;
         }
+
+        promoteToDraftSource();
         if (currentSource === "draft") {
           const dataBaselineRow = findDataBaselineRow(targetRow);
           if (!dataBaselineRow) {
@@ -2692,6 +4170,7 @@
               __eolStatusAuto: false,
               __eoasDateAuto: false,
               __eoasStatusAuto: false,
+              __proof: emptyProof(),
               ...blankRow(),
               ...dataBaselineRow,
             };
@@ -2710,6 +4189,7 @@
             __eolStatusAuto: false,
             __eoasDateAuto: false,
             __eoasStatusAuto: false,
+            __proof: emptyProof(),
             ...blankRow(),
             ...originalRow,
           };
@@ -2720,6 +4200,7 @@
       }
 
       async function loadRows(source = currentSource) {
+        cancelScheduledAutoSave();
         clearStatus();
         showStatus(`Loading ${sourceLabel(source).toLowerCase()}...`);
 
@@ -2732,6 +4213,7 @@
 
             const dataBaselinePayload = await dataBaselineResponse.json();
             dataBaselineRows = cloneRows(dataBaselinePayload.rows);
+            dataEvidenceByOs = evidenceByOsFromPayload(dataBaselinePayload);
           }
 
           const response = await fetch(`/api/lookup?source=${encodeURIComponent(source)}`);
@@ -2745,8 +4227,16 @@
           const payload = await response.json();
           currentSource = payload.source === "draft" ? "draft" : "data";
           originalRows = cloneRows(payload.rows);
-          allRows = hydrateRows(payload.rows);
+          currentEvidenceByOs =
+            currentSource === "data"
+              ? { ...dataEvidenceByOs }
+              : evidenceByOsFromPayload(payload);
+          if (currentSource === "data") {
+            dataEvidenceByOs = { ...currentEvidenceByOs };
+          }
+          allRows = hydrateRows(payload.rows, currentEvidenceByOs);
           setDirty(false);
+          setShowDeltaOnly(currentSource === "draft", { apply: false });
           updateSourceUi();
           clearStatus();
           applyFilter();
@@ -2755,28 +4245,72 @@
         }
       }
 
-      async function saveRows() {
-        showStatus("Saving draft...");
+      async function saveRows({ mode = "manual" } = {}) {
+        if (!isLookupEditable()) {
+          showStatus("Click Edit Data to add or modify the lookup.", "info");
+          return false;
+        }
+        if (saveInFlight) {
+          if (mode === "manual") {
+            showStatus("A save is already in progress...", "info");
+          }
+          return false;
+        }
+        if (mode === "auto" && !isDirty) {
+          return true;
+        }
 
-        const rows = allRows.map(({ __id, ...row }) => row);
+        cancelScheduledAutoSave();
+        saveInFlight = true;
+        updateSourceUi();
+
+        if (mode === "manual") {
+          showStatus("Saving draft...");
+        } else {
+          dirtyIndicator.textContent = "Saving...";
+          dirtyIndicator.classList.add("dirty");
+        }
+
+        const rows = allRows.map((row) =>
+          Object.fromEntries(headers.map((header) => [header, row[header] ?? ""]))
+        );
+        const evidence = buildEvidencePayload(allRows);
         try {
           const response = await fetch("/api/lookup?source=draft", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ rows }),
+            body: JSON.stringify({ rows, evidence }),
           });
 
           if (!response.ok) {
             throw new Error("Unable to save draft.");
           }
 
+          const payload = await response.json().catch(() => ({}));
           currentSource = "draft";
           originalRows = cloneRows(rows);
+          currentEvidenceByOs = evidenceByOsFromPayload(
+            payload?.evidence ? payload : { evidence }
+          );
+          saveInFlight = false;
           setDirty(false);
           updateSourceUi();
-          showStatus("Draft saved successfully.", "success");
+          if (mode === "manual") {
+            showStatus("Draft saved successfully.", "success");
+          } else {
+            showStatus("Draft auto-saved.", "success");
+          }
+          return true;
         } catch (error) {
+          saveInFlight = false;
+          dirtyIndicator.textContent = isDirty ? "Unsaved" : "Saved";
+          dirtyIndicator.classList.toggle("dirty", isDirty);
+          updateSourceUi();
           showStatus(error.message, "error");
+          if (isDirty) {
+            scheduleAutoSave();
+          }
+          return false;
         }
       }
 
@@ -2784,6 +4318,13 @@
         if (currentSource !== "draft") {
           showStatus("Load the draft source before validating changes.", "info");
           return;
+        }
+
+        if (isDirty) {
+          const saved = await saveRows({ mode: "manual" });
+          if (!saved) {
+            return;
+          }
         }
 
         const confirmed = await askConfirm({
@@ -2799,18 +4340,27 @@
 
         showStatus("Validating Draft and updating Data...");
 
-        const rows = allRows.map(({ __id, ...row }) => row);
+        const rows = allRows.map((row) =>
+          Object.fromEntries(headers.map((header) => [header, row[header] ?? ""]))
+        );
+        const evidence = buildEvidencePayload(allRows);
         try {
           const response = await fetch("/api/lookup/validate", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ rows }),
+            body: JSON.stringify({ rows, evidence }),
           });
 
           if (!response.ok) {
             throw new Error("Unable to validate changes.");
           }
 
+          const payload = await response.json().catch(() => ({}));
+          dataBaselineRows = cloneRows(rows);
+          dataEvidenceByOs = evidenceByOsFromPayload(
+            payload?.evidence ? payload : { evidence }
+          );
+          currentEvidenceByOs = { ...dataEvidenceByOs };
           showStatus("Draft validated and _data lookup overwritten.", "success");
         } catch (error) {
           showStatus(error.message, "error");
@@ -3335,10 +4885,55 @@
         );
       });
 
-      saveButton.addEventListener("click", saveRows);
+      saveButton.addEventListener("click", () => {
+        void saveRows({ mode: "manual" });
+      });
+      editDataButton.addEventListener("click", startEditData);
+      autoSaveToggle.addEventListener("change", () => {
+        autoSaveEnabled = Boolean(autoSaveToggle.checked);
+        if (autoSaveEnabled) {
+          scheduleAutoSave();
+          showStatus("Auto-save enabled.", "info");
+        } else {
+          cancelScheduledAutoSave();
+          showStatus("Auto-save disabled. Use Save Draft to persist changes.", "info");
+        }
+      });
+      if (aiMatchToggle) {
+        aiMatchToggle.addEventListener("change", () => {
+          const enabled = Boolean(aiMatchToggle.checked);
+          saveAiMatchSetting(enabled)
+            .then(() => {
+              if (!aiMatchAvailable) {
+                showStatus(
+                  "AI match unavailable without OPENAI_API_KEY. Fuzzy match still works.",
+                  "info"
+                );
+                return;
+              }
+              showStatus(
+                enabled
+                  ? "AI match enabled for Edit mode."
+                  : "AI match disabled. Only fuzzy matching will be used.",
+                "info"
+              );
+            })
+            .catch((error) => {
+              aiMatchToggle.checked = aiMatchEnabled;
+              showStatus(error.message, "error");
+            });
+        });
+      }
       validateButton.addEventListener("click", validateRows);
       downloadButton.addEventListener("click", downloadLookup);
       downloadDeltaButton.addEventListener("click", downloadDeltaLookup);
+      showDeltaButton.addEventListener("click", () => {
+        if (currentSource !== "draft") {
+          showStatus("Show Delta is only available for Draft.", "info");
+          return;
+        }
+        setShowDeltaOnly(!showDeltaOnly);
+      });
       azureMenuButton.addEventListener("click", (event) => {
         event.stopPropagation();
         toggleAzureMenu();
@@ -3383,10 +4978,18 @@
       });
       searchInput.addEventListener("input", applyFilter);
 
-      document.querySelectorAll("th[data-header]").forEach((th) => {
-        const header = th.dataset.header;
-        th.textContent = headerLabels[header] ?? header;
+      document.querySelectorAll(".sort-header-button").forEach((button) => {
+        const header = button.dataset.sortHeader;
+        const label = headerLabels[header] ?? header;
+        const labelEl = button.querySelector(".sort-header-label");
+        if (labelEl) {
+          labelEl.textContent = label;
+        } else {
+          button.textContent = label;
+        }
+        button.addEventListener("click", () => setSort(header));
       });
+      syncSortHeaders();
 
       document.querySelectorAll("[data-column-filter]").forEach((select) => {
         const header = select.dataset.columnFilter;
@@ -3469,6 +5072,11 @@
         .getElementById("clear-column-filters-button")
         .addEventListener("click", clearColumnFilters);
 
+      evidenceFilterSelect.addEventListener("change", () => {
+        evidenceFilter = evidenceFilterSelect.value || "";
+        applyFilter();
+      });
+
       window.addEventListener("beforeunload", (event) => {
         if (!isDirty) {
           return;
@@ -3478,7 +5086,11 @@
       });
 
       updateSourceUi();
-      loadRows("data");
+      loadAppSettings()
+        .catch(() => {})
+        .finally(() => {
+          loadRows("data");
+        });
     </script>
   </body>
 </html>

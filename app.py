@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -34,9 +35,12 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent
 DATA_PATH = BASE_DIR / "_data" / "eol_lookup.csv"
 DRAFT_PATH = BASE_DIR / "_draft" / "eol_lookup.csv"
+DATA_EVIDENCE_PATH = BASE_DIR / "_data" / "eol_lookup_evidence.json"
+DRAFT_EVIDENCE_PATH = BASE_DIR / "_draft" / "eol_lookup_evidence.json"
 BACKUP_DIR = BASE_DIR / "_backup"
 CONFIG_DIR = BASE_DIR / "_config"
 AZURE_CONFIG_PATH = CONFIG_DIR / "azure.json"
+APP_SETTINGS_PATH = CONFIG_DIR / "app_settings.json"
 CSV_HEADERS = [
     "os_string",
     "normalized_os_detailed_name",
@@ -72,6 +76,8 @@ class LookupRow(BaseModel):
 
 class LookupPayload(BaseModel):
     rows: list[LookupRow] = Field(default_factory=list)
+    # Sidecar evidence keyed by os_string. Not written into the lookup CSV.
+    evidence: dict[str, object] = Field(default_factory=dict)
 
 
 class EolLookupItem(BaseModel):
@@ -139,7 +145,20 @@ class AzureSettings(BaseModel):
     blob_name: str = ""
 
 
+class AppSettings(BaseModel):
+    ai_enabled: bool = True
+
+
+class AppSettingsResponse(BaseModel):
+    ai_enabled: bool = True
+    ai_available: bool = False
+
+
 AZURE_PROGRESS_RE = re.compile(r"(\d+(?:\.\d+)?)%")
+
+
+def openai_api_key_configured() -> bool:
+    return bool(str(os.environ.get("OPENAI_API_KEY") or "").strip())
 
 
 def lookup_path(source: str) -> Path:
@@ -149,6 +168,96 @@ def lookup_path(source: str) -> Path:
     if normalized == "draft":
         return DRAFT_PATH
     raise HTTPException(status_code=400, detail="Unsupported lookup source.")
+
+
+def evidence_path(source: str) -> Path:
+    normalized = source.strip().lower()
+    if normalized == "data":
+        return DATA_EVIDENCE_PATH
+    if normalized == "draft":
+        return DRAFT_EVIDENCE_PATH
+    raise HTTPException(status_code=400, detail="Unsupported lookup source.")
+
+
+def empty_evidence_payload() -> dict[str, object]:
+    return {"by_os": {}, "updated_at": ""}
+
+
+def normalize_evidence_payload(payload: object) -> dict[str, object]:
+    if not isinstance(payload, dict):
+        return empty_evidence_payload()
+
+    by_os_raw = payload.get("by_os")
+    by_os: dict[str, object] = {}
+    if isinstance(by_os_raw, dict):
+        for key, value in by_os_raw.items():
+            os_key = str(key or "").strip()
+            if not os_key or not isinstance(value, dict):
+                continue
+            by_os[os_key] = value
+
+    updated_at = str(payload.get("updated_at") or "").strip()
+    return {"by_os": by_os, "updated_at": updated_at}
+
+
+def prune_evidence_to_rows(
+    evidence: dict[str, object], rows: list[LookupRow]
+) -> dict[str, object]:
+    normalized = normalize_evidence_payload(evidence)
+    by_os = normalized.get("by_os")
+    if not isinstance(by_os, dict):
+        return empty_evidence_payload()
+
+    allowed = {str(row.os_string or "").strip() for row in rows}
+    allowed.discard("")
+    pruned = {key: value for key, value in by_os.items() if key in allowed}
+    return {
+        "by_os": pruned,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+def load_evidence(source: str = "data") -> dict[str, object]:
+    path = evidence_path(source)
+    if not path.exists():
+        return empty_evidence_payload()
+
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return empty_evidence_payload()
+
+    return normalize_evidence_payload(payload)
+
+
+def save_evidence(evidence: dict[str, object], source: str = "data") -> dict[str, object]:
+    path = evidence_path(source)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    normalized = normalize_evidence_payload(evidence)
+    if not normalized.get("updated_at"):
+        normalized["updated_at"] = datetime.now().isoformat(timespec="seconds")
+
+    temp_dir = path.parent
+    with NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        delete=False,
+        dir=temp_dir,
+        suffix=".json",
+    ) as handle:
+        json.dump(normalized, handle, ensure_ascii=True, indent=2)
+        handle.write("\n")
+        temp_path = Path(handle.name)
+
+    temp_path.replace(path)
+    return normalized
+
+
+def delete_evidence(source: str) -> None:
+    path = evidence_path(source)
+    if path.exists():
+        path.unlink()
 
 
 def load_rows(source: str = "data") -> list[dict[str, str]]:
@@ -203,6 +312,17 @@ def backup_data_file() -> Path | None:
     return backup_path
 
 
+def backup_data_evidence() -> Path | None:
+    if not DATA_EVIDENCE_PATH.exists():
+        return None
+
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = BACKUP_DIR / f"eol_lookup_evidence_{timestamp}.json"
+    shutil.copy2(DATA_EVIDENCE_PATH, backup_path)
+    return backup_path
+
+
 def load_azure_settings() -> AzureSettings:
     if not AZURE_CONFIG_PATH.exists():
         return AzureSettings()
@@ -227,6 +347,38 @@ def save_azure_settings(payload: AzureUploadRequest) -> AzureSettings:
         json.dump(settings.model_dump(), handle, indent=2)
         handle.write("\n")
     return settings
+
+
+def load_app_settings() -> AppSettings:
+    if not APP_SETTINGS_PATH.exists():
+        return AppSettings()
+
+    try:
+        with APP_SETTINGS_PATH.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return AppSettings()
+
+    if not isinstance(payload, dict):
+        return AppSettings()
+
+    return AppSettings(ai_enabled=bool(payload.get("ai_enabled", True)))
+
+
+def save_app_settings(settings: AppSettings) -> AppSettings:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    with APP_SETTINGS_PATH.open("w", encoding="utf-8") as handle:
+        json.dump(settings.model_dump(), handle, indent=2)
+        handle.write("\n")
+    return settings
+
+
+def app_settings_response() -> AppSettingsResponse:
+    settings = load_app_settings()
+    return AppSettingsResponse(
+        ai_enabled=settings.ai_enabled,
+        ai_available=openai_api_key_configured(),
+    )
 
 
 def require_azure_settings() -> AzureUploadRequest:
@@ -413,24 +565,42 @@ async def index(request: Request) -> HTMLResponse:
 
 @app.get("/api/lookup")
 async def get_lookup(source: str = "data") -> dict[str, object]:
-    return {"headers": CSV_HEADERS, "rows": load_rows(source), "source": source}
+    return {
+        "headers": CSV_HEADERS,
+        "rows": load_rows(source),
+        "source": source,
+        "evidence": load_evidence(source),
+    }
 
 
 @app.post("/api/lookup")
 async def update_lookup(payload: LookupPayload, source: str = "draft") -> dict[str, object]:
     save_rows(payload.rows, source)
-    return {"saved": True, "row_count": len(payload.rows), "source": source}
+    evidence = save_evidence(prune_evidence_to_rows(payload.evidence, payload.rows), source)
+    return {
+        "saved": True,
+        "row_count": len(payload.rows),
+        "source": source,
+        "evidence": evidence,
+    }
 
 
 @app.post("/api/lookup/validate")
 async def validate_lookup(payload: LookupPayload) -> dict[str, object]:
     backup_path = backup_data_file()
+    evidence_backup_path = backup_data_evidence()
     save_rows(payload.rows, "data")
+    evidence = save_evidence(prune_evidence_to_rows(payload.evidence, payload.rows), "data")
+    # Keep draft evidence aligned with what was validated.
+    if DRAFT_PATH.exists():
+        save_evidence(evidence, "draft")
     return {
         "validated": True,
         "row_count": len(payload.rows),
         "source": "data",
         "backup_path": str(backup_path) if backup_path else "",
+        "evidence_backup_path": str(evidence_backup_path) if evidence_backup_path else "",
+        "evidence": evidence,
     }
 
 
@@ -454,7 +624,19 @@ async def delete_draft_lookup() -> dict[str, object]:
         raise HTTPException(status_code=404, detail="Draft lookup CSV not found.")
 
     DRAFT_PATH.unlink()
+    delete_evidence("draft")
     return {"deleted": True, "source": "draft"}
+
+
+@app.get("/api/settings")
+async def get_app_settings() -> AppSettingsResponse:
+    return app_settings_response()
+
+
+@app.put("/api/settings")
+async def update_app_settings(payload: AppSettings) -> AppSettingsResponse:
+    save_app_settings(payload)
+    return app_settings_response()
 
 
 @app.get("/api/azure/settings")
@@ -484,7 +666,10 @@ async def upload_lookup_to_azure() -> StreamingResponse:
 @app.post("/api/normalize-suggest")
 async def normalize_suggest(payload: NormalizeSuggestRequest) -> dict[str, object]:
     if not payload.items:
-        return {"results": []}
+        return {"results": [], "ai_skipped": False}
+
+    if not load_app_settings().ai_enabled or not openai_api_key_configured():
+        return {"results": [None for _ in payload.items], "ai_skipped": True}
 
     suggestions = await asyncio.to_thread(
         suggest_normalization_batch,
@@ -500,7 +685,7 @@ async def normalize_suggest(payload: NormalizeSuggestRequest) -> dict[str, objec
             continue
         results.append(NormalizeSuggestResult(**suggestion))
 
-    return {"results": results}
+    return {"results": results, "ai_skipped": False}
 
 
 @app.post("/api/ambiguous-os-detect")

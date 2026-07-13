@@ -14,9 +14,54 @@ AMBIGUOUS_OS = "ambiguous os"
 DEFAULT_MODEL = "gpt-4o-mini"
 DEFAULT_FUZZY_MATCH_THRESHOLD = 95
 
+# Strong vendor / product-family signals seen in _data/eol_lookup.csv.
+# Shared words like "ios" are intentionally NOT enough by themselves.
+_VENDOR_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("cisco", (r"\bcisco\b", r"\bios[\s\-]?xe\b", r"\bios[\s\-]?xr\b", r"\bnx[\s\-]?os\b", r"\bciscoios\b", r"\bciscoxe\b", r"\bciscoxr\b")),
+    ("apple", (r"\bapple\b", r"\biphone\b", r"\bipad\b", r"\bipod\b", r"\bmacos\b", r"\bmac\s*os\b", r"\bvisionos\b", r"\bappleios\b")),
+    ("microsoft", (r"\bmicrosoft\b", r"\bwindows\b", r"\bwin(?:dows)?(?:\s|$)", r"\bmsft\b")),
+    ("android", (r"\bandroid\b",)),
+    ("redhat", (r"\bred\s*hat\b", r"\brhel\b", r"\bredhat\b")),
+    ("ubuntu", (r"\bubuntu\b",)),
+    ("debian", (r"\bdebian\b",)),
+    ("centos", (r"\bcentos\b",)),
+    ("oracle", (r"\boracle\b", r"\bsolaris\b")),
+    ("vmware", (r"\bvmware\b", r"\besxi\b", r"\bvsphere\b")),
+    ("amazon", (r"\bamazon\s*linux\b", r"\bamzn\b", r"\baws\b")),
+    ("suse", (r"\bsuse\b", r"\bsles\b", r"\bopensuse\b")),
+    ("fortinet", (r"\bfortinet\b", r"\bfortios\b", r"\bfortigate\b")),
+    ("paloalto", (r"\bpalo\s*alto\b", r"\bpan[\s\-]?os\b")),
+    ("ibm", (r"\bibm\b", r"\baix\b")),
+    ("hp", (r"\bhp[\s\-]?ux\b", r"\bhewlett\b")),
+    ("freebsd", (r"\bfreebsd\b",)),
+    ("f5", (r"\bf5\b", r"\bbig[\s\-]?ip\b")),
+    ("citrix", (r"\bcitrix\b", r"\bxenserver\b")),
+)
+
+
+def _collapse_trailing_version_zeros(version: str) -> str:
+    parts = version.split(".")
+    while len(parts) > 1 and re.fullmatch(r"0+", parts[-1]):
+        parts.pop()
+    return ".".join(parts)
+
+
+def _protect_versions(text: str) -> str:
+    """Keep dotted versions as atomic tokens and treat trailing .0 as equal.
+
+    Examples: 3.2 and 3.2.0 both become v3x2; 3.2.1 stays v3x2x1.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        collapsed = _collapse_trailing_version_zeros(match.group(0))
+        return "v" + collapsed.replace(".", "x")
+
+    return re.sub(r"\b\d+(?:\.\d+)+\b", replace, text)
+
 
 def _normalize_for_match(value: object) -> str:
-    normalized = re.sub(r"[^a-z0-9]+", " ", _clean(value).lower()).strip()
+    protected = _protect_versions(_clean(value).lower())
+    normalized = re.sub(r"[^a-z0-9]+", " ", protected).strip()
     return re.sub(r"\s+", " ", normalized)
 
 
@@ -60,6 +105,57 @@ def pair_match_percent(os_string: str, pair: dict[str, str]) -> int:
 
 def _clean(value: object) -> str:
     return str(value or "").strip()
+
+
+def _vendor_tags(value: object) -> set[str]:
+    text = _clean(value).lower()
+    if not text:
+        return set()
+
+    tags: set[str] = set()
+    for vendor, patterns in _VENDOR_PATTERNS:
+        if any(re.search(pattern, text) for pattern in patterns):
+            tags.add(vendor)
+
+    # "Apple iOS" / "iOS 17" style mobile OS without saying Apple explicitly is still Apple
+    # when Cisco markers are absent.
+    if "apple" not in tags and "cisco" not in tags:
+        if re.search(r"\bios\b", text) and not re.search(r"\bios[\s\-]?x[er]\b", text):
+            if re.search(r"\b(?:iphone|ipad|ipod|apple)\b", text) or re.search(
+                r"\bios\s+\d+\b", text
+            ):
+                tags.add("apple")
+
+    return tags
+
+
+def vendors_compatible(left: object, right: object) -> bool:
+    """Reject cross-vendor matches (e.g. Cisco IOS vs Apple iOS)."""
+    left_tags = _vendor_tags(left)
+    right_tags = _vendor_tags(right)
+    if not left_tags or not right_tags:
+        return True
+    return bool(left_tags & right_tags)
+
+
+def pair_compatible_with_os(os_string: str, pair: dict[str, str]) -> bool:
+    blob = " ".join(
+        [
+            _clean(pair.get("normalized_os_detailed_name")),
+            _clean(pair.get("normalized_os")),
+        ]
+    )
+    return vendors_compatible(os_string, blob)
+
+
+def filter_pairs_for_os(os_string: str, pairs: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Prefer same-vendor pairs so the model never sees Apple iOS for Cisco IOS."""
+    query_tags = _vendor_tags(os_string)
+    if not query_tags:
+        return pairs
+
+    filtered = [pair for pair in pairs if pair_compatible_with_os(os_string, pair)]
+    return filtered
 
 
 def _is_valid_pair(pair: dict[str, str]) -> bool:
@@ -220,6 +316,18 @@ def suggest_normalization_batch(
     if not unique_pairs:
         return [None for _ in cleaned_strings]
 
+    # Narrow the catalog to same-vendor candidates across the batch when possible.
+    scoped_pairs = unique_allowed_pairs(
+        [
+            pair
+            for value in cleaned_strings
+            if value
+            for pair in filter_pairs_for_os(value, unique_pairs)
+        ]
+    )
+    if not scoped_pairs:
+        scoped_pairs = unique_pairs
+
     api_key = _clean(os.environ.get("OPENAI_API_KEY"))
     if not api_key:
         return [None for _ in cleaned_strings]
@@ -238,7 +346,7 @@ def suggest_normalization_batch(
             "normalized_os_detailed_name": pair["normalized_os_detailed_name"],
             "normalized_os": pair["normalized_os"],
         }
-        for index, pair in enumerate(unique_pairs)
+        for index, pair in enumerate(scoped_pairs)
     ]
 
     model = _clean(os.environ.get("OPENAI_MODEL")) or DEFAULT_MODEL
@@ -254,13 +362,24 @@ def suggest_normalization_batch(
                     "role": "system",
                     "content": (
                         "Match each operating system string to one existing normalization pair only when "
-                        f"you are at least {threshold}% confident it is the same product/edition. "
+                        f"you are at least {threshold}% confident it is the same product family and edition. "
                         "You must only choose pair_index values from the allowed_pairs list. "
                         "Never invent normalized values. "
+                        "Vendor / product family is mandatory. Shared tokens are not enough. "
+                        "Examples of INVALID matches: "
+                        "'Cisco IOS 12.2(55)SE9' must NOT match 'Apple iOS 12'; "
+                        "'Cisco IOS-XE 17.09.05a' must NOT match 'Apple iOS 17'; "
+                        "'Windows Server 2019' must NOT match 'Red Hat Enterprise Linux 9'. "
+                        "Examples of VALID matches from this lookup style: "
+                        "'Cisco IOS 12.2(55)SE9' -> 'CISCO IOS 12.2'; "
+                        "'Cisco IOS-XE 17.09.05a' -> 'Cisco IOS XE 17.9'; "
+                        "'Cisco IOS XE 17.03.04a' -> 'Cisco IOS XE 17.3'. "
+                        "Treat dotted versions that differ only by trailing .0 as the same "
+                        "(for example 3.2 and 3.2.0; also 17.03 ~= 17.3 when the pair uses the short form). "
                         "Edition, SKU, and qualifier words matter. "
                         "For example, 'Windows 11 Pro' must NOT match 'Windows 11 Pro Enterprise'. "
                         "If the OS string is missing qualifiers present in a candidate, reject that candidate. "
-                        "If no pair is a very sure match, return pair_index as null for that item. "
+                        "If no pair is a very sure same-vendor match, return pair_index as null for that item. "
                         'Respond with JSON: {"matches":[{"item_index":0,"pair_index":1}]}'
                     ),
                 },
@@ -302,13 +421,14 @@ def suggest_normalization_batch(
         if item_index is None or item_index < 0 or item_index >= len(cleaned_strings):
             continue
 
-        selected_pair = _pair_from_index(pair_index, unique_pairs)
+        selected_pair = _pair_from_index(pair_index, scoped_pairs)
         if selected_pair is None:
             results[item_index] = None
             continue
 
         os_string = cleaned_strings[item_index]
-        if pair_match_percent(os_string, selected_pair) < threshold:
+        # Hard guardrail: never accept cross-vendor AI picks.
+        if not pair_compatible_with_os(os_string, selected_pair):
             results[item_index] = None
             continue
 
