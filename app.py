@@ -146,11 +146,11 @@ class AzureSettings(BaseModel):
 
 
 class AppSettings(BaseModel):
-    ai_enabled: bool = True
+    ai_enabled: bool = False
 
 
 class AppSettingsResponse(BaseModel):
-    ai_enabled: bool = True
+    ai_enabled: bool = False
     ai_available: bool = False
 
 
@@ -362,7 +362,7 @@ def load_app_settings() -> AppSettings:
     if not isinstance(payload, dict):
         return AppSettings()
 
-    return AppSettings(ai_enabled=bool(payload.get("ai_enabled", True)))
+    return AppSettings(ai_enabled=bool(payload.get("ai_enabled", False)))
 
 
 def save_app_settings(settings: AppSettings) -> AppSettings:

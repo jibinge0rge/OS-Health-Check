@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OS Health Check</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=35" />
+    <link rel="stylesheet" href="/static/styles.css?v=36" />
   </head>
   <body>
     <main class="app-shell">
@@ -38,7 +38,7 @@
             class="auto-save-toggle edit-only-control hidden"
             title="Use AI to suggest normalization when fuzzy match fails"
           >
-            <input id="ai-match-toggle" type="checkbox" checked />
+            <input id="ai-match-toggle" type="checkbox" />
             <span>AI match</span>
           </label>
           <button id="save-button" class="primary-button compact-button edit-only-control hidden" disabled>
@@ -222,6 +222,12 @@
                       <option value="" selected>All</option>
                       <option value="empty">Empty</option>
                       <option value="not_empty">Not empty</option>
+                      {% if header not in ['eol_date', 'eoas_date', 'eol_status', 'eoas_status'] %}
+                      <option value="contains">Contains</option>
+                      <option value="not_contains">Does not contain</option>
+                      <option value="equals">Equals</option>
+                      <option value="not_equals">Does not equal</option>
+                      {% endif %}
                     </select>
                     {% if header in ['eol_date', 'eoas_date'] %}
                     <div class="column-date-range">
@@ -592,7 +598,7 @@
       let autoSaveTimer = null;
       let saveInFlight = false;
       const AUTO_SAVE_DELAY_MS = 1800;
-      let aiMatchEnabled = true;
+      let aiMatchEnabled = false;
       let aiMatchAvailable = false;
       let pageSize = 20;
       let currentPage = 1;
@@ -1296,10 +1302,10 @@
             throw new Error("Unable to load app settings.");
           }
           const payload = await response.json();
-          aiMatchEnabled = payload.ai_enabled !== false;
+          aiMatchEnabled = Boolean(payload.ai_enabled);
           aiMatchAvailable = Boolean(payload.ai_available);
         } catch {
-          aiMatchEnabled = true;
+          aiMatchEnabled = false;
           aiMatchAvailable = false;
         }
         if (aiMatchToggle) {
@@ -1318,7 +1324,7 @@
           throw new Error("Unable to save AI match setting.");
         }
         const payload = await response.json();
-        aiMatchEnabled = payload.ai_enabled !== false;
+        aiMatchEnabled = Boolean(payload.ai_enabled);
         aiMatchAvailable = Boolean(payload.ai_available);
         syncAiMatchToggleUi();
         return payload;
@@ -1553,6 +1559,8 @@
         ["microsoft", [/\bmicrosoft\b/i, /\bwindows\b/i, /\bwin(?:dows)?(?:\s|$)/i, /\bmsft\b/i]],
         ["android", [/\bandroid\b/i]],
         ["redhat", [/\bred\s*hat\b/i, /\brhel\b/i, /\bredhat\b/i]],
+        ["almalinux", [/\balmalinux\b/i, /\balma\s*linux\b/i]],
+        ["rocky", [/\brocky\s*linux\b/i, /\brockylinux\b/i]],
         ["ubuntu", [/\bubuntu\b/i]],
         ["debian", [/\bdebian\b/i]],
         ["centos", [/\bcentos\b/i]],
@@ -2326,7 +2334,8 @@
 
         if (
           (row.__normalizedDetailedAuto || !String(row.normalized_os_detailed_name ?? "").trim()) &&
-          String(data.normalized_os_detailed_name ?? "").trim()
+          String(data.normalized_os_detailed_name ?? "").trim() &&
+          vendorsCompatible(row.os_string, data.normalized_os_detailed_name)
         ) {
           row.normalized_os_detailed_name = data.normalized_os_detailed_name;
           row.__normalizedDetailedAuto = true;
@@ -2335,7 +2344,8 @@
         }
         if (
           (row.__normalizedOsAuto || !String(row.normalized_os ?? "").trim()) &&
-          String(data.normalized_os ?? "").trim()
+          String(data.normalized_os ?? "").trim() &&
+          vendorsCompatible(row.os_string, data.normalized_os)
         ) {
           row.normalized_os = data.normalized_os;
           row.__normalizedOsAuto = true;
@@ -3516,6 +3526,48 @@
         }
       }
 
+      function textFilterPlaceholder(mode) {
+        switch (mode) {
+          case "not_contains":
+            return "Does not contain";
+          case "equals":
+            return "Equals";
+          case "not_equals":
+            return "Does not equal";
+          case "contains":
+            return "Contains";
+          default:
+            return "Contains";
+        }
+      }
+
+      function columnModeDisablesText(mode) {
+        return mode === "empty" || mode === "not_empty" || mode === "true" || mode === "false";
+      }
+
+      function rowMatchesTextFilter(raw, display, mode, text) {
+        const needle = String(text ?? "").trim().toLowerCase();
+        if (!needle) {
+          // Mode selected but no text yet — don't hide rows.
+          return true;
+        }
+
+        const rawValue = String(raw ?? "").toLowerCase();
+        const displayValue = String(display ?? "").toLowerCase();
+
+        if (mode === "equals") {
+          return rawValue === needle || displayValue === needle;
+        }
+        if (mode === "not_equals") {
+          return rawValue !== needle && displayValue !== needle;
+        }
+        if (mode === "not_contains") {
+          return !rawValue.includes(needle) && !displayValue.includes(needle);
+        }
+        // Default / contains
+        return rawValue.includes(needle) || displayValue.includes(needle);
+      }
+
       function rowMatchesColumnFilter(row, header) {
         const filter = columnFilters[header];
         if (!filter) {
@@ -3527,7 +3579,7 @@
         const mode = filter.mode;
         const fromDate = String(filter.from ?? "").trim();
         const toDate = String(filter.to ?? "").trim();
-        const text = String(filter.text ?? "").trim().toLowerCase();
+        const text = String(filter.text ?? "").trim();
         const isDateColumn = dateHeaders.has(header);
 
         if (mode === "empty") {
@@ -3553,10 +3605,14 @@
           return rowMatchesDateRange(display, fromDate, toDate);
         }
 
-        if (text) {
-          return (
-            raw.toLowerCase().includes(text) || display.toLowerCase().includes(text)
-          );
+        if (
+          mode === "contains" ||
+          mode === "not_contains" ||
+          mode === "equals" ||
+          mode === "not_equals" ||
+          text
+        ) {
+          return rowMatchesTextFilter(raw, display, mode || "contains", text);
         }
         return true;
       }
@@ -3577,7 +3633,8 @@
           );
           if (textInput) {
             textInput.value = filter.text || "";
-            textInput.disabled = Boolean(filter.mode);
+            textInput.disabled = columnModeDisablesText(filter.mode);
+            textInput.placeholder = textFilterPlaceholder(filter.mode);
           }
 
           const fromInput = document.querySelector(
@@ -3962,8 +4019,19 @@
           );
           deleteButton.addEventListener("click", () => deleteRow(row.__id));
 
+          const sameAsOsButton = document.createElement("button");
+          sameAsOsButton.className = "row-text-button same-as-os-button";
+          sameAsOsButton.type = "button";
+          sameAsOsButton.dataset.rowId = row.__id;
+          sameAsOsButton.textContent = "Same as OS";
+          sameAsOsButton.disabled = !editable || !String(row.os_string ?? "").trim();
+          sameAsOsButton.title = editable
+            ? "Copy OS string into both normalized fields and clear EOL/EOAS"
+            : "Same as OS is only available in Draft";
+          sameAsOsButton.addEventListener("click", () => copyOsAsNormalized(row.__id));
+
           const proofButton = document.createElement("button");
-          proofButton.className = "proof-button";
+          proofButton.className = "row-text-button proof-button";
           proofButton.textContent = "Evidence";
           proofButton.type = "button";
           proofButton.title = "Show how normalized OS and EOL values were matched";
@@ -3971,6 +4039,7 @@
 
           actionStack.appendChild(revertRowButton);
           actionStack.appendChild(deleteButton);
+          actionStack.appendChild(sameAsOsButton);
           actionStack.appendChild(proofButton);
           actionCell.appendChild(actionStack);
           tr.appendChild(actionCell);
@@ -4197,6 +4266,46 @@
 
         syncDirtyState();
         applyFilter();
+      }
+
+      function copyOsAsNormalized(rowId) {
+        if (!isLookupEditable()) {
+          showStatus("Click Edit Data to add or modify the lookup.", "info");
+          return;
+        }
+
+        const targetRow = allRows.find((row) => row.__id === rowId);
+        if (!targetRow) {
+          return;
+        }
+
+        const osValue = String(targetRow.os_string ?? "").trim();
+        if (!osValue) {
+          showStatus("OS string is empty — nothing to copy.", "info");
+          return;
+        }
+
+        promoteToDraftSource();
+        targetRow.normalized_os_detailed_name = osValue;
+        targetRow.normalized_os = osValue;
+        targetRow.eol_date = "";
+        targetRow.eol_status = "";
+        targetRow.eoas_date = "";
+        targetRow.eoas_status = "";
+        targetRow.__normalizedDetailedAuto = false;
+        targetRow.__normalizedOsAuto = false;
+        targetRow.__eolDateAuto = false;
+        targetRow.__eolStatusAuto = false;
+        targetRow.__eoasDateAuto = false;
+        targetRow.__eoasStatusAuto = false;
+
+        setManualFieldProof(targetRow, "normalized_os_detailed_name");
+        setManualFieldProof(targetRow, "normalized_os");
+        setManualFieldProof(targetRow, "eol_date");
+
+        syncDirtyState();
+        applyFilter();
+        showStatus("Set normalized fields to OS string and cleared lifecycle values.", "info");
       }
 
       async function loadRows(source = currentSource) {
@@ -5010,13 +5119,14 @@
             `[data-column-text-filter="${header}"]`
           );
           if (textInput) {
-            if (select.value) {
+            if (columnModeDisablesText(select.value)) {
               columnFilters[header].text = "";
               textInput.value = "";
               textInput.disabled = true;
             } else {
               textInput.disabled = false;
             }
+            textInput.placeholder = textFilterPlaceholder(select.value);
           }
 
           const fromInput = document.querySelector(

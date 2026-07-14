@@ -10,6 +10,8 @@ from typing import Any
 
 import requests
 
+from normalization_service import vendors_compatible
+
 BASE_URL = "https://endoflife.date/api"
 PRODUCTS_URL = f"{BASE_URL}/all.json"
 PRODUCT_V1_URL = f"{BASE_URL}/v1/products"
@@ -47,7 +49,26 @@ def _clean(value: Any) -> str:
 
 
 def join_labels(*parts: object) -> str:
-    return " ".join(part for part in (_clean(value) for value in parts) if part)
+    """Join product/release labels without duplicating a shared product prefix.
+
+    endoflife.date sometimes returns release labels that already include the
+    product name (e.g. product 'AlmaLinux OS' + release 'AlmaLinux OS 9').
+    """
+    cleaned = [part for part in (_clean(value) for value in parts) if part]
+    if not cleaned:
+        return ""
+
+    result = cleaned[0]
+    for part in cleaned[1:]:
+        lower_result = result.lower()
+        lower_part = part.lower()
+        if lower_part == lower_result or lower_part.startswith(f"{lower_result} "):
+            result = part
+        elif lower_result == lower_part or lower_result.startswith(f"{lower_part} "):
+            continue
+        else:
+            result = f"{result} {part}"
+    return result
 
 
 def pick_api_os_value(
@@ -66,14 +87,28 @@ def pick_api_os_value_with_field(
     normalized_os_detailed_name: str,
     normalized_os: str,
 ) -> tuple[str, str]:
+    """Prefer normalized fields, but never query EOL with a cross-vendor value.
+
+    If Normalized OS was wrongly set (e.g. AlmaLinux for Oracle Linux), fall
+    back to the raw OS string so the correct product slug is resolved.
+    """
     normalized = _clean(normalized_os)
     detailed = _clean(normalized_os_detailed_name)
     source = _clean(os_string)
 
+    candidates: list[tuple[str, str]] = []
     if normalized:
-        return normalized, "normalized_os"
+        candidates.append((normalized, "normalized_os"))
     if detailed:
-        return detailed, "normalized_os_detailed_name"
+        candidates.append((detailed, "normalized_os_detailed_name"))
+    if source:
+        candidates.append((source, "os_string"))
+
+    for value, field in candidates:
+        if source and field != "os_string" and not vendors_compatible(source, value):
+            continue
+        return value, field
+
     if source:
         return source, "os_string"
     return "", ""
@@ -270,11 +305,44 @@ def lookup_os_eol(
         empty_result["api_note"] = "No matching release found in endoflife.date product data"
         return empty_result
 
+    product_label = _clean(product_result.get("label"))
+    source = _clean(os_string)
+    if source and product_label and not vendors_compatible(source, product_label):
+        # Wrong product family (e.g. AlmaLinux for Oracle Linux). Retry once with OS string.
+        if query_field != "os_string" and source != cleaned_name:
+            return lookup_os_eol(
+                os_string,
+                "",
+                "",
+                valid_slugs,
+                product_cache,
+                reference_date=today,
+            )
+        empty_result["api_note"] = (
+            f"EOL product '{product_label}' does not match OS vendor for '{source}'"
+        )
+        return empty_result
+
     eol_from = selected_release.get("eolFrom")
     eoas_from = selected_release.get("eoasFrom")
     normalization = build_normalization_from_product(product_result, selected_release)
     release_name = _clean(selected_release.get("name"))
     release_label = _clean(selected_release.get("label"))
+
+    # Never push cross-vendor normalized names even if slug matched loosely.
+    if source and not vendors_compatible(
+        source,
+        " ".join(
+            [
+                normalization["normalized_os_detailed_name"],
+                normalization["normalized_os"],
+            ]
+        ),
+    ):
+        normalization = {
+            "normalized_os_detailed_name": "",
+            "normalized_os": "",
+        }
 
     eol_date = iso_date_to_epoch(eol_from)
     eoas_date = iso_date_to_epoch(eoas_from)

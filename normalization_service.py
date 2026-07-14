@@ -22,6 +22,8 @@ _VENDOR_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("microsoft", (r"\bmicrosoft\b", r"\bwindows\b", r"\bwin(?:dows)?(?:\s|$)", r"\bmsft\b")),
     ("android", (r"\bandroid\b",)),
     ("redhat", (r"\bred\s*hat\b", r"\brhel\b", r"\bredhat\b")),
+    ("almalinux", (r"\balmalinux\b", r"\balma\s*linux\b")),
+    ("rocky", (r"\brocky\s*linux\b", r"\brockylinux\b")),
     ("ubuntu", (r"\bubuntu\b",)),
     ("debian", (r"\bdebian\b",)),
     ("centos", (r"\bcentos\b",)),
@@ -316,122 +318,127 @@ def suggest_normalization_batch(
     if not unique_pairs:
         return [None for _ in cleaned_strings]
 
-    # Narrow the catalog to same-vendor candidates across the batch when possible.
-    scoped_pairs = unique_allowed_pairs(
-        [
-            pair
-            for value in cleaned_strings
-            if value
-            for pair in filter_pairs_for_os(value, unique_pairs)
-        ]
-    )
-    if not scoped_pairs:
-        scoped_pairs = unique_pairs
-
     api_key = _clean(os.environ.get("OPENAI_API_KEY"))
     if not api_key:
         return [None for _ in cleaned_strings]
 
-    indexed_items = [
-        {"item_index": index, "os_string": value}
-        for index, value in enumerate(cleaned_strings)
-        if value
-    ]
-    if not indexed_items:
-        return [None for _ in cleaned_strings]
+    results: list[dict[str, str] | None] = [None for _ in cleaned_strings]
 
-    pair_catalog = [
-        {
-            "pair_index": index,
-            "normalized_os_detailed_name": pair["normalized_os_detailed_name"],
-            "normalized_os": pair["normalized_os"],
-        }
-        for index, pair in enumerate(scoped_pairs)
-    ]
+    # Group by vendor so Oracle batches never see AlmaLinux pairs in the same prompt.
+    groups: dict[tuple[str, ...], list[int]] = {}
+    for index, value in enumerate(cleaned_strings):
+        if not value:
+            continue
+        key = tuple(sorted(_vendor_tags(value)))
+        groups.setdefault(key, []).append(index)
 
     model = _clean(os.environ.get("OPENAI_MODEL")) or DEFAULT_MODEL
     client = OpenAI(api_key=api_key)
 
-    try:
-        response = client.chat.completions.create(
-            model=model,
-            temperature=0,
-            response_format={"type": "json_object"},
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Match each operating system string to one existing normalization pair only when "
-                        f"you are at least {threshold}% confident it is the same product family and edition. "
-                        "You must only choose pair_index values from the allowed_pairs list. "
-                        "Never invent normalized values. "
-                        "Vendor / product family is mandatory. Shared tokens are not enough. "
-                        "Examples of INVALID matches: "
-                        "'Cisco IOS 12.2(55)SE9' must NOT match 'Apple iOS 12'; "
-                        "'Cisco IOS-XE 17.09.05a' must NOT match 'Apple iOS 17'; "
-                        "'Windows Server 2019' must NOT match 'Red Hat Enterprise Linux 9'. "
-                        "Examples of VALID matches from this lookup style: "
-                        "'Cisco IOS 12.2(55)SE9' -> 'CISCO IOS 12.2'; "
-                        "'Cisco IOS-XE 17.09.05a' -> 'Cisco IOS XE 17.9'; "
-                        "'Cisco IOS XE 17.03.04a' -> 'Cisco IOS XE 17.3'. "
-                        "Treat dotted versions that differ only by trailing .0 as the same "
-                        "(for example 3.2 and 3.2.0; also 17.03 ~= 17.3 when the pair uses the short form). "
-                        "Edition, SKU, and qualifier words matter. "
-                        "For example, 'Windows 11 Pro' must NOT match 'Windows 11 Pro Enterprise'. "
-                        "If the OS string is missing qualifiers present in a candidate, reject that candidate. "
-                        "If no pair is a very sure same-vendor match, return pair_index as null for that item. "
-                        'Respond with JSON: {"matches":[{"item_index":0,"pair_index":1}]}'
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {
-                            "items": indexed_items,
-                            "allowed_pairs": pair_catalog,
-                        },
-                        ensure_ascii=True,
-                    ),
-                },
-            ],
+    for indexes in groups.values():
+        group_strings = [cleaned_strings[index] for index in indexes]
+        scoped_pairs = unique_allowed_pairs(
+            [
+                pair
+                for value in group_strings
+                for pair in filter_pairs_for_os(value, unique_pairs)
+            ]
         )
-    except Exception:
-        return [None for _ in cleaned_strings]
-
-    content = _clean(response.choices[0].message.content)
-    if not content:
-        return [None for _ in cleaned_strings]
-
-    try:
-        payload = json.loads(content)
-    except json.JSONDecodeError:
-        return [None for _ in cleaned_strings]
-
-    matches = payload.get("matches")
-    if not isinstance(matches, list):
-        return [None for _ in cleaned_strings]
-
-    results: list[dict[str, str] | None] = [None for _ in cleaned_strings]
-    for match in matches:
-        if not isinstance(match, dict):
+        if not scoped_pairs:
             continue
 
-        item_index = _parse_index(match.get("item_index"))
-        pair_index = _parse_index(match.get("pair_index"))
-        if item_index is None or item_index < 0 or item_index >= len(cleaned_strings):
+        indexed_items = [
+            {"item_index": local_index, "os_string": group_strings[local_index]}
+            for local_index in range(len(group_strings))
+        ]
+        pair_catalog = [
+            {
+                "pair_index": pair_index,
+                "normalized_os_detailed_name": pair["normalized_os_detailed_name"],
+                "normalized_os": pair["normalized_os"],
+            }
+            for pair_index, pair in enumerate(scoped_pairs)
+        ]
+
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                temperature=0,
+                response_format={"type": "json_object"},
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Match each operating system string to one existing normalization pair only when "
+                            f"you are at least {threshold}% confident it is the same product family and edition. "
+                            "You must only choose pair_index values from the allowed_pairs list. "
+                            "Never invent normalized values. "
+                            "Vendor / product family is mandatory. Shared tokens are not enough. "
+                            "Examples of INVALID matches: "
+                            "'Cisco IOS 12.2(55)SE9' must NOT match 'Apple iOS 12'; "
+                            "'Cisco IOS-XE 17.09.05a' must NOT match 'Apple iOS 17'; "
+                            "'Oracle Linux Server 9.5' must NOT match 'AlmaLinux OS 9.5' or 'AlmaLinux OS 9'; "
+                            "'Windows Server 2019' must NOT match 'Red Hat Enterprise Linux 9'. "
+                            "Examples of VALID matches from this lookup style: "
+                            "'Cisco IOS 12.2(55)SE9' -> 'CISCO IOS 12.2'; "
+                            "'Cisco IOS-XE 17.09.05a' -> 'Cisco IOS XE 17.9'; "
+                            "'Cisco IOS XE 17.03.04a' -> 'Cisco IOS XE 17.3'; "
+                            "'Oracle Linux Server 9.5' -> 'Oracle Linux 9'. "
+                            "Treat dotted versions that differ only by trailing .0 as the same "
+                            "(for example 3.2 and 3.2.0; also 17.03 ~= 17.3 when the pair uses the short form). "
+                            "Edition, SKU, and qualifier words matter. "
+                            "For example, 'Windows 11 Pro' must NOT match 'Windows 11 Pro Enterprise'. "
+                            "If the OS string is missing qualifiers present in a candidate, reject that candidate. "
+                            "If no pair is a very sure same-vendor match, return pair_index as null for that item. "
+                            'Respond with JSON: {"matches":[{"item_index":0,"pair_index":1}]}'
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "items": indexed_items,
+                                "allowed_pairs": pair_catalog,
+                            },
+                            ensure_ascii=True,
+                        ),
+                    },
+                ],
+            )
+        except Exception:
             continue
 
-        selected_pair = _pair_from_index(pair_index, scoped_pairs)
-        if selected_pair is None:
-            results[item_index] = None
+        content = _clean(response.choices[0].message.content)
+        if not content:
             continue
 
-        os_string = cleaned_strings[item_index]
-        # Hard guardrail: never accept cross-vendor AI picks.
-        if not pair_compatible_with_os(os_string, selected_pair):
-            results[item_index] = None
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError:
             continue
 
-        results[item_index] = selected_pair
+        matches = payload.get("matches")
+        if not isinstance(matches, list):
+            continue
+
+        for match in matches:
+            if not isinstance(match, dict):
+                continue
+
+            local_index = _parse_index(match.get("item_index"))
+            pair_index = _parse_index(match.get("pair_index"))
+            if local_index is None or local_index < 0 or local_index >= len(indexes):
+                continue
+
+            selected_pair = _pair_from_index(pair_index, scoped_pairs)
+            if selected_pair is None:
+                continue
+
+            global_index = indexes[local_index]
+            os_string = cleaned_strings[global_index]
+            if not pair_compatible_with_os(os_string, selected_pair):
+                continue
+
+            results[global_index] = selected_pair
 
     return results
