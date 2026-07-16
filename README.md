@@ -22,7 +22,9 @@ Use it to:
 
 ```bash
 python -m pip install -r requirements.txt
-# optional: create .env with OPENAI_API_KEY=...
+# optional: set AI keys in .env
+# OPENAI_API_KEY=...
+# GEMINI_API_KEY=...   # or GOOGLE_API_KEY
 python -m uvicorn app:app --reload
 ```
 
@@ -30,10 +32,12 @@ Open [http://127.0.0.1:8000](http://127.0.0.1:8000).
 
 | Variable | Required? | Purpose |
 |----------|-----------|---------|
-| `OPENAI_API_KEY` | Only for AI / Ambiguous detect | Enables AI match and `/`-ambiguity detection |
+| `OPENAI_API_KEY` | For OpenAI AI match / Ambiguous detect | Enables OpenAI provider |
 | `OPENAI_MODEL` | Optional | Defaults to `gpt-4o-mini` |
+| `GEMINI_API_KEY` | For Gemini AI match / Ambiguous detect | Enables Gemini provider (`GOOGLE_API_KEY` also accepted) |
+| `GEMINI_MODEL` | Optional | Defaults to `gemini-2.0-flash` |
 
-Azure upload uses Azure CLI (`az login`), not app secrets.
+In Edit mode, choose **OpenAI** or **Gemini** next to **AI match**. AI match is off by default. Azure upload uses Azure CLI (`az login`), not app secrets.
 
 ---
 
@@ -70,7 +74,7 @@ OS-Health-Check/
 │   └── eol_lookup_evidence.json
 ├── _draft/                     # Working editable copy (+ evidence)
 ├── _config/                    # Local settings (gitignored)
-│   ├── app_settings.json       # ai_enabled
+│   ├── app_settings.json       # ai_enabled, ai_provider (openai|gemini)
 │   └── azure.json
 └── _backup/                    # Timestamped backups on Validate
 ```
@@ -174,7 +178,7 @@ flowchart TD
 
 1. **Fuzzy first** — compare the OS string to existing `normalized_os_detailed_name` / `normalized_os` (not other raw `os_string`s). Score must be high (≥ 95%).
 2. **Vendor guardrails** — keyword brands (Oracle, AlmaLinux, Cisco, Apple, Windows, …). Different brands cannot match (e.g. Oracle Linux ≠ AlmaLinux).
-3. **AI match** — **off by default**. When enabled and `OPENAI_API_KEY` is set, AI may choose only from existing CSV pairs; never invents names. Batches are grouped by vendor so Oracle items don’t see AlmaLinux pairs in the same prompt.
+3. **AI match** — **off by default**. When enabled and the selected provider’s API key is set (`OPENAI_API_KEY` or `GEMINI_API_KEY`), AI may choose only from existing CSV pairs; never invents names. Batches are grouped by vendor so Oracle items don’t see AlmaLinux pairs in the same prompt.
 4. **Conservative** — if unsure → no match (better blank than wrong).
 
 **Example:** `Oracle Linux Server 9.5` → fuzzy/AI can map to `Oracle Linux 9`, but must **not** map to `AlmaLinux OS 9`.
@@ -250,7 +254,7 @@ Proof methods include: `fuzzy`, `ai`, `fuzzy+ai`, `eol`, `lookup-fallback`, `amb
 | Control | Default / notes |
 |---------|-----------------|
 | **Auto-save** | On by default; debounced save to Draft |
-| **AI match** | **Off by default**; Edit mode only; needs `OPENAI_API_KEY` |
+| **AI match** | **Off by default**; Edit mode only; choose OpenAI or Gemini; needs that provider’s API key |
 | **Save Draft** | Manual draft + evidence write |
 | **Validate** | Backup Data → write Draft into Data |
 | **Revert** | Reset Draft rows to Data baseline |
@@ -269,7 +273,7 @@ Proof methods include: `fuzzy`, `ai`, `fuzzy+ai`, `eol`, `lookup-fallback`, `amb
 | `POST` | `/api/normalize-suggest` | AI normalization (if enabled) |
 | `POST` | `/api/ambiguous-os-detect` | Detect ambiguous `/` OS strings |
 | `POST` | `/api/eol-lookup` | Batch EOL/EOAS from endoflife.date |
-| `GET` / `PUT` | `/api/settings` | Persist `ai_enabled` |
+| `GET` / `PUT` | `/api/settings` | Persist `ai_enabled` + `ai_provider` |
 
 ---
 
