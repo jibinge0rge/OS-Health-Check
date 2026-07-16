@@ -7,6 +7,7 @@ Use it to:
 - Search and browse existing OS lookup rows
 - Add one or many OS strings with fuzzy (and optional AI) matching
 - Refresh EOL / EOAS dates from [endoflife.date](https://endoflife.date)
+- Refresh EOL / EOAS dates from a local [eosl.date](https://eosl.date) database (scraped, OS category only)
 - Keep match/EOL **evidence** (proof) in a JSON sidecar
 - Promote Draft → Data via Validate, then optionally upload Data to Azure Blob
 
@@ -17,6 +18,7 @@ Use it to:
 - **Vanilla HTML / CSS / JS** — table UI and workflows
 - **OpenAI** (optional) — AI match + Ambiguous OS detection
 - **endoflife.date API** — lifecycle dates
+- **eosl.date scraper + SQLite** — alternative local lifecycle source (OS category)
 
 ## Run locally
 
@@ -66,12 +68,14 @@ OS-Health-Check/
 ├── app.py                      # FastAPI routes
 ├── normalization_service.py    # Vendor tags, fuzzy helpers, AI match
 ├── eol_service.py              # endoflife.date lookup
+├── eosl_service.py             # eosl.date scraper + SQLite cache (OS only)
 ├── os_import_service.py        # Bulk import from CSV/XLSX
 ├── templates/index.html        # UI + client workflows
 ├── static/                     # CSS, favicon
 ├── _data/
 │   ├── eol_lookup.csv          # Canonical published lookup
-│   └── eol_lookup_evidence.json
+│   ├── eol_lookup_evidence.json
+│   └── eosl_os.db              # SQLite cache of eosl.date OS data (gitignored)
 ├── _draft/                     # Working editable copy (+ evidence)
 ├── _config/                    # Local settings (gitignored)
 │   ├── app_settings.json       # ai_enabled, ai_provider (openai|gemini)
@@ -89,20 +93,26 @@ flowchart LR
   API["FastAPI<br/>app.py"]
   Norm["normalization_service"]
   Eol["eol_service"]
+  Eosl["eosl_service"]
   Data["_data/eol_lookup.csv"]
   Draft["_draft/eol_lookup.csv"]
   Ev["_data / _draft evidence JSON"]
+  DB[("_data/eosl_os.db<br/>SQLite")]
   EOLAPI["endoflife.date"]
-  OAI["OpenAI optional"]
+  EOSLSITE["eosl.date"]
+  OAI["OpenAI / Gemini optional"]
   Az["Azure Blob via az CLI"]
 
   UI <--> API
   API --> Norm
   API --> Eol
+  API --> Eosl
   API --> Data
   API --> Draft
   API --> Ev
   Eol --> EOLAPI
+  Eosl --> DB
+  Eosl -->|scrape| EOSLSITE
   Norm --> OAI
   API --> Az
 ```
@@ -110,6 +120,8 @@ flowchart LR
 ---
 
 ## Modes: Data vs Draft
+
+The **Source** dropdown switches between the published lookup and the editable working copy. (The scraped eosl.date data is viewed separately in its own modal — see [EOSL lookup](#eosl-lookup-local-eosldate-database).)
 
 | | **Data** (read-only) | **Draft** (editable) |
 |--|----------------------|----------------------|
@@ -217,6 +229,38 @@ Dates are stored as Unix epoch. Status `true`/`false` is only used when a date i
 
 ---
 
+## EOSL lookup (local eosl.date database)
+
+An alternative lifecycle source scraped from [eosl.date](https://eosl.date), limited to the **OS** category. It is stored in a local SQLite DB (`_data/eosl_os.db`) so lookups are offline and fast.
+
+The **View / Update EOSL Lookup** button (next to **Refresh EOL/EOAS**) opens a **read-only viewer modal** showing the scraped data in the database's own columns — **Product, Release, Released, EOL date, EOAS date, Supported** (not the lookup CSV's columns). In the modal you can:
+
+- **Filter** the records with a search box (product / release / dates), just like the main table.
+- **Update EOSL Lookup** — re-scrape eosl.date and rebuild the DB. This opens a separate progress dialog; when it finishes the viewer table refreshes automatically. The header shows the last-updated timestamp and product/release counts.
+
+The scraped dates can also be applied to your lookup rows through the batch endpoint `POST /api/eosl-lookup` (same row/vendor guardrails as the endoflife.date refresh).
+
+Scraping and matching notes:
+
+- Column labels differ per vendor, so instead of matching label names the scraper treats every support-date column as a lifecycle date and derives **EOAS = earliest** end date, **EOL = latest** end date.
+- Release matching is dot-aware on the numeric version (e.g. `22.04.3` → `22.04`) and ignores the release-date digits in the "Latest" column.
+- Vendor compatibility is enforced the same way as the API path (e.g. Oracle Linux never resolves to AlmaLinux).
+- Requests are throttled (short delay per page) and serialized server-side so only one scrape runs at a time.
+
+```mermaid
+flowchart TD
+  View[View / Update EOSL Lookup] --> Modal[Read-only viewer modal: filterable DB rows]
+  Modal --> U[Update EOSL Lookup]
+  U --> Prog[Progress dialog]
+  Prog --> Idx[Fetch eosl.date OS category pages]
+  Idx --> Prod[For each OS product page]
+  Prod --> Parse[Parse releases: EOAS = earliest, EOL = latest date]
+  Parse --> Store[(SQLite: products + releases + metadata)]
+  Store --> Refresh[Viewer table refreshes]
+```
+
+---
+
 ## Evidence (proof)
 
 Sidecar JSON next to the CSV (not in the CSV itself):
@@ -260,6 +304,7 @@ Proof methods include: `fuzzy`, `ai`, `fuzzy+ai`, `eol`, `lookup-fallback`, `amb
 | **Revert** | Reset Draft rows to Data baseline |
 | **Delete draft** | Remove Draft (+ evidence), return to Data |
 | **Show Delta / Download Delta** | Draft-only change view |
+| **View / Update EOSL Lookup** | Opens read-only viewer of the local eosl.date DB (filterable); update/re-scrape from there |
 | **Azure** | Data mode: settings + upload via `az storage blob upload` |
 
 ---
@@ -273,6 +318,10 @@ Proof methods include: `fuzzy`, `ai`, `fuzzy+ai`, `eol`, `lookup-fallback`, `amb
 | `POST` | `/api/normalize-suggest` | AI normalization (if enabled) |
 | `POST` | `/api/ambiguous-os-detect` | Detect ambiguous `/` OS strings |
 | `POST` | `/api/eol-lookup` | Batch EOL/EOAS from endoflife.date |
+| `POST` | `/api/eosl-lookup` | Batch EOL/EOAS from local eosl.date DB |
+| `GET` | `/api/eosl/rows` | All scraped releases (DB-native columns) + status, for the viewer |
+| `GET` | `/api/eosl/status` | Local EOSL DB status (last updated, counts) |
+| `POST` | `/api/eosl/sync` | Re-scrape eosl.date and rebuild local DB |
 | `GET` / `PUT` | `/api/settings` | Persist `ai_enabled` + `ai_provider` |
 
 ---

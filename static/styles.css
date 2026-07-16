@@ -239,6 +239,15 @@ td .theme-select,
   padding: 8px 12px;
 }
 
+.eosl-filter-cell .theme-select-trigger {
+  height: 32px;
+  min-height: 32px;
+  padding: 0 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
 td .theme-select-trigger {
   padding: 10px 12px;
   border-color: rgba(148, 163, 184, 0.14);
@@ -516,6 +525,18 @@ h1 {
 .action-menu button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.action-menu-note {
+  min-width: 200px;
+  margin-top: 4px;
+  padding: 8px 10px;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+  color: var(--muted, #94a3b8);
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.35;
+  white-space: normal;
 }
 
 .toolbar {
@@ -1499,6 +1520,291 @@ body.lookup-readonly td .theme-select-trigger:disabled {
   border-radius: inherit;
   background: linear-gradient(90deg, #22c55e, #4ade80);
   transition: width 180ms ease;
+}
+
+.progress-fill.is-error {
+  background: linear-gradient(90deg, #ef4444, #f87171);
+}
+
+.eosl-progress-indeterminate {
+  width: 40% !important;
+  background: linear-gradient(90deg, #38bdf8, #818cf8);
+  animation: eosl-indeterminate 1.15s ease-in-out infinite;
+}
+
+@keyframes eosl-indeterminate {
+  0% {
+    margin-left: -40%;
+  }
+  100% {
+    margin-left: 100%;
+  }
+}
+
+.eosl-dialog.modal {
+  width: min(1440px, 96vw);
+  max-width: calc(100% - 24px);
+}
+
+.eosl-dialog .modal-card,
+.eosl-card {
+  min-width: 0;
+  width: 100%;
+  max-height: min(90vh, 940px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.eosl-readonly-tag {
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.16);
+  border: 1px solid rgba(56, 189, 248, 0.32);
+  color: #7dd3fc;
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
+.eosl-toolbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 4px 0 14px;
+  flex-wrap: wrap;
+}
+
+.eosl-search {
+  flex: 1 1 260px;
+}
+
+.eosl-toolbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.eosl-meta {
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.eosl-table-shell {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 14px;
+  background: rgba(2, 6, 23, 0.5);
+  overflow: hidden;
+}
+
+.eosl-table-head {
+  flex: 0 0 auto;
+  overflow: hidden;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  padding-right: var(--eosl-scrollbar-size, 0px);
+  background:
+  linear-gradient(
+    to right,
+    transparent calc(100% - var(--eosl-scrollbar-size, 0px)),
+    var(--eosl-scrollbar-track, rgba(2, 6, 23, 0.35)) calc(100% - var(--eosl-scrollbar-size, 0px))
+  );
+}
+
+.eosl-table-body-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--eosl-scrollbar-thumb, rgba(100, 116, 139, 0.55))
+    var(--eosl-scrollbar-track, rgba(2, 6, 23, 0.35));
+}
+
+.eosl-table-body-wrap::-webkit-scrollbar {
+  width: 10px;
+}
+
+.eosl-table-body-wrap::-webkit-scrollbar-track {
+  background: var(--eosl-scrollbar-track, rgba(2, 6, 23, 0.35));
+}
+
+.eosl-table-body-wrap::-webkit-scrollbar-thumb {
+  background: var(--eosl-scrollbar-thumb, rgba(100, 116, 139, 0.55));
+  border: 2px solid var(--eosl-scrollbar-track, rgba(2, 6, 23, 0.35));
+  border-radius: 999px;
+}
+
+.eosl-table {
+  width: 100%;
+  /* Override the global wide-table min-width so the modal never scrolls sideways. */
+  min-width: 0;
+  border-collapse: collapse;
+  font-size: 13px;
+  table-layout: fixed;
+}
+
+.eosl-table th,
+.eosl-table td {
+  padding: 9px 14px;
+}
+
+.eosl-col-product {
+  width: 20%;
+}
+
+.eosl-col-release {
+  width: 20%;
+}
+
+.eosl-col-date {
+  width: 16%;
+}
+
+.eosl-col-supported {
+  width: 12%;
+}
+
+.eosl-head-row th {
+  text-align: center;
+  background: rgba(15, 23, 42, 0.99);
+  color: var(--muted);
+  font-weight: 600;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  white-space: nowrap;
+}
+
+.eosl-filter-row th {
+  padding: 6px 10px;
+  background: rgba(15, 23, 42, 0.99);
+  vertical-align: top;
+}
+
+.eosl-table tbody td {
+  border-bottom: 1px solid rgba(148, 163, 184, 0.08);
+  color: var(--text);
+  vertical-align: top;
+  word-break: break-word;
+}
+
+/* Product / Release wrap; date + supported columns stay compact. */
+.eosl-table td:nth-child(3),
+.eosl-table td:nth-child(4),
+.eosl-table td:nth-child(5),
+.eosl-table td:nth-child(6),
+.eosl-head-row th:nth-child(3),
+.eosl-head-row th:nth-child(4),
+.eosl-head-row th:nth-child(5),
+.eosl-head-row th:nth-child(6) {
+  text-align: center;
+  white-space: nowrap;
+}
+
+.eosl-table tbody tr:hover {
+  background: rgba(51, 65, 85, 0.35);
+}
+
+.eosl-table-body-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.eosl-filter-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.eosl-filter-select,
+.eosl-filter-text,
+.eosl-filter-date {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 8px;
+  background: rgba(2, 6, 23, 0.7);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  box-sizing: border-box;
+}
+
+.eosl-filter-date {
+  padding: 6px 4px;
+  font-size: 11px;
+  color-scheme: dark;
+}
+
+.eosl-filter-select {
+  cursor: pointer;
+}
+
+.eosl-filter-select:focus,
+.eosl-filter-text:focus,
+.eosl-filter-date:focus {
+  outline: none;
+  border-color: rgba(56, 189, 248, 0.6);
+}
+
+.eosl-filter-text:disabled,
+.eosl-filter-date:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.eosl-date-range {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.eosl-date-range .eosl-filter-date {
+  width: 100%;
+  min-width: 0;
+}
+
+.eosl-date-sep {
+  display: none;
+}
+
+.eosl-pagination {
+  margin: 12px 0 0;
+  padding: 0;
+}
+
+.eosl-supported {
+  color: #4ade80;
+  font-weight: 600;
+}
+
+.eosl-unsupported {
+  color: #94a3b8;
+}
+
+.eosl-empty-note {
+  margin: 0;
+  padding: 28px 16px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.eosl-empty-note.hidden {
+  display: none;
+}
+
+.eosl-progress-dialog .modal-card {
+  min-width: 0;
+  width: min(460px, 100%);
 }
 
 .search-field {

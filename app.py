@@ -21,6 +21,12 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, field_validator
 
 from eol_service import lookup_os_eol_batch
+from eosl_service import (
+    get_status as eosl_get_status,
+    list_all_rows as eosl_list_all_rows,
+    lookup_os_eosl_batch,
+    sync_os_database as eosl_sync_os_database,
+)
 from normalization_service import (
     DEFAULT_FUZZY_MATCH_THRESHOLD,
     detect_ambiguous_os_batch,
@@ -56,6 +62,9 @@ CSV_HEADERS = [
 app = FastAPI(title="OS Health Check")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+
+# Serialize EOSL scrape runs so only one hits eosl.date at a time.
+EOSL_SYNC_LOCK = asyncio.Lock()
 
 
 class LookupRow(BaseModel):
@@ -744,6 +753,46 @@ async def ambiguous_os_detect(payload: AmbiguousOsDetectRequest) -> dict[str, ob
 async def eol_lookup(payload: EolLookupBatchRequest) -> dict[str, object]:
     results = await asyncio.to_thread(
         lookup_os_eol_batch,
+        [item.model_dump() for item in payload.items],
+    )
+    return {"results": results}
+
+
+@app.get("/api/eosl/status")
+async def eosl_status() -> dict[str, object]:
+    return await asyncio.to_thread(eosl_get_status)
+
+
+@app.get("/api/eosl/rows")
+async def eosl_rows() -> dict[str, object]:
+    rows = await asyncio.to_thread(eosl_list_all_rows)
+    status = await asyncio.to_thread(eosl_get_status)
+    return {"rows": rows, "status": status}
+
+
+@app.post("/api/eosl/sync")
+async def eosl_sync() -> dict[str, object]:
+    if EOSL_SYNC_LOCK.locked():
+        raise HTTPException(
+            status_code=409,
+            detail="An EOSL database update is already running. Please wait for it to finish.",
+        )
+    async with EOSL_SYNC_LOCK:
+        try:
+            result = await asyncio.to_thread(eosl_sync_os_database)
+        except Exception as error:  # noqa: BLE001 - surface scrape failures to UI
+            raise HTTPException(
+                status_code=502,
+                detail=f"Failed to update EOSL database: {error}",
+            ) from error
+    status = await asyncio.to_thread(eosl_get_status)
+    return {"result": result, "status": status}
+
+
+@app.post("/api/eosl-lookup")
+async def eosl_lookup(payload: EolLookupBatchRequest) -> dict[str, object]:
+    results = await asyncio.to_thread(
+        lookup_os_eosl_batch,
         [item.model_dump() for item in payload.items],
     )
     return {"results": results}
