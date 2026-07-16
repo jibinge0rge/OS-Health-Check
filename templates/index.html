@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OS Health Check</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=36" />
+    <link rel="stylesheet" href="/static/styles.css?v=38" />
   </head>
   <body>
     <main class="app-shell">
@@ -40,6 +40,17 @@
           >
             <input id="ai-match-toggle" type="checkbox" />
             <span>AI match</span>
+          </label>
+          <label
+            id="ai-provider-wrap"
+            class="ai-provider-control edit-only-control hidden"
+            title="Choose OpenAI or Gemini for AI match"
+          >
+            <span class="ai-provider-label">Provider</span>
+            <select id="ai-provider-select" aria-label="AI provider">
+              <option value="openai">OpenAI</option>
+              <option value="gemini">Gemini</option>
+            </select>
           </label>
           <button id="save-button" class="primary-button compact-button edit-only-control hidden" disabled>
             Save Draft
@@ -600,6 +611,9 @@
       const AUTO_SAVE_DELAY_MS = 1800;
       let aiMatchEnabled = false;
       let aiMatchAvailable = false;
+      let aiProvider = "openai";
+      let openaiAvailable = false;
+      let geminiAvailable = false;
       let pageSize = 20;
       let currentPage = 1;
       let currentSource = "data";
@@ -629,6 +643,8 @@
       const autoSaveToggle = document.getElementById("auto-save-toggle");
       const aiMatchToggle = document.getElementById("ai-match-toggle");
       const aiMatchToggleWrap = document.getElementById("ai-match-toggle-wrap");
+      const aiProviderWrap = document.getElementById("ai-provider-wrap");
+      const aiProviderSelect = document.getElementById("ai-provider-select");
       const validateButton = document.getElementById("validate-button");
       const downloadButton = document.getElementById("download-button");
       const downloadDeltaButton = document.getElementById("download-delta-button");
@@ -651,6 +667,288 @@
       const proofDialog = document.getElementById("proof-dialog");
       const proofOsLabel = document.getElementById("proof-os-label");
       const proofBody = document.getElementById("proof-body");
+
+      let openThemeSelect = null;
+
+      function closeThemeSelectMenu() {
+        if (!openThemeSelect) {
+          return;
+        }
+        const { wrapper, menu, trigger } = openThemeSelect;
+        menu.classList.remove("is-open");
+        wrapper.classList.remove("is-open");
+        trigger.setAttribute("aria-expanded", "false");
+        openThemeSelect = null;
+      }
+
+      function selectedOptionLabel(select) {
+        const selected = select.selectedOptions?.[0] || select.options[select.selectedIndex];
+        if (!selected) {
+          return "";
+        }
+        return String(selected.textContent || "").trim();
+      }
+
+      function optionMenuLabel(option) {
+        const text = String(option.textContent || "").trim();
+        if (text) {
+          return text;
+        }
+        return option.value === "" ? "—" : String(option.value || "—");
+      }
+
+      function syncThemeSelectUi(select) {
+        const wrapper = select.closest(".theme-select");
+        if (!wrapper) {
+          return;
+        }
+        const trigger = wrapper.querySelector(".theme-select-trigger");
+        const label = wrapper.querySelector(".theme-select-label");
+        if (!trigger || !label) {
+          return;
+        }
+        label.textContent = selectedOptionLabel(select);
+        trigger.disabled = Boolean(select.disabled);
+        wrapper.classList.toggle("is-disabled", Boolean(select.disabled));
+        rebuildThemeSelectMenu(select);
+      }
+
+      function rebuildThemeSelectMenu(select) {
+        const wrapper = select.closest(".theme-select");
+        if (!wrapper) {
+          return;
+        }
+        const menu = wrapper._themeMenu;
+        if (!menu) {
+          return;
+        }
+        menu.innerHTML = "";
+        Array.from(select.options).forEach((option, index) => {
+          if (option.hidden && !option.selected) {
+            return;
+          }
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "theme-select-option";
+          button.setAttribute("role", "option");
+          button.dataset.index = String(index);
+          const text = String(option.textContent || "").trim();
+          button.textContent = optionMenuLabel(option);
+          if (!text) {
+            button.classList.add("is-placeholder");
+          }
+          if (option.selected) {
+            button.classList.add("is-selected");
+            button.setAttribute("aria-selected", "true");
+          } else {
+            button.setAttribute("aria-selected", "false");
+          }
+          button.disabled = Boolean(option.disabled);
+          button.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (button.disabled) {
+              return;
+            }
+            select.selectedIndex = index;
+            select.dispatchEvent(new Event("change", { bubbles: true }));
+            syncThemeSelectUi(select);
+            closeThemeSelectMenu();
+          });
+          menu.appendChild(button);
+        });
+      }
+
+      function positionThemeSelectMenu(trigger, menu) {
+        const rect = trigger.getBoundingClientRect();
+        const viewportPadding = 8;
+        const menuWidth = Math.max(rect.width, 140);
+        let left = rect.left;
+        let top = rect.bottom + 4;
+
+        menu.style.width = `${menuWidth}px`;
+        menu.style.maxWidth = `${Math.max(160, window.innerWidth - viewportPadding * 2)}px`;
+        menu.style.visibility = "hidden";
+        menu.classList.add("is-open");
+        const menuHeight = menu.offsetHeight || 160;
+        menu.classList.remove("is-open");
+        menu.style.visibility = "";
+
+        if (top + menuHeight > window.innerHeight - viewportPadding) {
+          top = Math.max(viewportPadding, rect.top - menuHeight - 4);
+        }
+        if (left + menuWidth > window.innerWidth - viewportPadding) {
+          left = Math.max(viewportPadding, window.innerWidth - viewportPadding - menuWidth);
+        }
+        if (left < viewportPadding) {
+          left = viewportPadding;
+        }
+
+        menu.style.left = `${Math.round(left)}px`;
+        menu.style.top = `${Math.round(top)}px`;
+      }
+
+      function openThemeSelectMenu(select) {
+        const wrapper = select.closest(".theme-select");
+        if (!wrapper || select.disabled) {
+          return;
+        }
+        const trigger = wrapper.querySelector(".theme-select-trigger");
+        const menu = wrapper._themeMenu;
+        if (!trigger || !menu) {
+          return;
+        }
+
+        if (openThemeSelect?.select === select) {
+          closeThemeSelectMenu();
+          return;
+        }
+
+        closeThemeSelectMenu();
+        rebuildThemeSelectMenu(select);
+        positionThemeSelectMenu(trigger, menu);
+        menu.classList.add("is-open");
+        wrapper.classList.add("is-open");
+        trigger.setAttribute("aria-expanded", "true");
+        openThemeSelect = { select, wrapper, menu, trigger };
+
+        const selectedBtn = menu.querySelector(".theme-select-option.is-selected");
+        if (selectedBtn && typeof selectedBtn.focus === "function") {
+          selectedBtn.focus();
+        }
+      }
+
+      function enhanceSelect(select) {
+        if (!(select instanceof HTMLSelectElement) || select.dataset.themeSelect === "1") {
+          return select;
+        }
+
+        select.dataset.themeSelect = "1";
+        select.classList.add("theme-select-native");
+
+        const wrapper = document.createElement("div");
+        wrapper.className = "theme-select";
+        if (
+          select.classList.contains("column-filter-mode") ||
+          select.classList.contains("status-select") ||
+          select.id === "source-select" ||
+          select.id === "page-size-select" ||
+          select.id === "evidence-filter"
+        ) {
+          wrapper.classList.add("is-block");
+        }
+
+        const trigger = document.createElement("button");
+        trigger.type = "button";
+        trigger.className = "theme-select-trigger";
+        trigger.setAttribute("aria-haspopup", "listbox");
+        trigger.setAttribute("aria-expanded", "false");
+        if (select.id) {
+          trigger.id = `${select.id}-trigger`;
+        }
+        trigger.setAttribute(
+          "aria-label",
+          select.getAttribute("aria-label") || select.title || "Select option"
+        );
+
+        const label = document.createElement("span");
+        label.className = "theme-select-label";
+        const chevron = document.createElement("span");
+        chevron.className = "theme-select-chevron";
+        chevron.setAttribute("aria-hidden", "true");
+        trigger.appendChild(label);
+        trigger.appendChild(chevron);
+
+        const menu = document.createElement("div");
+        menu.className = "theme-select-menu";
+        menu.setAttribute("role", "listbox");
+        wrapper._themeMenu = menu;
+
+        const parent = select.parentNode;
+        parent.insertBefore(wrapper, select);
+        wrapper.appendChild(select);
+        wrapper.appendChild(trigger);
+        document.body.appendChild(menu);
+
+        trigger.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openThemeSelectMenu(select);
+        });
+
+        trigger.addEventListener("keydown", (event) => {
+          if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            openThemeSelectMenu(select);
+          }
+        });
+
+        select.addEventListener("change", () => {
+          syncThemeSelectUi(select);
+        });
+
+        const disabledObserver = new MutationObserver(() => {
+          syncThemeSelectUi(select);
+        });
+        disabledObserver.observe(select, {
+          attributes: true,
+          attributeFilter: ["disabled"],
+          childList: true,
+          subtree: true,
+        });
+
+        syncThemeSelectUi(select);
+        return select;
+      }
+
+      function enhanceAllSelects(root = document) {
+        root.querySelectorAll("select").forEach((select) => {
+          enhanceSelect(select);
+        });
+      }
+
+      function refreshThemeSelect(select) {
+        if (!select) {
+          return;
+        }
+        if (select.dataset.themeSelect !== "1") {
+          enhanceSelect(select);
+          return;
+        }
+        syncThemeSelectUi(select);
+      }
+
+      document.addEventListener("click", (event) => {
+        if (!openThemeSelect) {
+          return;
+        }
+        const { wrapper, menu, trigger } = openThemeSelect;
+        if (
+          wrapper.contains(event.target) ||
+          menu.contains(event.target) ||
+          trigger.contains(event.target)
+        ) {
+          return;
+        }
+        closeThemeSelectMenu();
+      });
+
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          closeThemeSelectMenu();
+        }
+      });
+
+      window.addEventListener(
+        "scroll",
+        () => {
+          closeThemeSelectMenu();
+        },
+        true
+      );
+      window.addEventListener("resize", () => {
+        closeThemeSelectMenu();
+      });
       const evidenceFilterSelect = document.getElementById("evidence-filter");
       const addOsDialog = document.getElementById("add-os-dialog");
       const addOsForm = document.getElementById("add-os-form");
@@ -1270,28 +1568,74 @@
         return Boolean(aiMatchEnabled && aiMatchAvailable);
       }
 
+      function providerLabel(provider) {
+        return provider === "gemini" ? "Gemini" : "OpenAI";
+      }
+
+      function providerKeyHint(provider) {
+        return provider === "gemini"
+          ? "GEMINI_API_KEY (or GOOGLE_API_KEY)"
+          : "OPENAI_API_KEY";
+      }
+
+      function applySettingsPayload(payload) {
+        aiMatchEnabled = Boolean(payload.ai_enabled);
+        aiProvider =
+          String(payload.ai_provider ?? "openai").toLowerCase() === "gemini"
+            ? "gemini"
+            : "openai";
+        openaiAvailable = Boolean(payload.openai_available);
+        geminiAvailable = Boolean(payload.gemini_available);
+        aiMatchAvailable = Boolean(payload.ai_available);
+      }
+
       function syncAiMatchToggleUi({ busy = false, editable = isLookupEditable() } = {}) {
-        if (!aiMatchToggleWrap || !aiMatchToggle) {
-          return;
+        if (aiMatchToggleWrap && aiMatchToggle) {
+          aiMatchToggleWrap.classList.toggle("hidden", !editable);
+          aiMatchToggle.checked = Boolean(aiMatchEnabled);
+          aiMatchToggle.disabled = busy || !editable || !aiMatchAvailable;
+
+          if (!aiMatchAvailable) {
+            aiMatchToggleWrap.title = `AI match unavailable: set ${providerKeyHint(
+              aiProvider
+            )} on the server for ${providerLabel(aiProvider)}. Fuzzy match still works.`;
+            aiMatchToggleWrap.classList.add("is-unavailable");
+          } else if (!aiMatchEnabled) {
+            aiMatchToggleWrap.title = "AI match is off. Only fuzzy matching will be used.";
+            aiMatchToggleWrap.classList.remove("is-unavailable");
+          } else {
+            aiMatchToggleWrap.title = `Use ${providerLabel(
+              aiProvider
+            )} to suggest normalization when fuzzy match fails`;
+            aiMatchToggleWrap.classList.remove("is-unavailable");
+          }
         }
 
-        aiMatchToggleWrap.classList.toggle("hidden", !editable);
-        aiMatchToggle.checked = Boolean(aiMatchEnabled);
-        aiMatchToggle.disabled = busy || !editable || !aiMatchAvailable;
+        if (aiProviderWrap && aiProviderSelect) {
+          aiProviderWrap.classList.toggle("hidden", !editable);
+          aiProviderSelect.value = aiProvider;
 
-        if (!aiMatchAvailable) {
-          aiMatchToggleWrap.title =
-            "AI match unavailable: set OPENAI_API_KEY on the server. Fuzzy match still works.";
-          aiMatchToggleWrap.classList.remove("is-unavailable");
-          // Keep visual distinct when key missing
-          aiMatchToggleWrap.classList.add("is-unavailable");
-        } else if (!aiMatchEnabled) {
-          aiMatchToggleWrap.title = "AI match is off. Only fuzzy matching will be used.";
-          aiMatchToggleWrap.classList.remove("is-unavailable");
-        } else {
-          aiMatchToggleWrap.title =
-            "Use AI to suggest normalization when fuzzy match fails";
-          aiMatchToggleWrap.classList.remove("is-unavailable");
+          const openaiOption = aiProviderSelect.querySelector('option[value="openai"]');
+          const geminiOption = aiProviderSelect.querySelector('option[value="gemini"]');
+          if (openaiOption) {
+            openaiOption.disabled = !openaiAvailable;
+            openaiOption.textContent = openaiAvailable ? "OpenAI" : "OpenAI (no key)";
+          }
+          if (geminiOption) {
+            geminiOption.disabled = !geminiAvailable;
+            geminiOption.textContent = geminiAvailable ? "Gemini" : "Gemini (no key)";
+          }
+
+          aiProviderSelect.disabled =
+            busy || !editable || (!openaiAvailable && !geminiAvailable);
+          aiProviderWrap.title = `AI provider for match and Ambiguous OS detection. OpenAI key: ${
+            openaiAvailable ? "configured" : "missing"
+          }. Gemini key: ${geminiAvailable ? "configured" : "missing"}.`;
+          aiProviderWrap.classList.toggle(
+            "is-unavailable",
+            !openaiAvailable && !geminiAvailable
+          );
+          refreshThemeSelect(aiProviderSelect);
         }
       }
 
@@ -1301,12 +1645,13 @@
           if (!response.ok) {
             throw new Error("Unable to load app settings.");
           }
-          const payload = await response.json();
-          aiMatchEnabled = Boolean(payload.ai_enabled);
-          aiMatchAvailable = Boolean(payload.ai_available);
+          applySettingsPayload(await response.json());
         } catch {
           aiMatchEnabled = false;
           aiMatchAvailable = false;
+          aiProvider = "openai";
+          openaiAvailable = false;
+          geminiAvailable = false;
         }
         if (aiMatchToggle) {
           aiMatchToggle.checked = aiMatchEnabled;
@@ -1314,18 +1659,20 @@
         syncAiMatchToggleUi();
       }
 
-      async function saveAiMatchSetting(enabled) {
+      async function saveAppAiSettings({ enabled = aiMatchEnabled, provider = aiProvider } = {}) {
         const response = await fetch("/api/settings", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ai_enabled: Boolean(enabled) }),
+          body: JSON.stringify({
+            ai_enabled: Boolean(enabled),
+            ai_provider: provider === "gemini" ? "gemini" : "openai",
+          }),
         });
         if (!response.ok) {
-          throw new Error("Unable to save AI match setting.");
+          throw new Error("Unable to save AI settings.");
         }
         const payload = await response.json();
-        aiMatchEnabled = Boolean(payload.ai_enabled);
-        aiMatchAvailable = Boolean(payload.ai_available);
+        applySettingsPayload(payload);
         syncAiMatchToggleUi();
         return payload;
       }
@@ -1349,6 +1696,7 @@
         const onData = currentSource === "data";
 
         sourceSelect.value = currentSource;
+        refreshThemeSelect(sourceSelect);
         sourceIndicator.textContent = sourceLabel(currentSource);
         sourceIndicator.classList.toggle("draft-pill", currentSource === "draft");
         if (dataReadonlyHint) {
@@ -3523,6 +3871,7 @@
       function syncEvidenceFilterInput() {
         if (evidenceFilterSelect) {
           evidenceFilterSelect.value = evidenceFilter || "";
+          refreshThemeSelect(evidenceFilterSelect);
         }
       }
 
@@ -3652,6 +4001,7 @@
             toInput.value = filter.to || "";
             toInput.disabled = dateRangeDisabled;
           }
+          refreshThemeSelect(select);
         });
       }
 
@@ -3847,6 +4197,12 @@
       }
 
       function renderTable() {
+        closeThemeSelectMenu();
+        tableBody.querySelectorAll(".theme-select").forEach((wrapper) => {
+          if (wrapper._themeMenu) {
+            wrapper._themeMenu.remove();
+          }
+        });
         tableBody.innerHTML = "";
         const editable = isLookupEditable();
         document.body.classList.toggle("lookup-readonly", !editable);
@@ -4047,6 +4403,7 @@
           tableBody.appendChild(tr);
         });
 
+        enhanceAllSelects(tableBody);
         updateCount();
       }
 
@@ -5011,24 +5368,46 @@
       if (aiMatchToggle) {
         aiMatchToggle.addEventListener("change", () => {
           const enabled = Boolean(aiMatchToggle.checked);
-          saveAiMatchSetting(enabled)
+          saveAppAiSettings({ enabled, provider: aiProvider })
             .then(() => {
               if (!aiMatchAvailable) {
                 showStatus(
-                  "AI match unavailable without OPENAI_API_KEY. Fuzzy match still works.",
+                  `AI match unavailable without ${providerKeyHint(
+                    aiProvider
+                  )}. Fuzzy match still works.`,
                   "info"
                 );
                 return;
               }
               showStatus(
                 enabled
-                  ? "AI match enabled for Edit mode."
+                  ? `AI match enabled (${providerLabel(aiProvider)}).`
                   : "AI match disabled. Only fuzzy matching will be used.",
                 "info"
               );
             })
             .catch((error) => {
               aiMatchToggle.checked = aiMatchEnabled;
+              showStatus(error.message, "error");
+            });
+        });
+      }
+      if (aiProviderSelect) {
+        aiProviderSelect.addEventListener("change", () => {
+          const nextProvider =
+            aiProviderSelect.value === "gemini" ? "gemini" : "openai";
+          const previousProvider = aiProvider;
+          saveAppAiSettings({ enabled: aiMatchEnabled, provider: nextProvider })
+            .then(() => {
+              showStatus(
+                `AI provider set to ${providerLabel(aiProvider)}.`,
+                "info"
+              );
+            })
+            .catch((error) => {
+              aiProvider = previousProvider;
+              aiProviderSelect.value = previousProvider;
+              refreshThemeSelect(aiProviderSelect);
               showStatus(error.message, "error");
             });
         });
@@ -5079,6 +5458,7 @@
           });
           if (!confirmed) {
             sourceSelect.value = currentSource;
+            refreshThemeSelect(sourceSelect);
             return;
           }
         }
@@ -5195,6 +5575,7 @@
         event.returnValue = "";
       });
 
+      enhanceAllSelects();
       updateSourceUi();
       loadAppSettings()
         .catch(() => {})

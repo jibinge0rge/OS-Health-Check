@@ -24,6 +24,8 @@ from eol_service import lookup_os_eol_batch
 from normalization_service import (
     DEFAULT_FUZZY_MATCH_THRESHOLD,
     detect_ambiguous_os_batch,
+    normalize_ai_provider,
+    provider_api_key_configured,
     suggest_normalization_batch,
 )
 from os_import_service import extract_distinct_os_values, inspect_os_import_file
@@ -147,19 +149,36 @@ class AzureSettings(BaseModel):
 
 class AppSettings(BaseModel):
     ai_enabled: bool = False
+    ai_provider: str = "openai"
+
+    @field_validator("ai_provider", mode="before")
+    @classmethod
+    def validate_ai_provider(cls, value: object) -> str:
+        return normalize_ai_provider(value)
 
 
 class AppSettingsResponse(BaseModel):
     ai_enabled: bool = False
+    ai_provider: str = "openai"
     ai_available: bool = False
+    openai_available: bool = False
+    gemini_available: bool = False
 
 
 AZURE_PROGRESS_RE = re.compile(r"(\d+(?:\.\d+)?)%")
 
 
 def openai_api_key_configured() -> bool:
-    return bool(str(os.environ.get("OPENAI_API_KEY") or "").strip())
+    return provider_api_key_configured("openai")
 
+
+def gemini_api_key_configured() -> bool:
+    return provider_api_key_configured("gemini")
+
+
+def selected_ai_provider_available(settings: AppSettings | None = None) -> bool:
+    current = settings or load_app_settings()
+    return provider_api_key_configured(current.ai_provider)
 
 def lookup_path(source: str) -> Path:
     normalized = source.strip().lower()
@@ -362,7 +381,10 @@ def load_app_settings() -> AppSettings:
     if not isinstance(payload, dict):
         return AppSettings()
 
-    return AppSettings(ai_enabled=bool(payload.get("ai_enabled", False)))
+    return AppSettings(
+        ai_enabled=bool(payload.get("ai_enabled", False)),
+        ai_provider=normalize_ai_provider(payload.get("ai_provider", "openai")),
+    )
 
 
 def save_app_settings(settings: AppSettings) -> AppSettings:
@@ -375,9 +397,14 @@ def save_app_settings(settings: AppSettings) -> AppSettings:
 
 def app_settings_response() -> AppSettingsResponse:
     settings = load_app_settings()
+    openai_available = openai_api_key_configured()
+    gemini_available = gemini_api_key_configured()
     return AppSettingsResponse(
         ai_enabled=settings.ai_enabled,
-        ai_available=openai_api_key_configured(),
+        ai_provider=settings.ai_provider,
+        ai_available=selected_ai_provider_available(settings),
+        openai_available=openai_available,
+        gemini_available=gemini_available,
     )
 
 
@@ -635,7 +662,12 @@ async def get_app_settings() -> AppSettingsResponse:
 
 @app.put("/api/settings")
 async def update_app_settings(payload: AppSettings) -> AppSettingsResponse:
-    save_app_settings(payload)
+    current = load_app_settings()
+    merged = AppSettings(
+        ai_enabled=payload.ai_enabled,
+        ai_provider=normalize_ai_provider(payload.ai_provider or current.ai_provider),
+    )
+    save_app_settings(merged)
     return app_settings_response()
 
 
@@ -668,7 +700,8 @@ async def normalize_suggest(payload: NormalizeSuggestRequest) -> dict[str, objec
     if not payload.items:
         return {"results": [], "ai_skipped": False}
 
-    if not load_app_settings().ai_enabled or not openai_api_key_configured():
+    settings = load_app_settings()
+    if not settings.ai_enabled or not selected_ai_provider_available(settings):
         return {"results": [None for _ in payload.items], "ai_skipped": True}
 
     suggestions = await asyncio.to_thread(
@@ -676,6 +709,7 @@ async def normalize_suggest(payload: NormalizeSuggestRequest) -> dict[str, objec
         [item.os_string for item in payload.items],
         [pair.model_dump() for pair in payload.allowed_pairs],
         payload.fuzzy_match_threshold,
+        settings.ai_provider,
     )
 
     results: list[NormalizeSuggestResult | None] = []
@@ -685,7 +719,11 @@ async def normalize_suggest(payload: NormalizeSuggestRequest) -> dict[str, objec
             continue
         results.append(NormalizeSuggestResult(**suggestion))
 
-    return {"results": results, "ai_skipped": False}
+    return {
+        "results": results,
+        "ai_skipped": False,
+        "ai_provider": settings.ai_provider,
+    }
 
 
 @app.post("/api/ambiguous-os-detect")
@@ -693,11 +731,13 @@ async def ambiguous_os_detect(payload: AmbiguousOsDetectRequest) -> dict[str, ob
     if not payload.items:
         return {"results": []}
 
+    settings = load_app_settings()
     results = await asyncio.to_thread(
         detect_ambiguous_os_batch,
         [item.os_string for item in payload.items],
+        settings.ai_provider,
     )
-    return {"results": results}
+    return {"results": results, "ai_provider": settings.ai_provider}
 
 
 @app.post("/api/eol-lookup")

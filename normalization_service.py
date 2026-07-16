@@ -1,18 +1,28 @@
-"""OpenAI-backed normalization fallback constrained to existing lookup pairs."""
+"""AI-backed normalization fallback constrained to existing lookup pairs.
+
+Supports OpenAI and Google Gemini. Provider is selected by the caller
+(persisted in app settings); API keys come from environment variables.
+"""
 
 from __future__ import annotations
 
 import json
 import os
 import re
-from typing import Any
+from typing import Any, Literal
 
+import requests
 from openai import OpenAI
 
 
 AMBIGUOUS_OS = "ambiguous os"
-DEFAULT_MODEL = "gpt-4o-mini"
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
 DEFAULT_FUZZY_MATCH_THRESHOLD = 95
+AiProvider = Literal["openai", "gemini"]
+GEMINI_GENERATE_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+)
 
 # Strong vendor / product-family signals seen in _data/eol_lookup.csv.
 # Shared words like "ios" are intentionally NOT enough by themselves.
@@ -107,6 +117,140 @@ def pair_match_percent(os_string: str, pair: dict[str, str]) -> int:
 
 def _clean(value: object) -> str:
     return str(value or "").strip()
+
+
+def normalize_ai_provider(value: object) -> AiProvider:
+    cleaned = _clean(value).lower()
+    if cleaned == "gemini":
+        return "gemini"
+    return "openai"
+
+
+def openai_api_key() -> str:
+    return _clean(os.environ.get("OPENAI_API_KEY"))
+
+
+def gemini_api_key() -> str:
+    return _clean(os.environ.get("GEMINI_API_KEY")) or _clean(
+        os.environ.get("GOOGLE_API_KEY")
+    )
+
+
+def provider_api_key_configured(provider: object) -> bool:
+    selected = normalize_ai_provider(provider)
+    if selected == "gemini":
+        return bool(gemini_api_key())
+    return bool(openai_api_key())
+
+
+def openai_model_name() -> str:
+    return _clean(os.environ.get("OPENAI_MODEL")) or DEFAULT_OPENAI_MODEL
+
+
+def gemini_model_name() -> str:
+    return _clean(os.environ.get("GEMINI_MODEL")) or DEFAULT_GEMINI_MODEL
+
+
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    cleaned = _clean(text)
+    if not cleaned:
+        return None
+
+    try:
+        payload = json.loads(cleaned)
+        return payload if isinstance(payload, dict) else None
+    except json.JSONDecodeError:
+        pass
+
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        payload = json.loads(cleaned[start : end + 1])
+        return payload if isinstance(payload, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
+def _complete_json_openai(system_prompt: str, user_prompt: str) -> dict[str, Any] | None:
+    api_key = openai_api_key()
+    if not api_key:
+        return None
+
+    client = OpenAI(api_key=api_key)
+    try:
+        response = client.chat.completions.create(
+            model=openai_model_name(),
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+    except Exception:
+        return None
+
+    content = _clean(response.choices[0].message.content)
+    return _extract_json_object(content)
+
+
+def _complete_json_gemini(system_prompt: str, user_prompt: str) -> dict[str, Any] | None:
+    api_key = gemini_api_key()
+    if not api_key:
+        return None
+
+    model = gemini_model_name()
+    url = GEMINI_GENERATE_URL.format(model=model)
+    payload = {
+        "systemInstruction": {"parts": [{"text": system_prompt}]},
+        "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+        "generationConfig": {
+            "temperature": 0,
+            "responseMimeType": "application/json",
+        },
+    }
+
+    try:
+        response = requests.post(url, params={"key": api_key}, json=payload, timeout=90)
+        response.raise_for_status()
+        body = response.json()
+    except (requests.RequestException, ValueError, TypeError):
+        return None
+
+    candidates = body.get("candidates") if isinstance(body, dict) else None
+    if not isinstance(candidates, list) or not candidates:
+        return None
+
+    first = candidates[0]
+    if not isinstance(first, dict):
+        return None
+    content = first.get("content")
+    if not isinstance(content, dict):
+        return None
+    parts = content.get("parts")
+    if not isinstance(parts, list):
+        return None
+
+    texts: list[str] = []
+    for part in parts:
+        if isinstance(part, dict):
+            text = _clean(part.get("text"))
+            if text:
+                texts.append(text)
+    return _extract_json_object("\n".join(texts))
+
+
+def complete_json(
+    system_prompt: str,
+    user_prompt: str,
+    provider: object = "openai",
+) -> dict[str, Any] | None:
+    selected = normalize_ai_provider(provider)
+    if selected == "gemini":
+        return _complete_json_gemini(system_prompt, user_prompt)
+    return _complete_json_openai(system_prompt, user_prompt)
 
 
 def _vendor_tags(value: object) -> set[str]:
@@ -218,7 +362,10 @@ def _pair_from_index(index: int | None, allowed_pairs: list[dict[str, str]]) -> 
     }
 
 
-def detect_ambiguous_os_batch(os_strings: list[str]) -> list[bool]:
+def detect_ambiguous_os_batch(
+    os_strings: list[str],
+    provider: object = "openai",
+) -> list[bool]:
     """Return True when an OS string lists multiple distinct products separated by '/'."""
     cleaned_strings = [_clean(value) for value in os_strings]
     results = [False for _ in cleaned_strings]
@@ -230,57 +377,32 @@ def detect_ambiguous_os_batch(os_strings: list[str]) -> list[bool]:
     if not indexed_items:
         return results
 
-    api_key = _clean(os.environ.get("OPENAI_API_KEY"))
-    if not api_key:
+    selected = normalize_ai_provider(provider)
+    if not provider_api_key_configured(selected):
         return results
 
-    model = _clean(os.environ.get("OPENAI_MODEL")) or DEFAULT_MODEL
-    client = OpenAI(api_key=api_key)
-
-    try:
-        response = client.chat.completions.create(
-            model=model,
-            temperature=0,
-            response_format={"type": "json_object"},
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Decide whether each operating system string lists multiple distinct "
-                        "operating systems or products separated by '/'. "
-                        "Return ambiguous=true only when '/' separates different OS products "
-                        "or major OS families that should not share one lifecycle record. "
-                        "Return ambiguous=false when '/' is part of a single product name, "
-                        "version path, model range, protocol list, or similar. "
-                        "Examples of ambiguous=true: "
-                        "'AIX 5.x / AIX 6.x / Sidewinder G2', "
-                        "'Cisco IOS 12.1 / Cisco IOS 12.2', "
-                        "'EulerOS / Ubuntu / Fedora'. "
-                        "Examples of ambiguous=false: "
-                        "'Debian GNU/Linux 10', "
-                        "'FreeBSD/12.2-STABLE', "
-                        "'Canon LBP245/246/248 /P', "
-                        "'EPSON 11a/b/g/n & 10/100 Print Server', "
-                        "'FUJIFILM Apeos C325/328 dw'. "
-                        'Respond with JSON: {"results":[{"item_index":0,"ambiguous":true}]}'
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps({"items": indexed_items}, ensure_ascii=True),
-                },
-            ],
-        )
-    except Exception:
-        return results
-
-    content = _clean(response.choices[0].message.content)
-    if not content:
-        return results
-
-    try:
-        payload = json.loads(content)
-    except json.JSONDecodeError:
+    system_prompt = (
+        "Decide whether each operating system string lists multiple distinct "
+        "operating systems or products separated by '/'. "
+        "Return ambiguous=true only when '/' separates different OS products "
+        "or major OS families that should not share one lifecycle record. "
+        "Return ambiguous=false when '/' is part of a single product name, "
+        "version path, model range, protocol list, or similar. "
+        "Examples of ambiguous=true: "
+        "'AIX 5.x / AIX 6.x / Sidewinder G2', "
+        "'Cisco IOS 12.1 / Cisco IOS 12.2', "
+        "'EulerOS / Ubuntu / Fedora'. "
+        "Examples of ambiguous=false: "
+        "'Debian GNU/Linux 10', "
+        "'FreeBSD/12.2-STABLE', "
+        "'Canon LBP245/246/248 /P', "
+        "'EPSON 11a/b/g/n & 10/100 Print Server', "
+        "'FUJIFILM Apeos C325/328 dw'. "
+        'Respond with JSON: {"results":[{"item_index":0,"ambiguous":true}]}'
+    )
+    user_prompt = json.dumps({"items": indexed_items}, ensure_ascii=True)
+    payload = complete_json(system_prompt, user_prompt, selected)
+    if not payload:
         return results
 
     payload_results = payload.get("results")
@@ -308,6 +430,7 @@ def suggest_normalization_batch(
     os_strings: list[str],
     allowed_pairs: list[dict[str, str]],
     fuzzy_match_threshold: int = DEFAULT_FUZZY_MATCH_THRESHOLD,
+    provider: object = "openai",
 ) -> list[dict[str, str] | None]:
     threshold = max(50, min(100, int(fuzzy_match_threshold)))
     cleaned_strings = [_clean(value) for value in os_strings]
@@ -318,8 +441,8 @@ def suggest_normalization_batch(
     if not unique_pairs:
         return [None for _ in cleaned_strings]
 
-    api_key = _clean(os.environ.get("OPENAI_API_KEY"))
-    if not api_key:
+    selected = normalize_ai_provider(provider)
+    if not provider_api_key_configured(selected):
         return [None for _ in cleaned_strings]
 
     results: list[dict[str, str] | None] = [None for _ in cleaned_strings]
@@ -332,8 +455,30 @@ def suggest_normalization_batch(
         key = tuple(sorted(_vendor_tags(value)))
         groups.setdefault(key, []).append(index)
 
-    model = _clean(os.environ.get("OPENAI_MODEL")) or DEFAULT_MODEL
-    client = OpenAI(api_key=api_key)
+    system_prompt = (
+        "Match each operating system string to one existing normalization pair only when "
+        f"you are at least {threshold}% confident it is the same product family and edition. "
+        "You must only choose pair_index values from the allowed_pairs list. "
+        "Never invent normalized values. "
+        "Vendor / product family is mandatory. Shared tokens are not enough. "
+        "Examples of INVALID matches: "
+        "'Cisco IOS 12.2(55)SE9' must NOT match 'Apple iOS 12'; "
+        "'Cisco IOS-XE 17.09.05a' must NOT match 'Apple iOS 17'; "
+        "'Oracle Linux Server 9.5' must NOT match 'AlmaLinux OS 9.5' or 'AlmaLinux OS 9'; "
+        "'Windows Server 2019' must NOT match 'Red Hat Enterprise Linux 9'. "
+        "Examples of VALID matches from this lookup style: "
+        "'Cisco IOS 12.2(55)SE9' -> 'CISCO IOS 12.2'; "
+        "'Cisco IOS-XE 17.09.05a' -> 'Cisco IOS XE 17.9'; "
+        "'Cisco IOS XE 17.03.04a' -> 'Cisco IOS XE 17.3'; "
+        "'Oracle Linux Server 9.5' -> 'Oracle Linux 9'. "
+        "Treat dotted versions that differ only by trailing .0 as the same "
+        "(for example 3.2 and 3.2.0; also 17.03 ~= 17.3 when the pair uses the short form). "
+        "Edition, SKU, and qualifier words matter. "
+        "For example, 'Windows 11 Pro' must NOT match 'Windows 11 Pro Enterprise'. "
+        "If the OS string is missing qualifiers present in a candidate, reject that candidate. "
+        "If no pair is a very sure same-vendor match, return pair_index as null for that item. "
+        'Respond with JSON: {"matches":[{"item_index":0,"pair_index":1}]}'
+    )
 
     for indexes in groups.values():
         group_strings = [cleaned_strings[index] for index in indexes]
@@ -360,61 +505,18 @@ def suggest_normalization_batch(
             for pair_index, pair in enumerate(scoped_pairs)
         ]
 
-        try:
-            response = client.chat.completions.create(
-                model=model,
-                temperature=0,
-                response_format={"type": "json_object"},
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "Match each operating system string to one existing normalization pair only when "
-                            f"you are at least {threshold}% confident it is the same product family and edition. "
-                            "You must only choose pair_index values from the allowed_pairs list. "
-                            "Never invent normalized values. "
-                            "Vendor / product family is mandatory. Shared tokens are not enough. "
-                            "Examples of INVALID matches: "
-                            "'Cisco IOS 12.2(55)SE9' must NOT match 'Apple iOS 12'; "
-                            "'Cisco IOS-XE 17.09.05a' must NOT match 'Apple iOS 17'; "
-                            "'Oracle Linux Server 9.5' must NOT match 'AlmaLinux OS 9.5' or 'AlmaLinux OS 9'; "
-                            "'Windows Server 2019' must NOT match 'Red Hat Enterprise Linux 9'. "
-                            "Examples of VALID matches from this lookup style: "
-                            "'Cisco IOS 12.2(55)SE9' -> 'CISCO IOS 12.2'; "
-                            "'Cisco IOS-XE 17.09.05a' -> 'Cisco IOS XE 17.9'; "
-                            "'Cisco IOS XE 17.03.04a' -> 'Cisco IOS XE 17.3'; "
-                            "'Oracle Linux Server 9.5' -> 'Oracle Linux 9'. "
-                            "Treat dotted versions that differ only by trailing .0 as the same "
-                            "(for example 3.2 and 3.2.0; also 17.03 ~= 17.3 when the pair uses the short form). "
-                            "Edition, SKU, and qualifier words matter. "
-                            "For example, 'Windows 11 Pro' must NOT match 'Windows 11 Pro Enterprise'. "
-                            "If the OS string is missing qualifiers present in a candidate, reject that candidate. "
-                            "If no pair is a very sure same-vendor match, return pair_index as null for that item. "
-                            'Respond with JSON: {"matches":[{"item_index":0,"pair_index":1}]}'
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": json.dumps(
-                            {
-                                "items": indexed_items,
-                                "allowed_pairs": pair_catalog,
-                            },
-                            ensure_ascii=True,
-                        ),
-                    },
-                ],
-            )
-        except Exception:
-            continue
-
-        content = _clean(response.choices[0].message.content)
-        if not content:
-            continue
-
-        try:
-            payload = json.loads(content)
-        except json.JSONDecodeError:
+        payload = complete_json(
+            system_prompt,
+            json.dumps(
+                {
+                    "items": indexed_items,
+                    "allowed_pairs": pair_catalog,
+                },
+                ensure_ascii=True,
+            ),
+            selected,
+        )
+        if not payload:
             continue
 
         matches = payload.get("matches")
