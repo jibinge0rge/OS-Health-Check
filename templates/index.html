@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OS Health Check</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=47" />
+    <link rel="stylesheet" href="/static/styles.css?v=48" />
   </head>
   <body>
     <main class="app-shell">
@@ -292,6 +292,9 @@
                       <option value="fuzzy+ai">Fuzzy + AI</option>
                       <option value="manual">Manual</option>
                       <option value="eol">EOL API</option>
+                      <option value="eosl">EOSL Lookup</option>
+                      <option value="lookup-fallback">Lookup copy</option>
+                      <option value="ambiguous">Ambiguous</option>
                       <option value="null">NULL</option>
                     </select>
                     <button
@@ -1172,7 +1175,18 @@
 
       window.addEventListener(
         "scroll",
-        () => {
+        (event) => {
+          if (!openThemeSelect) {
+            return;
+          }
+          // Keep the menu open when the user scrolls its own option list.
+          const scrollTarget = event.target;
+          if (
+            scrollTarget instanceof Element &&
+            openThemeSelect.menu.contains(scrollTarget)
+          ) {
+            return;
+          }
           closeThemeSelectMenu();
         },
         true
@@ -1325,6 +1339,8 @@
             return "Fuzzy + AI";
           case "eol":
             return "EOL API";
+          case "eosl":
+            return "EOSL Lookup";
           case "ambiguous":
             return "Ambiguous";
           case "manual":
@@ -1355,6 +1371,8 @@
           case "eol":
           case "api":
             return "api";
+          case "eosl":
+            return "eosl";
           case "lookup-fallback":
             return "fallback";
           case "ambiguous":
@@ -1426,7 +1444,7 @@
         return `<div class="proof-panel"><p class="proof-panel-title">${escapeHtml(title)}</p>${kv}</div>`;
       }
 
-      function formatQuerySourceHtml(proofMeta) {
+      function formatQuerySourceHtml(proofMeta, { title = "Match source" } = {}) {
         if (!proofMeta) {
           return "";
         }
@@ -1451,7 +1469,9 @@
           rows.push(["Release", release]);
         }
         const kv = proofKvHtml(rows);
-        return kv ? `<div class="proof-panel"><p class="proof-panel-title">API query</p>${kv}</div>` : "";
+        return kv
+          ? `<div class="proof-panel"><p class="proof-panel-title">${escapeHtml(title)}</p>${kv}</div>`
+          : "";
       }
 
       function describeNormalizationMethod(fieldProof, currentValue) {
@@ -1625,7 +1645,25 @@
           method = "api";
           summary = "Dates and statuses came from the endoflife.date API.";
           const got = eolProof.got || {};
-          detailHtml = `${formatQuerySourceHtml(eolProof)}<div class="proof-panel"><p class="proof-panel-title">Values applied</p>${proofKvHtml(
+          detailHtml = `${formatQuerySourceHtml(eolProof, { title: "EOL API query" })}<div class="proof-panel"><p class="proof-panel-title">Values applied</p>${proofKvHtml(
+            [
+              ["EOL date", formatProofValue("eol_date", got.eol_date || row.eol_date)],
+              ["EOL status", got.eol_status || row.eol_status],
+              ["EOAS date", formatProofValue("eoas_date", got.eoas_date || row.eoas_date)],
+              ["EOAS status", got.eoas_status || row.eoas_status],
+            ]
+          )}</div>`;
+        } else if (rawMethod === "eosl") {
+          method = "eosl";
+          summary =
+            "EOL API had no match, so dates and statuses were taken from the local EOSL Lookup (product + release).";
+          const got = eolProof.got || {};
+          const note = eolProof.apiNote || eolProof.note;
+          detailHtml = `${formatQuerySourceHtml(eolProof, { title: "EOSL Lookup match" })}${
+            note
+              ? `<p class="proof-summary">${escapeHtml(String(note))}</p>`
+              : ""
+          }<div class="proof-panel"><p class="proof-panel-title">Values applied</p>${proofKvHtml(
             [
               ["EOL date", formatProofValue("eol_date", got.eol_date || row.eol_date)],
               ["EOL status", got.eol_status || row.eol_status],
@@ -1708,7 +1746,12 @@
         }
 
         const eolMethod = proof.eol?.method || "none";
-        if (eolMethod === "api" || eolMethod === "lookup-fallback" || eolMethod === "manual") {
+        if (
+          eolMethod === "api" ||
+          eolMethod === "eosl" ||
+          eolMethod === "lookup-fallback" ||
+          eolMethod === "manual"
+        ) {
           methods.push(eolMethod);
         } else if (rowHasEolData(row) && eolMethod === "none") {
           methods.push("loaded");
@@ -2154,6 +2197,7 @@
         ["freebsd", [/\bfreebsd\b/i]],
         ["f5", [/\bf5\b/i, /\bbig[\s-]?ip\b/i]],
         ["citrix", [/\bcitrix\b/i, /\bxenserver\b/i]],
+        ["juniper", [/\bjuniper\b/i, /\bjunos\b/i]],
       ];
 
       function vendorTags(value) {
@@ -2235,6 +2279,9 @@
 
         const detailed = candidate.normalized_os_detailed_name;
         const normalized = candidate.normalized_os;
+        if (isRubbishOsValue(detailed) || isRubbishOsValue(normalized)) {
+          return 0;
+        }
         if (!vendorsCompatible(osValue, `${detailed || ""} ${normalized || ""}`)) {
           return 0;
         }
@@ -2389,6 +2436,88 @@
         };
       }
 
+      function isPlaceholderOsValue(value) {
+        const cleaned = String(value ?? "").trim();
+        if (!cleaned) {
+          return true;
+        }
+        const lowered = cleaned.toLowerCase();
+        if (lowered === "ambiguous os") {
+          return true;
+        }
+        const placeholders = new Set([
+          "-",
+          "--",
+          "---",
+          "n/a",
+          "na",
+          "null",
+          "none",
+          "nil",
+          "unknown",
+          "default",
+          "<!-- default -->",
+          "<default>",
+          "tbd",
+          "todo",
+          "placeholder",
+          "rubbish",
+        ]);
+        if (placeholders.has(lowered)) {
+          return true;
+        }
+        if (lowered.startsWith("unknown ") || lowered.endsWith(" unknown")) {
+          return true;
+        }
+        if (/<!--[\s\S]*-->/i.test(cleaned) || /^\s*<[^>]+>\s*$/i.test(cleaned)) {
+          return true;
+        }
+        if (/^\[?\s*default\s*\]?$/i.test(cleaned)) {
+          return true;
+        }
+        if (/^[\W_]+$/u.test(cleaned)) {
+          return true;
+        }
+        return false;
+      }
+
+      function isRubbishOsValue(value) {
+        if (isPlaceholderOsValue(value)) {
+          return true;
+        }
+        const cleaned = String(value ?? "").trim();
+        if (cleaned.length < 8) {
+          return false;
+        }
+        const compact = cleaned.replace(/[\s\-_:]/g, "");
+        if (compact.length >= 16 && /^[0-9a-fA-F]+$/.test(compact)) {
+          return true;
+        }
+        if (
+          /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/i.test(
+            cleaned
+          )
+        ) {
+          return true;
+        }
+        const letterWords = cleaned.match(/[A-Za-z]{2,}/g) || [];
+        if (!letterWords.length && /\d/.test(cleaned) && cleaned.length >= 10) {
+          return true;
+        }
+        if (compact.length >= 24) {
+          const hexChars = (compact.match(/[0-9a-fA-F]/g) || []).length;
+          if (
+            hexChars / Math.max(compact.length, 1) >= 0.9 &&
+            !/\b(?:linux|windows|ubuntu|debian|centos|redhat|rhel|oracle|android|macos|ios|junos|juniper|cisco|suse|fedora|alma|rocky|solaris|aix|freebsd|esxi|forti|pan-?os)\b/i.test(
+              cleaned
+            )
+          ) {
+            return true;
+          }
+        }
+        return false;
+      }
+
       function buildAllowedPairs(candidates, excludeRowId = null) {
         const seen = new Set();
         const pairs = [];
@@ -2403,10 +2532,7 @@
           if (!detailed || !normalized) {
             return;
           }
-          if (
-            detailed.toLowerCase() === "ambiguous os" ||
-            normalized.toLowerCase() === "ambiguous os"
-          ) {
+          if (isRubbishOsValue(detailed) || isRubbishOsValue(normalized)) {
             return;
           }
 
@@ -2429,6 +2555,40 @@
         const fallbackValue = String(osValue ?? "").trim();
         if (!fallbackValue) {
           return { ...emptyNormalizationSuggestion(), fuzzyMatched: false };
+        }
+
+        // Rubbish / hex dumps: only copy an exact same existing rubbish pair.
+        // Never map garbage onto a real OS name.
+        if (isRubbishOsValue(fallbackValue)) {
+          const needle = fallbackValue.toLowerCase();
+          let exact = null;
+          candidates.some((candidate) => {
+            if (candidate.__id === excludeRowId) {
+              return false;
+            }
+            const detailed = String(candidate.normalized_os_detailed_name ?? "").trim();
+            const normalized = String(candidate.normalized_os ?? "").trim();
+            if (!detailed || !normalized) {
+              return false;
+            }
+            if (detailed.toLowerCase() !== needle || normalized.toLowerCase() !== needle) {
+              return false;
+            }
+            exact = candidate;
+            return true;
+          });
+          if (!exact) {
+            return { ...emptyNormalizationSuggestion(), fuzzyMatched: false };
+          }
+          return {
+            normalized_os_detailed_name: String(exact.normalized_os_detailed_name ?? "").trim(),
+            normalized_os: String(exact.normalized_os ?? "").trim(),
+            detailedAuto: true,
+            normalizedAuto: true,
+            fuzzyMatched: true,
+            matchScore: 100,
+            matchedFrom: matchedFromSnapshot(exact),
+          };
         }
 
         let bestCandidate = null;
@@ -2540,6 +2700,12 @@
           return { ...suggestion, matchMethod: "fuzzy" };
         }
 
+        // Rubbish OS strings are never sent to AI — leave blank unless exact
+        // same rubbish already exists (handled by fuzzy above).
+        if (isRubbishOsValue(osValue)) {
+          return { ...emptyNormalizationSuggestion(), matchMethod: "none" };
+        }
+
         if (!isAiMatchingEnabled()) {
           return { ...emptyNormalizationSuggestion(), matchMethod: "none" };
         }
@@ -2603,6 +2769,9 @@
 
         const rowsNeedingAi = rows.filter((row) => {
           if (isAmbiguousOsRow(row)) {
+            return false;
+          }
+          if (isRubbishOsValue(row.os_string)) {
             return false;
           }
           return (
@@ -3026,6 +3195,76 @@
         };
       }
 
+      function buildEoslProofMetaFromApi(eoslResult, eolApiResult = null) {
+        const eolNote = String(eolApiResult?.api_note ?? "").trim();
+        const product = String(eoslResult.product_slug ?? "").trim();
+        const release = String(
+          eoslResult.release_label || eoslResult.release_name || ""
+        ).trim();
+        const matchBits = [product && `product ${product}`, release && `release ${release}`]
+          .filter(Boolean)
+          .join(", ");
+        const eoslNote = matchBits
+          ? `Matched via EOSL Lookup (${matchBits}).`
+          : "Matched via EOSL Lookup (product + release).";
+        return {
+          method: "eosl",
+          queryUsed: String(eoslResult.query_used ?? "").trim(),
+          queryField: String(eoslResult.query_field ?? "").trim(),
+          productSlug: product,
+          releaseName: String(eoslResult.release_name ?? "").trim(),
+          releaseLabel: String(eoslResult.release_label ?? "").trim(),
+          apiNote: eolNote ? `EOL API: ${eolNote}. ${eoslNote}` : eoslNote,
+        };
+      }
+
+      async function fetchEoslLookupResults(rows, signal) {
+        if (!rows.length) {
+          return [];
+        }
+        const items = rows.map((row) => ({
+          os_string: row.os_string ?? "",
+          normalized_os_detailed_name: row.normalized_os_detailed_name ?? "",
+          normalized_os: row.normalized_os ?? "",
+        }));
+        const response = await fetch("/api/eosl-lookup", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items }),
+          signal,
+        });
+        if (!response.ok) {
+          throw new Error("Unable to look up EOSL data.");
+        }
+        const payload = await response.json();
+        return Array.isArray(payload.results) ? payload.results : [];
+      }
+
+      function applyEmptyEolProof(row, apiResult, extraNote = "") {
+        const proof = ensureProof(row);
+        const noteParts = [
+          String(apiResult?.api_note ?? "").trim(),
+          String(extraNote ?? "").trim(),
+        ].filter(Boolean);
+        proof.eol = {
+          method: "none",
+          queryUsed: String(apiResult?.query_used ?? "").trim(),
+          queryField: String(apiResult?.query_field ?? "").trim(),
+          productSlug: String(apiResult?.product_slug ?? "").trim(),
+          releaseName: String(apiResult?.release_name ?? "").trim(),
+          releaseLabel: String(apiResult?.release_label ?? "").trim(),
+          apiNote: noteParts.join(" ") || "No EOL/EOAS data found.",
+          got: {
+            eol_date: "",
+            eol_status: "",
+            eoas_date: "",
+            eoas_status: "",
+            normalized_os_detailed_name: "",
+            normalized_os: "",
+          },
+        };
+      }
+
       async function applyEolFromApi(
         rows,
         {
@@ -3050,6 +3289,11 @@
           normalized_os: row.normalized_os ?? "",
         }));
 
+        const candidates = fallbackCandidates ?? uiRows.concat(allRows);
+        let updated = 0;
+        let failed = 0;
+        const needEosl = [];
+
         try {
           const response = await fetch(endpoint, {
             method: "POST",
@@ -3063,39 +3307,10 @@
           }
 
           const payload = await response.json();
-          let updated = 0;
-          let failed = 0;
           uiRows.forEach((row, index) => {
             const apiResult = payload.results[index] ?? {};
             if (isEmptyEolPayload(apiResult)) {
-              const usedFallback = applyExistingEolFallback(
-                row,
-                fallbackCandidates ?? uiRows.concat(allRows),
-                { forceLifecycle }
-              );
-              if (usedFallback) {
-                updated += 1;
-              } else {
-                const proof = ensureProof(row);
-                proof.eol = {
-                  method: "none",
-                  queryUsed: String(apiResult.query_used ?? "").trim(),
-                  queryField: String(apiResult.query_field ?? "").trim(),
-                  productSlug: String(apiResult.product_slug ?? "").trim(),
-                  releaseName: "",
-                  releaseLabel: "",
-                  apiNote: String(apiResult.api_note ?? "No EOL/EOAS data found.").trim(),
-                  got: {
-                    eol_date: "",
-                    eol_status: "",
-                    eoas_date: "",
-                    eoas_status: "",
-                    normalized_os_detailed_name: "",
-                    normalized_os: "",
-                  },
-                };
-                failed += 1;
-              }
+              needEosl.push({ row, apiResult });
             } else {
               applyEolResultToRow(row, apiResult, {
                 forceLifecycle,
@@ -3104,24 +3319,56 @@
               updated += 1;
             }
           });
-          return { updated, failed };
         } catch (error) {
           if (signal?.aborted) {
             throw error;
           }
-          showStatus(error.message, "error");
-          let updated = 0;
+          // EOL API unavailable — try EOSL for every row, then lookup-copy.
           uiRows.forEach((row) => {
-            if (
-              applyExistingEolFallback(row, fallbackCandidates ?? uiRows.concat(allRows), {
-                forceLifecycle,
-              })
-            ) {
-              updated += 1;
-            }
+            needEosl.push({ row, apiResult: { api_note: error.message } });
           });
-          return { updated, failed: uiRows.length - updated };
         }
+
+        if (needEosl.length) {
+          let eoslResults = [];
+          try {
+            eoslResults = await fetchEoslLookupResults(
+              needEosl.map((entry) => entry.row),
+              signal
+            );
+          } catch (eoslError) {
+            if (signal?.aborted) {
+              throw eoslError;
+            }
+            // Fall through with empty results; lookup-copy / none still apply.
+            eoslResults = [];
+          }
+
+          needEosl.forEach(({ row, apiResult }, index) => {
+            const eoslResult = eoslResults[index] ?? {};
+            if (!isEmptyEolPayload(eoslResult)) {
+              applyEolResultToRow(row, eoslResult, {
+                forceLifecycle,
+                proofMeta: buildEoslProofMetaFromApi(eoslResult, apiResult),
+              });
+              updated += 1;
+              return;
+            }
+            if (applyExistingEolFallback(row, candidates, { forceLifecycle })) {
+              updated += 1;
+              return;
+            }
+            const eoslNote = String(eoslResult.api_note ?? "").trim();
+            applyEmptyEolProof(
+              row,
+              apiResult,
+              eoslNote ? `EOSL Lookup: ${eoslNote}` : "EOSL Lookup also found no match."
+            );
+            failed += 1;
+          });
+        }
+
+        return { updated, failed };
       }
 
       async function yieldToUi() {
@@ -3998,7 +4245,7 @@
           } else {
             showStatus(
               `EOL/EOAS refresh complete. Updated ${updated} entries` +
-                (failed ? `, ${failed} without API data.` : "."),
+                (failed ? `, ${failed} without lifecycle data.` : "."),
               failed ? "info" : "success"
             );
           }
@@ -4088,6 +4335,12 @@
             kinds.add("manual");
           } else if (method === "eol" || method === "api") {
             kinds.add("eol");
+          } else if (method === "eosl") {
+            kinds.add("eosl");
+          } else if (method === "lookup-fallback") {
+            kinds.add("lookup-fallback");
+          } else if (method === "ambiguous") {
+            kinds.add("ambiguous");
           }
         });
 
@@ -4096,7 +4349,10 @@
           !kinds.has("ai") &&
           !kinds.has("fuzzy+ai") &&
           !kinds.has("manual") &&
-          !kinds.has("eol")
+          !kinds.has("eol") &&
+          !kinds.has("eosl") &&
+          !kinds.has("lookup-fallback") &&
+          !kinds.has("ambiguous")
         ) {
           kinds.add("null");
         }
@@ -4673,18 +4929,23 @@
         });
       }
 
-      function revertRows() {
+      async function revertRows() {
         if (currentSource === "draft") {
           currentEvidenceByOs = { ...dataEvidenceByOs };
           allRows = hydrateRows(cloneRows(dataBaselineRows), currentEvidenceByOs);
-          promoteToDraftSource();
-          syncDirtyState();
-        } else {
-          allRows = hydrateRows(cloneRows(originalRows), currentEvidenceByOs);
-          setDirty(false);
+          clearStatus();
+          applyFilter();
+          // Persist immediately — in-memory revert alone left _draft/ stale on disk
+          // (especially when Auto-save is off).
+          const saved = await saveRows({ mode: "manual", quiet: true });
+          return saved;
         }
+
+        allRows = hydrateRows(cloneRows(originalRows), currentEvidenceByOs);
+        setDirty(false);
         clearStatus();
         applyFilter();
+        return true;
       }
 
       function handleCellEdit(event) {
@@ -4809,7 +5070,7 @@
         applyFilter();
       }
 
-      function revertRow(rowId) {
+      async function revertRow(rowId) {
         const rowIndex = allRows.findIndex((row) => row.__id === rowId);
         if (rowIndex === -1) {
           return;
@@ -4826,9 +5087,14 @@
         promoteToDraftSource();
         if (currentSource === "draft") {
           const dataBaselineRow = findDataBaselineRow(targetRow);
+          const osKey = String(targetRow.os_string ?? "").trim();
           if (!dataBaselineRow) {
             allRows.splice(rowIndex, 1);
+            if (osKey && currentEvidenceByOs[osKey]) {
+              delete currentEvidenceByOs[osKey];
+            }
           } else {
+            const storedProof = osKey ? dataEvidenceByOs[osKey] : null;
             allRows[rowIndex] = {
               __id: targetRow.__id,
               __sourceIndex: targetRow.__sourceIndex,
@@ -4839,7 +5105,7 @@
               __eolStatusAuto: false,
               __eoasDateAuto: false,
               __eoasStatusAuto: false,
-              __proof: emptyProof(),
+              __proof: proofFromStored(storedProof),
               ...blankRow(),
               ...dataBaselineRow,
             };
@@ -4866,6 +5132,10 @@
 
         syncDirtyState();
         applyFilter();
+        if (currentSource === "draft") {
+          await saveRows({ mode: "manual", quiet: true });
+          showStatus("Row reverted to Data and Draft saved.", "success");
+        }
       }
 
       function copyOsAsNormalized(rowId) {
@@ -4954,13 +5224,13 @@
         }
       }
 
-      async function saveRows({ mode = "manual" } = {}) {
+      async function saveRows({ mode = "manual", quiet = false } = {}) {
         if (!isLookupEditable()) {
           showStatus("Click Edit Data to add or modify the lookup.", "info");
           return false;
         }
         if (saveInFlight) {
-          if (mode === "manual") {
+          if (mode === "manual" && !quiet) {
             showStatus("A save is already in progress...", "info");
           }
           return false;
@@ -4973,9 +5243,9 @@
         saveInFlight = true;
         updateSourceUi();
 
-        if (mode === "manual") {
+        if (mode === "manual" && !quiet) {
           showStatus("Saving draft...");
-        } else {
+        } else if (!quiet) {
           dirtyIndicator.textContent = "Saving...";
           dirtyIndicator.classList.add("dirty");
         }
@@ -5004,10 +5274,12 @@
           saveInFlight = false;
           setDirty(false);
           updateSourceUi();
-          if (mode === "manual") {
-            showStatus("Draft saved successfully.", "success");
-          } else {
-            showStatus("Draft auto-saved.", "success");
+          if (!quiet) {
+            if (mode === "manual") {
+              showStatus("Draft saved successfully.", "success");
+            } else {
+              showStatus("Draft auto-saved.", "success");
+            }
           }
           return true;
         } catch (error) {
@@ -5970,13 +6242,16 @@
           return;
         }
 
-        revertRows();
-        showStatus(
-          currentSource === "draft"
-            ? "Reverted draft rows to the data lookup state."
-            : "Reverted to the last loaded lookup state.",
-          "success"
-        );
+        void (async () => {
+          const saved = await revertRows();
+          if (currentSource === "draft") {
+            if (saved) {
+              showStatus("Reverted Draft to Data and saved `_draft`.", "success");
+            }
+            return;
+          }
+          showStatus("Reverted to the last loaded lookup state.", "success");
+        })();
       });
 
       saveButton.addEventListener("click", () => {

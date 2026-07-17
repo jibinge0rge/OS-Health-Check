@@ -190,7 +190,7 @@ flowchart TD
 
 1. **Fuzzy first** — compare the OS string to existing `normalized_os_detailed_name` / `normalized_os` (not other raw `os_string`s). Score must be high (≥ 95%).
 2. **Vendor guardrails** — keyword brands (Oracle, AlmaLinux, Cisco, Apple, Windows, …). Different brands cannot match (e.g. Oracle Linux ≠ AlmaLinux).
-3. **AI match** — **off by default**. When enabled and the selected provider’s API key is set (`OPENAI_API_KEY` or `GEMINI_API_KEY`), AI may choose only from existing CSV pairs; never invents names. Batches are grouped by vendor so Oracle items don’t see AlmaLinux pairs in the same prompt.
+3. **AI match** — **off by default**. When enabled and the selected provider’s API key is set (`OPENAI_API_KEY` or `GEMINI_API_KEY`), AI may choose only from existing CSV pairs; never invents names. Batches are grouped by vendor so Oracle items don’t see AlmaLinux pairs in the same prompt. Accepted picks must also pass code checks: confidence ≥ threshold, same vendor, compatible version family, and no extra Windows SKU words (e.g. Pro must not become Pro Enterprise). OpenAI gets a stricter “prefer null over guess” instruction because `gpt-4o-mini` tends to over-match compared with Gemini.
 4. **Conservative** — if unsure → no match (better blank than wrong).
 
 **Example:** `Oracle Linux Server 9.5` → fuzzy/AI can map to `Oracle Linux 9`, but must **not** map to `AlmaLinux OS 9`.
@@ -199,7 +199,7 @@ flowchart TD
 
 ## EOL / EOAS refresh flow
 
-Uses [endoflife.date](https://endoflife.date) product API.
+Uses [endoflife.date](https://endoflife.date) product API first, then falls back to the local [EOSL Lookup](#eosl-lookup-local-eosldate-database) (product + release) when the API has no match.
 
 **Query preference:** try `normalized_os` → `normalized_os_detailed_name` → `os_string`, but **skip** a normalized value if its vendor doesn’t match the raw OS (wrong brand leftover).
 
@@ -217,12 +217,19 @@ flowchart TD
   Skip -->|Yes| Next[Skip row]
   Skip -->|No| Pick[Pick query string<br/>prefer norm if same vendor]
   Pick --> Slug[Resolve product slug]
-  Slug --> API[Fetch product plus release]
+  Slug --> API[Fetch endoflife.date product plus release]
   API --> Vendor2{Product label matches OS vendor?}
   Vendor2 -->|No| Retry[Retry with raw os_string / skip bad labels]
-  Vendor2 -->|Yes| ApplyDates[Write EOL/EOAS dates plus compatible norm labels]
-  Retry --> ApplyDates
+  Vendor2 -->|Yes| HasData{API returned dates or status?}
+  Retry --> HasData
+  HasData -->|Yes| ApplyDates[Write EOL/EOAS dates]
+  HasData -->|No| Eosl[EOSL Lookup: product plus release]
+  Eosl --> EoslHit{Match found?}
+  EoslHit -->|Yes| ApplyEosl[Write dates, evidence method eosl]
+  EoslHit -->|No| CopyFb[Copy from same normalized pair if available]
   ApplyDates --> Proof[Store EOL proof in evidence]
+  ApplyEosl --> Proof
+  CopyFb --> Proof
 ```
 
 Dates are stored as Unix epoch. Status `true`/`false` is only used when a date is missing.
@@ -240,10 +247,12 @@ The **View / Update EOSL Lookup** button (next to **Refresh EOL/EOAS**) opens a 
 
 The scraped dates can also be applied to your lookup rows through the batch endpoint `POST /api/eosl-lookup` (same row/vendor guardrails as the endoflife.date refresh).
 
+**Refresh EOL/EOAS** uses this as a fallback: when endoflife.date returns no match for a row, the app tries the local EOSL database using a **product + release** match. Evidence is stored as method `eosl` so you can filter those rows in the Actions column.
+
 Scraping and matching notes:
 
 - Column labels differ per vendor, so instead of matching label names the scraper treats every support-date column as a lifecycle date and derives **EOAS = earliest** end date, **EOL = latest** end date.
-- Release matching is dot-aware on the numeric version (e.g. `22.04.3` → `22.04`) and ignores the release-date digits in the "Latest" column.
+- Release matching is dot-aware on the numeric version (e.g. `22.04.3` → `22.04`) and ignores the release-date digits in the "Latest" column. A strong product **and** release score is required — the first release is never guessed. Vague strings like `Other 3.x or later Linux (64-bit)` are rejected (no `N.x` / bitness false matches, and generic `linux` kernel only matches clear kernel queries like `Linux 6.13`).
 - Vendor compatibility is enforced the same way as the API path (e.g. Oracle Linux never resolves to AlmaLinux).
 - Requests are throttled (short delay per page) and serialized server-side so only one scrape runs at a time.
 
@@ -289,7 +298,9 @@ Shape:
 }
 ```
 
-Proof methods include: `fuzzy`, `ai`, `fuzzy+ai`, `eol`, `lookup-fallback`, `ambiguous`, `manual`, `none`.
+Proof methods include: `fuzzy`, `ai`, `fuzzy+ai`, `eol` / `api`, `eosl`, `lookup-fallback`, `ambiguous`, `manual`, `none`.
+
+The Actions column filter can narrow rows by: Fuzzy, AI, Fuzzy + AI, Manual, EOL API, EOSL Lookup, Lookup copy, Ambiguous, or NULL.
 
 ---
 
@@ -301,7 +312,7 @@ Proof methods include: `fuzzy`, `ai`, `fuzzy+ai`, `eol`, `lookup-fallback`, `amb
 | **AI match** | **Off by default**; Edit mode only; choose OpenAI or Gemini; needs that provider’s API key |
 | **Save Draft** | Manual draft + evidence write |
 | **Validate** | Backup Data → write Draft into Data |
-| **Revert** | Reset Draft rows to Data baseline |
+| **Revert** | Reset Draft rows (+ evidence) to the Data baseline and **save `_draft/`** immediately |
 | **Delete draft** | Remove Draft (+ evidence), return to Data |
 | **Show Delta / Download Delta** | Draft-only change view |
 | **View / Update EOSL Lookup** | Opens read-only viewer of the local eosl.date DB (filterable); update/re-scrape from there |

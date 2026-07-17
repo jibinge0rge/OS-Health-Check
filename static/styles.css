@@ -1263,6 +1263,12 @@ body.lookup-readonly td .theme-select-trigger:disabled {
   border-color: rgba(45, 212, 191, 0.4);
 }
 
+.proof-badge--eosl {
+  color: #e0f2fe;
+  background: rgba(2, 132, 199, 0.28);
+  border-color: rgba(56, 189, 248, 0.4);
+}
+
 .proof-badge--fallback {
   color: #e2e8f0;
   background: rgba(71, 85, 105, 0.4);

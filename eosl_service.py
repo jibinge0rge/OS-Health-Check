@@ -42,6 +42,17 @@ NON_SUPPORT_LABELS = (
 # "Still supported / no fixed end date" markers seen in support columns.
 ACTIVE_MARKERS = ("active", "supported", "yes", "tbd", "n/a", "-", "")
 
+# Numbers that look like versions but are almost always architecture / bitness.
+_NON_VERSION_HINTS = frozenset({"16", "32", "64", "86", "128", "256"})
+
+# Ultra-generic product pages that must not absorb vague "Other … Linux" strings.
+_GENERIC_FAMILY_SLUGS = frozenset({"linux", "windows", "unix"})
+
+_VAGUE_OS_RE = re.compile(
+    r"\b(?:other|unknown|various|any|unspecified)\b|\bor later\b|\bor earlier\b",
+    re.I,
+)
+
 
 def _clean(value: object) -> str:
     return str(value or "").strip()
@@ -391,6 +402,23 @@ def _version_tokens(text: str) -> list[str]:
     return re.findall(r"\d+(?:\.\d+)*", text or "")
 
 
+def _eosl_version_hints(os_name: str) -> list[str]:
+    """Version hints suitable for EOSL product+release matching.
+
+    Drops architecture bitness (64-bit) and wildcard families like ``3.x``,
+    which must not score against unrelated releases such as ``6.13``.
+    """
+    hints: list[str] = []
+    for hint in extract_version_hints(os_name):
+        if hint in _NON_VERSION_HINTS:
+            continue
+        # "3.x or later" is a range, not version 3.
+        if re.search(rf"(?<!\d){re.escape(hint)}\.x\b", os_name, re.I):
+            continue
+        hints.append(hint)
+    return hints
+
+
 def _version_match_score(release_version: str, hint: str) -> int:
     if not release_version or not hint:
         return 0
@@ -401,8 +429,13 @@ def _version_match_score(release_version: str, hint: str) -> int:
     shorter = min(len(rel_parts), len(hint_parts))
     if rel_parts[:shorter] == hint_parts[:shorter]:
         # Dot-aware prefix match (e.g. release "22.04" vs hint "22.04.3").
+        # Require the hint to carry at least as many segments as it claims —
+        # a bare major like "3" must not prefix-match "3.18".
+        if len(hint_parts) == 1 and len(rel_parts) > 1:
+            return 0
         return 90
-    if rel_parts[0] == hint_parts[0]:
+    if len(hint_parts) > 1 and rel_parts[0] == hint_parts[0]:
+        # Shared major only when both sides are multi-part (e.g. 8.6 vs 8.4).
         return 55
     return 0
 
@@ -410,22 +443,24 @@ def _version_match_score(release_version: str, hint: str) -> int:
 def _release_score(release_name: str, hint: str) -> int:
     # Only score against version tokens in the release name itself. The
     # "latest" column embeds release dates (e.g. 2026-07-11) whose digits
-    # would otherwise create false matches.
+    # would otherwise create false matches. Never use raw substring checks
+    # like "3" in "6.13" — that caused Other-Linux → linux 6.13.
     best = 0
     for candidate in _version_tokens(release_name):
         best = max(best, _version_match_score(candidate, hint))
-    if best:
-        return best
-    if hint.lower() in release_name.lower():
-        return 40
-    return 0
+    return best
+
+
+# Accept only strong version matches (exact or multi-segment prefix).
+_MIN_RELEASE_SCORE = 80
 
 
 def _pick_release(releases: list[sqlite3.Row], hints: list[str]) -> sqlite3.Row | None:
-    if not releases:
+    """Match product releases by version hint. Product alone is not enough —
+    a strong release score is required so we never guess.
+    """
+    if not releases or not hints:
         return None
-    if not hints:
-        return releases[0]
 
     best = None
     best_score = 0
@@ -435,7 +470,27 @@ def _pick_release(releases: list[sqlite3.Row], hints: list[str]) -> sqlite3.Row 
         if score > best_score:
             best_score = score
             best = release
-    return best
+    return best if best_score >= _MIN_RELEASE_SCORE else None
+
+
+def _query_is_vague(query: str) -> bool:
+    return bool(_VAGUE_OS_RE.search(query or ""))
+
+
+def _query_targets_generic_family(query: str, slug: str) -> bool:
+    """True when a generic family page (e.g. linux kernel) is an intentional hit."""
+    lowered = (query or "").lower()
+    if slug == "linux":
+        return bool(
+            re.search(r"\blinux\s+\d", lowered)
+            or re.search(r"\bkernel\s+\d", lowered)
+            or re.search(r"\d+(?:\.\d+)*\s+linux\b", lowered)
+        )
+    if slug == "windows":
+        return bool(re.search(r"\bwindows\s+(?:\d|server|vista|xp)\b", lowered))
+    if slug == "unix":
+        return bool(re.search(r"\bunix\s+\d", lowered))
+    return True
 
 
 def _resolve_product_slug(query: str, products: list[sqlite3.Row]) -> str | None:
@@ -466,7 +521,15 @@ def _resolve_product_slug(query: str, products: list[sqlite3.Row]) -> str | None
             best_score = score
             best_slug = slug
 
-    return best_slug if best_score >= 60 else None
+    if best_score < 60 or not best_slug:
+        return None
+
+    # Vague "Other … Linux" must not resolve to the generic linux kernel product.
+    if best_slug in _GENERIC_FAMILY_SLUGS:
+        if _query_is_vague(query) or not _query_targets_generic_family(query, best_slug):
+            return None
+
+    return best_slug
 
 
 def lookup_os_eosl(
@@ -501,7 +564,7 @@ def lookup_os_eosl(
     with _connect(db_path) as connection:
         product_count = connection.execute("SELECT COUNT(*) FROM products").fetchone()[0]
         if not product_count:
-            empty["api_note"] = "Local EOSL database is empty. Run Update EOSL DB first."
+            empty["api_note"] = "Local EOSL database is empty. Run Update EOSL Lookup first."
             return empty
 
         products = _load_products(connection)
@@ -525,7 +588,7 @@ def lookup_os_eosl(
                 return empty
 
         releases = _load_releases(connection, product_slug)
-        selected = _pick_release(releases, extract_version_hints(cleaned_name))
+        selected = _pick_release(releases, _eosl_version_hints(cleaned_name))
         if not selected:
             empty["product_slug"] = product_slug
             empty["api_note"] = "No matching release in local EOSL database"
