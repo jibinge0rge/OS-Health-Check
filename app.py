@@ -27,6 +27,19 @@ from eosl_service import (
     lookup_os_eosl_batch,
     sync_os_database as eosl_sync_os_database,
 )
+from junos_service import (
+    get_status as junos_get_status,
+    list_all_rows as junos_list_all_rows,
+    lookup_os_junos_batch,
+    sync_junos_database,
+)
+from vendor_lookup_service import (
+    get_status as vendor_get_status,
+    list_rows as vendor_list_rows,
+    list_sources as vendor_list_sources,
+    lookup_vendor_batch,
+    sync_source as vendor_sync_source,
+)
 from normalization_service import (
     DEFAULT_FUZZY_MATCH_THRESHOLD,
     detect_ambiguous_os_batch,
@@ -63,8 +76,11 @@ app = FastAPI(title="OS Health Check")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
-# Serialize EOSL scrape runs so only one hits eosl.date at a time.
-EOSL_SYNC_LOCK = asyncio.Lock()
+# Serialize vendor scrape runs so only one hits a remote source at a time.
+VENDOR_SYNC_LOCK = asyncio.Lock()
+# Back-compat alias used by older EOSL-only call sites.
+EOSL_SYNC_LOCK = VENDOR_SYNC_LOCK
+VALID_VENDOR_SOURCES = {"eosl", "junos"}
 
 
 class LookupRow(BaseModel):
@@ -772,12 +788,12 @@ async def eosl_rows() -> dict[str, object]:
 
 @app.post("/api/eosl/sync")
 async def eosl_sync() -> dict[str, object]:
-    if EOSL_SYNC_LOCK.locked():
+    if VENDOR_SYNC_LOCK.locked():
         raise HTTPException(
             status_code=409,
-            detail="An EOSL database update is already running. Please wait for it to finish.",
+            detail="A vendor lookup update is already running. Please wait for it to finish.",
         )
-    async with EOSL_SYNC_LOCK:
+    async with VENDOR_SYNC_LOCK:
         try:
             result = await asyncio.to_thread(eosl_sync_os_database)
         except Exception as error:  # noqa: BLE001 - surface scrape failures to UI
@@ -793,6 +809,98 @@ async def eosl_sync() -> dict[str, object]:
 async def eosl_lookup(payload: EolLookupBatchRequest) -> dict[str, object]:
     results = await asyncio.to_thread(
         lookup_os_eosl_batch,
+        [item.model_dump() for item in payload.items],
+    )
+    return {"results": results}
+
+
+@app.get("/api/vendor-lookups/sources")
+async def vendor_lookup_sources() -> dict[str, object]:
+    return {"sources": vendor_list_sources()}
+
+
+@app.get("/api/vendor-lookups/{source_id}/status")
+async def vendor_lookup_status(source_id: str) -> dict[str, object]:
+    if source_id not in VALID_VENDOR_SOURCES:
+        raise HTTPException(status_code=404, detail=f"Unknown vendor source: {source_id}")
+    return await asyncio.to_thread(vendor_get_status, source_id)
+
+
+@app.get("/api/vendor-lookups/{source_id}/rows")
+async def vendor_lookup_rows(source_id: str) -> dict[str, object]:
+    if source_id not in VALID_VENDOR_SOURCES:
+        raise HTTPException(status_code=404, detail=f"Unknown vendor source: {source_id}")
+    rows = await asyncio.to_thread(vendor_list_rows, source_id)
+    status = await asyncio.to_thread(vendor_get_status, source_id)
+    return {"rows": rows, "status": status, "source_id": source_id}
+
+
+@app.post("/api/vendor-lookups/{source_id}/sync")
+async def vendor_lookup_sync(source_id: str) -> dict[str, object]:
+    if source_id not in VALID_VENDOR_SOURCES:
+        raise HTTPException(status_code=404, detail=f"Unknown vendor source: {source_id}")
+    if VENDOR_SYNC_LOCK.locked():
+        raise HTTPException(
+            status_code=409,
+            detail="A vendor lookup update is already running. Please wait for it to finish.",
+        )
+    async with VENDOR_SYNC_LOCK:
+        try:
+            result = await asyncio.to_thread(vendor_sync_source, source_id)
+        except Exception as error:  # noqa: BLE001 - surface scrape failures to UI
+            raise HTTPException(
+                status_code=502,
+                detail=f"Failed to update {source_id} database: {error}",
+            ) from error
+    status = await asyncio.to_thread(vendor_get_status, source_id)
+    return {"result": result, "status": status, "source_id": source_id}
+
+
+@app.post("/api/vendor-lookup")
+async def vendor_lookup(payload: EolLookupBatchRequest) -> dict[str, object]:
+    """Junos/Juniper rows: junos DB first, then eosl.date; others: eosl.date only."""
+    results = await asyncio.to_thread(
+        lookup_vendor_batch,
+        [item.model_dump() for item in payload.items],
+    )
+    return {"results": results}
+
+
+@app.get("/api/junos/status")
+async def junos_status() -> dict[str, object]:
+    return await asyncio.to_thread(junos_get_status)
+
+
+@app.get("/api/junos/rows")
+async def junos_rows() -> dict[str, object]:
+    rows = await asyncio.to_thread(junos_list_all_rows)
+    status = await asyncio.to_thread(junos_get_status)
+    return {"rows": rows, "status": status}
+
+
+@app.post("/api/junos/sync")
+async def junos_sync() -> dict[str, object]:
+    if VENDOR_SYNC_LOCK.locked():
+        raise HTTPException(
+            status_code=409,
+            detail="A vendor lookup update is already running. Please wait for it to finish.",
+        )
+    async with VENDOR_SYNC_LOCK:
+        try:
+            result = await asyncio.to_thread(sync_junos_database)
+        except Exception as error:  # noqa: BLE001 - surface scrape failures to UI
+            raise HTTPException(
+                status_code=502,
+                detail=f"Failed to update Junos database: {error}",
+            ) from error
+    status = await asyncio.to_thread(junos_get_status)
+    return {"result": result, "status": status}
+
+
+@app.post("/api/junos-lookup")
+async def junos_lookup(payload: EolLookupBatchRequest) -> dict[str, object]:
+    results = await asyncio.to_thread(
+        lookup_os_junos_batch,
         [item.model_dump() for item in payload.items],
     )
     return {"results": results}

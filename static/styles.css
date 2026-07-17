@@ -1269,6 +1269,12 @@ body.lookup-readonly td .theme-select-trigger:disabled {
   border-color: rgba(56, 189, 248, 0.4);
 }
 
+.proof-badge--junos {
+  color: #fef3c7;
+  background: rgba(180, 83, 9, 0.28);
+  border-color: rgba(251, 191, 36, 0.4);
+}
+
 .proof-badge--fallback {
   color: #e2e8f0;
   background: rgba(71, 85, 105, 0.4);
@@ -1585,6 +1591,11 @@ body.lookup-readonly td .theme-select-trigger:disabled {
 
 .eosl-search {
   flex: 1 1 260px;
+}
+
+.eosl-source-field {
+  flex: 0 1 200px;
+  min-width: 160px;
 }
 
 .eosl-toolbar-actions {

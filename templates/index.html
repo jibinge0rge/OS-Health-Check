@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OS Health Check</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=48" />
+    <link rel="stylesheet" href="/static/styles.css?v=49" />
   </head>
   <body>
     <main class="app-shell">
@@ -80,9 +80,9 @@
             id="eosl-view-button"
             class="secondary-button compact-button"
             type="button"
-            title="View the local eosl.date OS lifecycle data (read-only) and update it"
+            title="View local vendor lifecycle databases (read-only) and update them"
           >
-            View / Update EOSL Lookup
+            View / Update Vendor Lookups
           </button>
           <div class="menu-anchor data-only-control">
             <button
@@ -292,7 +292,8 @@
                       <option value="fuzzy+ai">Fuzzy + AI</option>
                       <option value="manual">Manual</option>
                       <option value="eol">EOL API</option>
-                      <option value="eosl">EOSL Lookup</option>
+                      <option value="eosl">eosl.date</option>
+                      <option value="junos">Juniper Junos</option>
                       <option value="lookup-fallback">Lookup copy</option>
                       <option value="ambiguous">Ambiguous</option>
                       <option value="null">NULL</option>
@@ -591,13 +592,20 @@
       <div class="modal-card eosl-card">
         <div class="modal-header">
           <div>
-            <p class="eyebrow">eosl.date &middot; OS lifecycle</p>
-            <h2>EOSL Lookup <span class="eosl-readonly-tag">read-only</span></h2>
+            <p class="eyebrow">Local vendor lifecycle databases</p>
+            <h2>Vendor Lookups <span class="eosl-readonly-tag">read-only</span></h2>
           </div>
           <button id="eosl-dialog-close" class="ghost-button" type="button">Close</button>
         </div>
 
         <div class="eosl-toolbar">
+          <label class="search-field eosl-source-field">
+            <span>Source</span>
+            <select id="eosl-source-select" aria-label="Vendor source">
+              <option value="eosl">eosl.date</option>
+              <option value="junos">Juniper Junos</option>
+            </select>
+          </label>
           <label class="search-field eosl-search">
             <span>Search</span>
             <input
@@ -612,7 +620,7 @@
               Clear filters
             </button>
             <button id="eosl-update-button" class="primary-button compact-button" type="button">
-              Update EOSL Lookup
+              Update
             </button>
           </div>
         </div>
@@ -630,12 +638,12 @@
               </colgroup>
               <thead>
                 <tr class="eosl-head-row">
-                  <th>Product</th>
-                  <th>Release</th>
-                  <th>Released</th>
-                  <th>EOL date</th>
-                  <th>EOAS date</th>
-                  <th>Supported</th>
+                  <th data-eosl-header="product">Product</th>
+                  <th data-eosl-header="release">Release</th>
+                  <th data-eosl-header="released">Released</th>
+                  <th data-eosl-header="eol_date">EOL date</th>
+                  <th data-eosl-header="eoas_date">EOAS date</th>
+                  <th data-eosl-header="supported">Supported</th>
                 </tr>
                 <tr class="eosl-filter-row">
                   <th>
@@ -763,12 +771,12 @@
       <div class="modal-card">
         <div class="modal-header">
           <div>
-            <p class="eyebrow">eosl.date</p>
-            <h2 id="eosl-progress-title">Updating EOSL Lookup</h2>
+            <p class="eyebrow" id="eosl-progress-eyebrow">Vendor Lookups</p>
+            <h2 id="eosl-progress-title">Updating vendor lookup</h2>
           </div>
         </div>
 
-        <p id="eosl-progress-text" class="bulk-progress-text">Scraping eosl.date…</p>
+        <p id="eosl-progress-text" class="bulk-progress-text">Scraping vendor source…</p>
         <div class="progress-track" aria-hidden="true">
           <div id="eosl-progress-bar" class="progress-fill eosl-progress-indeterminate"></div>
         </div>
@@ -885,6 +893,36 @@
       const eoslProgressStage = document.getElementById("eosl-progress-stage");
       const eoslProgressTitle = document.getElementById("eosl-progress-title");
       const eoslProgressBar = document.getElementById("eosl-progress-bar");
+      const eoslProgressEyebrow = document.getElementById("eosl-progress-eyebrow");
+      const eoslSourceSelect = document.getElementById("eosl-source-select");
+      let eoslActiveSource = "eosl";
+      const vendorSourceMeta = {
+        eosl: {
+          label: "eosl.date",
+          emptyHint: "The local eosl.date database is empty. Click Update to scrape eosl.date.",
+          headers: {
+            product: "Product",
+            release: "Release",
+            released: "Released",
+            eol_date: "EOL date",
+            eoas_date: "EOAS date",
+            supported: "Supported",
+          },
+        },
+        junos: {
+          label: "Juniper Junos",
+          emptyHint:
+            "The local Junos database is empty. Click Update to scrape Juniper Dates & Milestones.",
+          headers: {
+            product: "Product",
+            release: "Release",
+            released: "FRS",
+            eol_date: "EOE (EOL)",
+            eoas_date: "EOS (EOAS)",
+            supported: "Supported",
+          },
+        },
+      };
       const dataReadonlyHint = document.getElementById("data-readonly-hint");
       const confirmDialog = document.getElementById("confirm-dialog");
       const confirmForm = document.getElementById("confirm-form");
@@ -1063,6 +1101,7 @@
           select.id === "source-select" ||
           select.id === "page-size-select" ||
           select.id === "eosl-page-size" ||
+          select.id === "eosl-source-select" ||
           select.id === "evidence-filter"
         ) {
           wrapper.classList.add("is-block");
@@ -1340,7 +1379,9 @@
           case "eol":
             return "EOL API";
           case "eosl":
-            return "EOSL Lookup";
+            return "eosl.date";
+          case "junos":
+            return "Juniper Junos";
           case "ambiguous":
             return "Ambiguous";
           case "manual":
@@ -1373,6 +1414,8 @@
             return "api";
           case "eosl":
             return "eosl";
+          case "junos":
+            return "junos";
           case "lookup-fallback":
             return "fallback";
           case "ambiguous":
@@ -1653,13 +1696,15 @@
               ["EOAS status", got.eoas_status || row.eoas_status],
             ]
           )}</div>`;
-        } else if (rawMethod === "eosl") {
-          method = "eosl";
+        } else if (rawMethod === "eosl" || rawMethod === "junos") {
+          method = rawMethod;
+          const sourceLabel =
+            rawMethod === "junos" ? "Juniper Junos Vendor Lookup" : "eosl.date Vendor Lookup";
           summary =
-            "EOL API had no match, so dates and statuses were taken from the local EOSL Lookup (product + release).";
+            `EOL API had no match, so dates and statuses were taken from the local ${sourceLabel} (product + release).`;
           const got = eolProof.got || {};
           const note = eolProof.apiNote || eolProof.note;
-          detailHtml = `${formatQuerySourceHtml(eolProof, { title: "EOSL Lookup match" })}${
+          detailHtml = `${formatQuerySourceHtml(eolProof, { title: `${sourceLabel} match` })}${
             note
               ? `<p class="proof-summary">${escapeHtml(String(note))}</p>`
               : ""
@@ -3195,30 +3240,32 @@
         };
       }
 
-      function buildEoslProofMetaFromApi(eoslResult, eolApiResult = null) {
+      function buildVendorProofMetaFromApi(vendorResult, eolApiResult = null) {
+        const source = String(vendorResult.source ?? "eosl").trim() || "eosl";
+        const sourceLabel = source === "junos" ? "Juniper Junos" : "eosl.date";
         const eolNote = String(eolApiResult?.api_note ?? "").trim();
-        const product = String(eoslResult.product_slug ?? "").trim();
+        const product = String(vendorResult.product_slug ?? "").trim();
         const release = String(
-          eoslResult.release_label || eoslResult.release_name || ""
+          vendorResult.release_label || vendorResult.release_name || ""
         ).trim();
         const matchBits = [product && `product ${product}`, release && `release ${release}`]
           .filter(Boolean)
           .join(", ");
-        const eoslNote = matchBits
-          ? `Matched via EOSL Lookup (${matchBits}).`
-          : "Matched via EOSL Lookup (product + release).";
+        const vendorNote = matchBits
+          ? `Matched via ${sourceLabel} (${matchBits}).`
+          : `Matched via ${sourceLabel} (product + release).`;
         return {
-          method: "eosl",
-          queryUsed: String(eoslResult.query_used ?? "").trim(),
-          queryField: String(eoslResult.query_field ?? "").trim(),
+          method: source === "junos" ? "junos" : "eosl",
+          queryUsed: String(vendorResult.query_used ?? "").trim(),
+          queryField: String(vendorResult.query_field ?? "").trim(),
           productSlug: product,
-          releaseName: String(eoslResult.release_name ?? "").trim(),
-          releaseLabel: String(eoslResult.release_label ?? "").trim(),
-          apiNote: eolNote ? `EOL API: ${eolNote}. ${eoslNote}` : eoslNote,
+          releaseName: String(vendorResult.release_name ?? "").trim(),
+          releaseLabel: String(vendorResult.release_label ?? "").trim(),
+          apiNote: eolNote ? `EOL API: ${eolNote}. ${vendorNote}` : vendorNote,
         };
       }
 
-      async function fetchEoslLookupResults(rows, signal) {
+      async function fetchVendorLookupResults(rows, signal) {
         if (!rows.length) {
           return [];
         }
@@ -3227,14 +3274,14 @@
           normalized_os_detailed_name: row.normalized_os_detailed_name ?? "",
           normalized_os: row.normalized_os ?? "",
         }));
-        const response = await fetch("/api/eosl-lookup", {
+        const response = await fetch("/api/vendor-lookup", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ items }),
           signal,
         });
         if (!response.ok) {
-          throw new Error("Unable to look up EOSL data.");
+          throw new Error("Unable to look up vendor lifecycle data.");
         }
         const payload = await response.json();
         return Array.isArray(payload.results) ? payload.results : [];
@@ -3292,7 +3339,7 @@
         const candidates = fallbackCandidates ?? uiRows.concat(allRows);
         let updated = 0;
         let failed = 0;
-        const needEosl = [];
+        const needVendor = [];
 
         try {
           const response = await fetch(endpoint, {
@@ -3310,7 +3357,7 @@
           uiRows.forEach((row, index) => {
             const apiResult = payload.results[index] ?? {};
             if (isEmptyEolPayload(apiResult)) {
-              needEosl.push({ row, apiResult });
+              needVendor.push({ row, apiResult });
             } else {
               applyEolResultToRow(row, apiResult, {
                 forceLifecycle,
@@ -3323,33 +3370,33 @@
           if (signal?.aborted) {
             throw error;
           }
-          // EOL API unavailable — try EOSL for every row, then lookup-copy.
+          // EOL API unavailable — try vendor lookups for every row, then lookup-copy.
           uiRows.forEach((row) => {
-            needEosl.push({ row, apiResult: { api_note: error.message } });
+            needVendor.push({ row, apiResult: { api_note: error.message } });
           });
         }
 
-        if (needEosl.length) {
-          let eoslResults = [];
+        if (needVendor.length) {
+          let vendorResults = [];
           try {
-            eoslResults = await fetchEoslLookupResults(
-              needEosl.map((entry) => entry.row),
+            vendorResults = await fetchVendorLookupResults(
+              needVendor.map((entry) => entry.row),
               signal
             );
-          } catch (eoslError) {
+          } catch (vendorError) {
             if (signal?.aborted) {
-              throw eoslError;
+              throw vendorError;
             }
             // Fall through with empty results; lookup-copy / none still apply.
-            eoslResults = [];
+            vendorResults = [];
           }
 
-          needEosl.forEach(({ row, apiResult }, index) => {
-            const eoslResult = eoslResults[index] ?? {};
-            if (!isEmptyEolPayload(eoslResult)) {
-              applyEolResultToRow(row, eoslResult, {
+          needVendor.forEach(({ row, apiResult }, index) => {
+            const vendorResult = vendorResults[index] ?? {};
+            if (!isEmptyEolPayload(vendorResult)) {
+              applyEolResultToRow(row, vendorResult, {
                 forceLifecycle,
-                proofMeta: buildEoslProofMetaFromApi(eoslResult, apiResult),
+                proofMeta: buildVendorProofMetaFromApi(vendorResult, apiResult),
               });
               updated += 1;
               return;
@@ -3358,11 +3405,13 @@
               updated += 1;
               return;
             }
-            const eoslNote = String(eoslResult.api_note ?? "").trim();
+            const vendorNote = String(vendorResult.api_note ?? "").trim();
             applyEmptyEolProof(
               row,
               apiResult,
-              eoslNote ? `EOSL Lookup: ${eoslNote}` : "EOSL Lookup also found no match."
+              vendorNote
+                ? `Vendor Lookup: ${vendorNote}`
+                : "Vendor Lookups also found no match."
             );
             failed += 1;
           });
@@ -4337,6 +4386,8 @@
             kinds.add("eol");
           } else if (method === "eosl") {
             kinds.add("eosl");
+          } else if (method === "junos") {
+            kinds.add("junos");
           } else if (method === "lookup-fallback") {
             kinds.add("lookup-fallback");
           } else if (method === "ambiguous") {
@@ -4351,6 +4402,7 @@
           !kinds.has("manual") &&
           !kinds.has("eol") &&
           !kinds.has("eosl") &&
+          !kinds.has("junos") &&
           !kinds.has("lookup-fallback") &&
           !kinds.has("ambiguous")
         ) {
@@ -5578,21 +5630,48 @@
         return parsed.toLocaleString();
       }
 
+      function applyVendorViewerHeaders() {
+        const meta = vendorSourceMeta[eoslActiveSource] || vendorSourceMeta.eosl;
+        const headers = meta.headers || {};
+        document.querySelectorAll("[data-eosl-header]").forEach((th) => {
+          const key = th.getAttribute("data-eosl-header");
+          if (headers[key]) {
+            th.textContent = headers[key];
+          }
+        });
+        const releasedFilter = document.querySelector('[data-eosl-mode="released"]');
+        if (releasedFilter) {
+          releasedFilter.setAttribute(
+            "aria-label",
+            `Filter ${headers.released || "Released"}`
+          );
+        }
+        const eolFilter = document.querySelector('[data-eosl-mode="eol_date"]');
+        if (eolFilter) {
+          eolFilter.setAttribute("aria-label", `Filter ${headers.eol_date || "EOL"}`);
+        }
+        const eoasFilter = document.querySelector('[data-eosl-mode="eoas_date"]');
+        if (eoasFilter) {
+          eoasFilter.setAttribute("aria-label", `Filter ${headers.eoas_date || "EOAS"}`);
+        }
+      }
+
       function renderEoslMeta(status) {
         const productCount = Number(status?.product_count ?? 0);
         const releaseCount = Number(status?.release_count ?? 0);
         const lastUpdated = formatEoslTimestamp(status?.last_updated);
+        const sourceMeta = vendorSourceMeta[eoslActiveSource] || vendorSourceMeta.eosl;
         if (!eoslDialogMeta) {
           return;
         }
-        if (!lastUpdated || !productCount) {
-          eoslDialogMeta.textContent = "Not built yet — click Update EOSL Lookup";
-          eoslDialogMeta.title = "The local eosl.date database has not been scraped yet.";
+        if (!lastUpdated || (!productCount && !releaseCount)) {
+          eoslDialogMeta.textContent = `Not built yet — click Update`;
+          eoslDialogMeta.title = `${sourceMeta.label} has not been scraped yet.`;
           return;
         }
         eoslDialogMeta.textContent =
           `Last updated ${lastUpdated} · ${productCount} products · ${releaseCount} releases`;
-        eoslDialogMeta.title = `Source: ${status?.source_url ?? "eosl.date"} (OS category)`;
+        eoslDialogMeta.title = `Source: ${status?.source_url ?? sourceMeta.label}`;
       }
 
       function eoslDateDisplay(value) {
@@ -5748,7 +5827,7 @@
           eoslEmptyNote.classList.remove("hidden");
           eoslEmptyNote.textContent = eoslRows.length
             ? "No releases match your filters."
-            : "The local EOSL database is empty. Click Update EOSL Lookup to scrape eosl.date.";
+            : (vendorSourceMeta[eoslActiveSource] || vendorSourceMeta.eosl).emptyHint;
           updateEoslPagination();
           scheduleEoslTableLayoutSync();
           return;
@@ -5826,19 +5905,27 @@
         if (eoslDialogMeta) {
           eoslDialogMeta.textContent = "Loading…";
         }
+        applyVendorViewerHeaders();
         try {
-          const response = await fetch("/api/eosl/rows");
+          const response = await fetch(`/api/vendor-lookups/${eoslActiveSource}/rows`);
           if (!response.ok) {
-            throw new Error("Unable to load EOSL lookup data.");
+            throw new Error("Unable to load vendor lookup data.");
           }
           const payload = await response.json();
           eoslRows = Array.isArray(payload.rows) ? payload.rows : [];
+          if (payload.status?.viewer_headers) {
+            const meta = vendorSourceMeta[eoslActiveSource];
+            if (meta) {
+              meta.headers = { ...meta.headers, ...payload.status.viewer_headers };
+              applyVendorViewerHeaders();
+            }
+          }
           renderEoslMeta(payload.status);
           renderEoslTable();
         } catch (error) {
           eoslRows = [];
           if (eoslDialogMeta) {
-            eoslDialogMeta.textContent = "Unable to load EOSL data";
+            eoslDialogMeta.textContent = "Unable to load vendor data";
             eoslDialogMeta.title = error.message;
           }
           renderEoslTable();
@@ -5852,12 +5939,14 @@
       }
 
       async function openEoslDialog() {
+        eoslActiveSource = eoslSourceSelect?.value || "eosl";
         eoslColumnFilters = eoslDefaultFilters();
         eoslPage = 1;
         if (eoslFilterInput) {
           eoslFilterInput.value = "";
         }
         syncEoslFilterInputs();
+        applyVendorViewerHeaders();
         if (!eoslDialog.open) {
           eoslDialog.showModal();
         }
@@ -5888,22 +5977,32 @@
         if (eoslUpdating) {
           return;
         }
+        const sourceId = eoslActiveSource || eoslSourceSelect?.value || "eosl";
+        const sourceMeta = vendorSourceMeta[sourceId] || vendorSourceMeta.eosl;
         eoslUpdating = true;
         eoslUpdateButton.disabled = true;
-        eoslProgressTitle.textContent = "Updating EOSL Lookup";
+        if (eoslProgressEyebrow) {
+          eoslProgressEyebrow.textContent = sourceMeta.label;
+        }
+        eoslProgressTitle.textContent = `Updating ${sourceMeta.label}`;
         setEoslProgressState({
-          text: "Scraping eosl.date…",
-          stage: "This can take a minute or two. Please keep this dialog open.",
+          text: `Scraping ${sourceMeta.label}…`,
+          stage:
+            sourceId === "junos"
+              ? "Fetching the Juniper Dates & Milestones table…"
+              : "This can take a minute or two. Please keep this dialog open.",
         });
         if (!eoslProgressDialog.open) {
           eoslProgressDialog.showModal();
         }
-        showStatus("Updating EOSL Lookup from eosl.date…", "info");
+        showStatus(`Updating ${sourceMeta.label}…`, "info");
         try {
-          const response = await fetch("/api/eosl/sync", { method: "POST" });
+          const response = await fetch(`/api/vendor-lookups/${sourceId}/sync`, {
+            method: "POST",
+          });
           const payload = await response.json().catch(() => ({}));
           if (!response.ok) {
-            throw new Error(payload.detail || "Failed to update EOSL Lookup.");
+            throw new Error(payload.detail || `Failed to update ${sourceMeta.label}.`);
           }
           const result = payload.result ?? {};
           setEoslProgressState({
@@ -5912,7 +6011,7 @@
             done: true,
           });
           showStatus(
-            `EOSL Lookup updated: ${result.product_count ?? 0} products, ` +
+            `${sourceMeta.label} updated: ${result.product_count ?? 0} products, ` +
               `${result.release_count ?? 0} releases.`,
             (result.errors && result.errors.length) ? "info" : "success"
           );
@@ -6337,6 +6436,14 @@
       eoslDialogClose.addEventListener("click", closeEoslDialog);
       eoslUpdateButton.addEventListener("click", handleEoslUpdate);
       eoslProgressClose.addEventListener("click", closeEoslProgress);
+      if (eoslSourceSelect) {
+        eoslSourceSelect.addEventListener("change", async () => {
+          eoslActiveSource = eoslSourceSelect.value || "eosl";
+          eoslPage = 1;
+          clearEoslFilters();
+          await loadEoslDialogData();
+        });
+      }
       if (eoslFilterInput) {
         eoslFilterInput.addEventListener("input", () => {
           eoslPage = 1;
