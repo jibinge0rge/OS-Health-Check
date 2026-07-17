@@ -7,6 +7,7 @@ Use it to:
 - Search and browse existing OS lookup rows
 - Add one or many OS strings with fuzzy (and optional AI) matching
 - Refresh EOL / EOAS dates from [endoflife.date](https://endoflife.date)
+- Refresh EOL / EOAS from local **Vendor Lookups** ([eosl.date](https://eosl.date) OS scrape, [Juniper Junos](https://support.juniper.net/support/eol/software/junos/) scrape)
 - Keep match/EOL **evidence** (proof) in a JSON sidecar
 - Promote Draft → Data via Validate, then optionally upload Data to Azure Blob
 
@@ -17,6 +18,7 @@ Use it to:
 - **Vanilla HTML / CSS / JS** — table UI and workflows
 - **OpenAI** (optional) — AI match + Ambiguous OS detection
 - **endoflife.date API** — lifecycle dates
+- **Vendor Lookups (SQLite)** — local scrapes: eosl.date (OS) + Juniper Junos Dates & Milestones
 
 ## Run locally
 
@@ -66,12 +68,17 @@ OS-Health-Check/
 ├── app.py                      # FastAPI routes
 ├── normalization_service.py    # Vendor tags, fuzzy helpers, AI match
 ├── eol_service.py              # endoflife.date lookup
+├── eosl_service.py             # eosl.date scraper + SQLite cache (OS only)
+├── junos_service.py            # Juniper Junos Dates & Milestones scraper
+├── vendor_lookup_service.py    # Registry + routed vendor fallback lookup
 ├── os_import_service.py        # Bulk import from CSV/XLSX
 ├── templates/index.html        # UI + client workflows
 ├── static/                     # CSS, favicon
 ├── _data/
 │   ├── eol_lookup.csv          # Canonical published lookup
-│   └── eol_lookup_evidence.json
+│   ├── eol_lookup_evidence.json
+│   ├── eosl_os.db              # SQLite cache of eosl.date OS data (gitignored)
+│   └── junos_os.db             # SQLite cache of Junos EOL table (gitignored)
 ├── _draft/                     # Working editable copy (+ evidence)
 ├── _config/                    # Local settings (gitignored)
 │   ├── app_settings.json       # ai_enabled, ai_provider (openai|gemini)
@@ -89,20 +96,33 @@ flowchart LR
   API["FastAPI<br/>app.py"]
   Norm["normalization_service"]
   Eol["eol_service"]
+  Vendor["vendor_lookup_service"]
+  Eosl["eosl_service"]
+  Junos["junos_service"]
   Data["_data/eol_lookup.csv"]
   Draft["_draft/eol_lookup.csv"]
   Ev["_data / _draft evidence JSON"]
+  DB[("_data/*.db<br/>SQLite")]
   EOLAPI["endoflife.date"]
-  OAI["OpenAI optional"]
+  EOSLSITE["eosl.date"]
+  JUNIPER["support.juniper.net"]
+  OAI["OpenAI / Gemini optional"]
   Az["Azure Blob via az CLI"]
 
   UI <--> API
   API --> Norm
   API --> Eol
+  API --> Vendor
+  Vendor --> Eosl
+  Vendor --> Junos
   API --> Data
   API --> Draft
   API --> Ev
   Eol --> EOLAPI
+  Eosl --> DB
+  Junos --> DB
+  Eosl -->|scrape| EOSLSITE
+  Junos -->|scrape| JUNIPER
   Norm --> OAI
   API --> Az
 ```
@@ -110,6 +130,8 @@ flowchart LR
 ---
 
 ## Modes: Data vs Draft
+
+The **Source** dropdown switches between the published lookup and the editable working copy. Scraped vendor data is viewed under **Vendor Lookups** — see [Vendor Lookups](#vendor-lookups-local-scraped-databases).
 
 | | **Data** (read-only) | **Draft** (editable) |
 |--|----------------------|----------------------|
@@ -178,7 +200,7 @@ flowchart TD
 
 1. **Fuzzy first** — compare the OS string to existing `normalized_os_detailed_name` / `normalized_os` (not other raw `os_string`s). Score must be high (≥ 95%).
 2. **Vendor guardrails** — keyword brands (Oracle, AlmaLinux, Cisco, Apple, Windows, …). Different brands cannot match (e.g. Oracle Linux ≠ AlmaLinux).
-3. **AI match** — **off by default**. When enabled and the selected provider’s API key is set (`OPENAI_API_KEY` or `GEMINI_API_KEY`), AI may choose only from existing CSV pairs; never invents names. Batches are grouped by vendor so Oracle items don’t see AlmaLinux pairs in the same prompt.
+3. **AI match** — **off by default**. When enabled and the selected provider’s API key is set (`OPENAI_API_KEY` or `GEMINI_API_KEY`), AI may choose only from existing CSV pairs; never invents names. Batches are grouped by vendor so Oracle items don’t see AlmaLinux pairs in the same prompt. Accepted picks must also pass code checks: confidence ≥ threshold, same vendor, compatible version family, and no extra Windows SKU words (e.g. Pro must not become Pro Enterprise). OpenAI gets a stricter “prefer null over guess” instruction because `gpt-4o-mini` tends to over-match compared with Gemini.
 4. **Conservative** — if unsure → no match (better blank than wrong).
 
 **Example:** `Oracle Linux Server 9.5` → fuzzy/AI can map to `Oracle Linux 9`, but must **not** map to `AlmaLinux OS 9`.
@@ -187,33 +209,124 @@ flowchart TD
 
 ## EOL / EOAS refresh flow
 
-Uses [endoflife.date](https://endoflife.date) product API.
+**Refresh EOL/EOAS** fills dates per row in this order. Junos is **not** checked on every row — only as a **fallback** after the API misses, and only when the OS has a Juniper/Junos token (then eosl if Junos misses).
 
-**Query preference:** try `normalized_os` → `normalized_os_detailed_name` → `os_string`, but **skip** a normalized value if its vendor doesn’t match the raw OS (wrong brand leftover).
+### Per-row decision order
+
+1. **endoflife.date API** — always tried first (same query preference as below).
+2. **If the API returned dates/status** → write them (evidence `api` / `eol`). **Stop.** Junos and eosl are **not** consulted.
+3. **If the API missed (or failed)** → call **Vendor Lookups** (`POST /api/vendor-lookup`):
+   - If `os_string` / normalized fields contain **`junos` or `juniper` as whole tokens** (letter/digit boundaries — so `xjunosy` does **not** match) → try **`_data/junos_os.db` first** (evidence `junos` on hit). **If Junos misses**, fall through to **`_data/eosl_os.db`** (evidence `eosl` on hit).
+   - Otherwise → look up **`_data/eosl_os.db`** only (evidence `eosl` on hit).
+4. **If vendor DBs also miss** → copy dates from another row with the same normalized pair when possible (evidence `lookup-fallback`).
+5. **Still nothing** → leave blank (evidence `none`).
+
+**Query preference** (for API and vendor lookup): try `normalized_os` → `normalized_os_detailed_name` → `os_string`, but **skip** a normalized value if its vendor doesn’t match the raw OS.
+
+**Important:** scraping / **Update** under Vendor Lookups only rebuilds the local SQLite DBs. It does **not** apply dates to your CSV. Dates are applied only by **Refresh EOL/EOAS** (or equivalent lookup APIs).
 
 ```mermaid
 flowchart TD
-  R[Refresh EOL/EOAS] --> D{On Draft?}
-  D -->|Yes| Work[Refresh rows]
-  D -->|No| DE{Draft exists?}
-  DE -->|Yes| LoadD[Load existing Draft]
-  DE -->|No| Copy[Copy Data to Draft]
-  LoadD --> Work
-  Copy --> Work
+  R[Refresh EOL/EOAS] --> DraftGate{Work on Draft?}
+  DraftGate -->|create or load Draft if needed| Row[For each eligible row]
 
-  Work --> Skip{Ambiguous or blank OS?}
-  Skip -->|Yes| Next[Skip row]
-  Skip -->|No| Pick[Pick query string<br/>prefer norm if same vendor]
-  Pick --> Slug[Resolve product slug]
-  Slug --> API[Fetch product plus release]
-  API --> Vendor2{Product label matches OS vendor?}
-  Vendor2 -->|No| Retry[Retry with raw os_string / skip bad labels]
-  Vendor2 -->|Yes| ApplyDates[Write EOL/EOAS dates plus compatible norm labels]
-  Retry --> ApplyDates
-  ApplyDates --> Proof[Store EOL proof in evidence]
+  Row --> Skip{Ambiguous or blank OS?}
+  Skip -->|Yes| Next[Skip]
+  Skip -->|No| API[Query endoflife.date]
+
+  API --> ApiOk{Dates or status returned?}
+  ApiOk -->|Yes| ApplyApi[Write dates<br/>evidence: api]
+  ApiOk -->|No| Vendor[POST /api/vendor-lookup]
+
+  Vendor --> Token{junos or juniper<br/>token in OS fields?}
+  Token -->|Yes| JunosDB[Match version in junos_os.db]
+  Token -->|No| EoslDB[Match product + release in eosl_os.db]
+
+  JunosDB --> JunosHit{Junos hit?}
+  JunosHit -->|Yes| ApplyJunos[Write dates<br/>evidence: junos]
+  JunosHit -->|No| EoslAfterJunos[Try eosl_os.db]
+  EoslAfterJunos --> EoslDB
+
+  EoslDB --> EoslHit{eosl hit?}
+  EoslHit -->|Yes| ApplyEosl[Write dates<br/>evidence: eosl]
+  EoslHit -->|No| CopyFb{Same normalized pair<br/>has dates elsewhere?}
+  CopyFb -->|Yes| ApplyCopy[Copy dates<br/>evidence: lookup-fallback]
+  CopyFb -->|No| Empty[Leave blank<br/>evidence: none]
+
+  ApplyApi --> Proof[Store EOL proof]
+  ApplyJunos --> Proof
+  ApplyEosl --> Proof
+  ApplyCopy --> Proof
+  Empty --> Proof
 ```
 
+### When is the Junos check done?
+
+| Situation | Junos DB checked? | Then eosl? |
+|-----------|-------------------|------------|
+| Row matched endoflife.date | **No** | **No** |
+| Non-Juniper row and API missed | **No** | **Yes** |
+| `Junos OS 24.2` / `Juniper …` and API missed | **Yes** (first) | **Only if Junos misses** |
+| You only clicked **Update** in Vendor Lookups | **No** (scrape only) | **No** |
+| Substring noise like `xjunosy` | **No** | **Yes** (treated as normal eosl path) |
+
+Example: `Junos OS 24.2` → API miss → Junos DB hit → evidence `junos`.  
+If that release is missing from Junos DB → try eosl.date → evidence `eosl` if found.
+
 Dates are stored as Unix epoch. Status `true`/`false` is only used when a date is missing.
+
+---
+
+## Vendor Lookups (local scraped databases)
+
+Umbrella for **offline** lifecycle scrapers used as the Refresh fallback above. **View / Update Vendor Lookups** opens a read-only modal with a **Source** selector (browse + rebuild DB only).
+
+| Source | Origin | Local DB | Date mapping | Used on Refresh when… |
+|--------|--------|----------|--------------|------------------------|
+| **eosl.date** | [eosl.date](https://eosl.date) OS category | `_data/eosl_os.db` | EOAS = earliest support date, EOL = latest | API missed, and either the row is **not** Junos/Juniper **or** Junos DB already missed |
+| **Juniper Junos** | [Junos Dates & Milestones](https://support.juniper.net/support/eol/software/junos/) (**that table only**) | `_data/junos_os.db` | **EOE → `eol_date`**, **EOS → `eoas_date`**, FRS → released | API missed **and** row has a **junos/juniper** token (tried before eosl) |
+
+```mermaid
+flowchart LR
+  subgraph refresh [Refresh EOL/EOAS]
+    A[endoflife.date] -->|miss| B{junos/juniper token?}
+    B -->|yes| C[junos_os.db]
+    C -->|miss| D[eosl_os.db]
+    B -->|no| D
+    D -->|miss| E[lookup-copy]
+  end
+
+  subgraph viewer [View / Update Vendor Lookups]
+    V[Source select] --> U[Update scrape]
+    U --> C
+    U --> D
+  end
+```
+
+### eosl.date notes
+
+- Support-column labels vary; any non-metadata date column feeds earliest/latest EOAS/EOL.
+- Strong product **and** release score required; vague `Other … Linux` / bitness / `N.x` false matches are rejected.
+- Requests are throttled; scrapes are serialized server-side.
+
+### Junos notes
+
+- One page scrape; table HTML is embedded in the Juniper CMS payload (`sw-eol-table`).
+- Product cells like `Junos OS 24.2` (sometimes with trailing maintenance markers) split into product `Junos OS` + release `24.2` / `15.1X53`.
+- For Junos rows, EOE is often **before** EOS, so **EOL may be earlier than EOAS** in the app (intentional naming).
+- Matching: token gate first, then strong version score (X-trains like `15.1X53` must not collapse onto `15.1X49`).
+
+```mermaid
+flowchart TD
+  View[View / Update Vendor Lookups] --> Modal[Source select + filterable viewer]
+  Modal --> U[Update selected source]
+  U --> Prog[Progress dialog]
+  Prog --> EoslPath[eosl.date: crawl OS products]
+  Prog --> JunosPath[Juniper: fetch junos EOL table]
+  EoslPath --> Store[(SQLite per source)]
+  JunosPath --> Store
+  Store --> RefreshUI[Viewer table refreshes]
+```
 
 ---
 
@@ -245,7 +358,9 @@ Shape:
 }
 ```
 
-Proof methods include: `fuzzy`, `ai`, `fuzzy+ai`, `eol`, `lookup-fallback`, `ambiguous`, `manual`, `none`.
+Proof methods include: `fuzzy`, `ai`, `fuzzy+ai`, `eol` / `api`, `eosl`, `junos`, `lookup-fallback`, `ambiguous`, `manual`, `none`.
+
+The Actions column filter can narrow rows by: Fuzzy, AI, Fuzzy + AI, Manual, EOL API, eosl.date, Juniper Junos, Lookup copy, Ambiguous, or NULL.
 
 ---
 
@@ -257,9 +372,10 @@ Proof methods include: `fuzzy`, `ai`, `fuzzy+ai`, `eol`, `lookup-fallback`, `amb
 | **AI match** | **Off by default**; Edit mode only; choose OpenAI or Gemini; needs that provider’s API key |
 | **Save Draft** | Manual draft + evidence write |
 | **Validate** | Backup Data → write Draft into Data |
-| **Revert** | Reset Draft rows to Data baseline |
+| **Revert** | Reset Draft rows (+ evidence) to the Data baseline and **save `_draft/`** immediately |
 | **Delete draft** | Remove Draft (+ evidence), return to Data |
 | **Show Delta / Download Delta** | Draft-only change view |
+| **View / Update Vendor Lookups** | Read-only viewer for eosl.date / Juniper Junos DBs; update/re-scrape per source |
 | **Azure** | Data mode: settings + upload via `az storage blob upload` |
 
 ---
@@ -273,6 +389,15 @@ Proof methods include: `fuzzy`, `ai`, `fuzzy+ai`, `eol`, `lookup-fallback`, `amb
 | `POST` | `/api/normalize-suggest` | AI normalization (if enabled) |
 | `POST` | `/api/ambiguous-os-detect` | Detect ambiguous `/` OS strings |
 | `POST` | `/api/eol-lookup` | Batch EOL/EOAS from endoflife.date |
+| `POST` | `/api/vendor-lookup` | Routed vendor fallback (Junos or eosl.date) |
+| `GET` | `/api/vendor-lookups/sources` | List vendor lookup sources |
+| `GET` | `/api/vendor-lookups/{source}/rows` | Viewer rows + status (`eosl` \| `junos`) |
+| `GET` | `/api/vendor-lookups/{source}/status` | DB status for a source |
+| `POST` | `/api/vendor-lookups/{source}/sync` | Re-scrape and rebuild that source’s DB |
+| `POST` | `/api/eosl-lookup` | Batch from eosl.date only (compat) |
+| `GET` / `POST` | `/api/eosl/*` | eosl.date status / rows / sync (compat) |
+| `POST` | `/api/junos-lookup` | Batch from Junos DB only |
+| `GET` / `POST` | `/api/junos/*` | Junos status / rows / sync |
 | `GET` / `PUT` | `/api/settings` | Persist `ai_enabled` + `ai_provider` |
 
 ---

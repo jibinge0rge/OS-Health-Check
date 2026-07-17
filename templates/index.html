@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OS Health Check</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=38" />
+    <link rel="stylesheet" href="/static/styles.css?v=49" />
   </head>
   <body>
     <main class="app-shell">
@@ -75,6 +75,14 @@
             title="Refresh EOL/EOAS on Draft if it exists, otherwise from Data into a new Draft"
           >
             Refresh EOL/EOAS
+          </button>
+          <button
+            id="eosl-view-button"
+            class="secondary-button compact-button"
+            type="button"
+            title="View local vendor lifecycle databases (read-only) and update them"
+          >
+            View / Update Vendor Lookups
           </button>
           <div class="menu-anchor data-only-control">
             <button
@@ -284,6 +292,10 @@
                       <option value="fuzzy+ai">Fuzzy + AI</option>
                       <option value="manual">Manual</option>
                       <option value="eol">EOL API</option>
+                      <option value="eosl">eosl.date</option>
+                      <option value="junos">Juniper Junos</option>
+                      <option value="lookup-fallback">Lookup copy</option>
+                      <option value="ambiguous">Ambiguous</option>
                       <option value="null">NULL</option>
                     </select>
                     <button
@@ -576,6 +588,208 @@
       </div>
     </dialog>
 
+    <dialog id="eosl-dialog" class="modal eosl-dialog">
+      <div class="modal-card eosl-card">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">Local vendor lifecycle databases</p>
+            <h2>Vendor Lookups <span class="eosl-readonly-tag">read-only</span></h2>
+          </div>
+          <button id="eosl-dialog-close" class="ghost-button" type="button">Close</button>
+        </div>
+
+        <div class="eosl-toolbar">
+          <label class="search-field eosl-source-field">
+            <span>Source</span>
+            <select id="eosl-source-select" aria-label="Vendor source">
+              <option value="eosl">eosl.date</option>
+              <option value="junos">Juniper Junos</option>
+            </select>
+          </label>
+          <label class="search-field eosl-search">
+            <span>Search</span>
+            <input
+              id="eosl-filter-input"
+              type="search"
+              placeholder="Filter by any column"
+            />
+          </label>
+          <div class="eosl-toolbar-actions">
+            <span id="eosl-dialog-meta" class="eosl-meta">Loading…</span>
+            <button id="eosl-clear-filters" class="ghost-button compact-button" type="button">
+              Clear filters
+            </button>
+            <button id="eosl-update-button" class="primary-button compact-button" type="button">
+              Update
+            </button>
+          </div>
+        </div>
+
+        <div class="eosl-table-shell">
+          <div class="eosl-table-head">
+            <table class="eosl-table eosl-table-head-table">
+              <colgroup>
+                <col class="eosl-col-product" />
+                <col class="eosl-col-release" />
+                <col class="eosl-col-date" />
+                <col class="eosl-col-date" />
+                <col class="eosl-col-date" />
+                <col class="eosl-col-supported" />
+              </colgroup>
+              <thead>
+                <tr class="eosl-head-row">
+                  <th data-eosl-header="product">Product</th>
+                  <th data-eosl-header="release">Release</th>
+                  <th data-eosl-header="released">Released</th>
+                  <th data-eosl-header="eol_date">EOL date</th>
+                  <th data-eosl-header="eoas_date">EOAS date</th>
+                  <th data-eosl-header="supported">Supported</th>
+                </tr>
+                <tr class="eosl-filter-row">
+                  <th>
+                    <div class="eosl-filter-cell">
+                      <select class="eosl-filter-select" data-eosl-mode="product" aria-label="Filter Product">
+                        <option value="">All</option>
+                        <option value="empty">Empty</option>
+                        <option value="not_empty">Not empty</option>
+                        <option value="contains">Contains</option>
+                        <option value="not_contains">Does not contain</option>
+                        <option value="equals">Equals</option>
+                        <option value="not_equals">Does not equal</option>
+                      </select>
+                      <input class="eosl-filter-text" data-eosl-text="product" type="search" placeholder="Contains" autocomplete="off" />
+                    </div>
+                  </th>
+                  <th>
+                    <div class="eosl-filter-cell">
+                      <select class="eosl-filter-select" data-eosl-mode="release" aria-label="Filter Release">
+                        <option value="">All</option>
+                        <option value="empty">Empty</option>
+                        <option value="not_empty">Not empty</option>
+                        <option value="contains">Contains</option>
+                        <option value="not_contains">Does not contain</option>
+                        <option value="equals">Equals</option>
+                        <option value="not_equals">Does not equal</option>
+                      </select>
+                      <input class="eosl-filter-text" data-eosl-text="release" type="search" placeholder="Contains" autocomplete="off" />
+                    </div>
+                  </th>
+                  <th>
+                    <div class="eosl-filter-cell">
+                      <select class="eosl-filter-select" data-eosl-mode="released" aria-label="Filter Released">
+                        <option value="">All</option>
+                        <option value="empty">Empty</option>
+                        <option value="not_empty">Not empty</option>
+                      </select>
+                      <div class="eosl-date-range">
+                        <input class="eosl-filter-date" data-eosl-from="released" type="date" title="From" />
+                        <span class="eosl-date-sep" aria-hidden="true">–</span>
+                        <input class="eosl-filter-date" data-eosl-to="released" type="date" title="To" />
+                      </div>
+                    </div>
+                  </th>
+                  <th>
+                    <div class="eosl-filter-cell">
+                      <select class="eosl-filter-select" data-eosl-mode="eol_date" aria-label="Filter EOL date">
+                        <option value="">All</option>
+                        <option value="empty">Empty</option>
+                        <option value="not_empty">Not empty</option>
+                      </select>
+                      <div class="eosl-date-range">
+                        <input class="eosl-filter-date" data-eosl-from="eol_date" type="date" title="From" />
+                        <span class="eosl-date-sep" aria-hidden="true">–</span>
+                        <input class="eosl-filter-date" data-eosl-to="eol_date" type="date" title="To" />
+                      </div>
+                    </div>
+                  </th>
+                  <th>
+                    <div class="eosl-filter-cell">
+                      <select class="eosl-filter-select" data-eosl-mode="eoas_date" aria-label="Filter EOAS date">
+                        <option value="">All</option>
+                        <option value="empty">Empty</option>
+                        <option value="not_empty">Not empty</option>
+                      </select>
+                      <div class="eosl-date-range">
+                        <input class="eosl-filter-date" data-eosl-from="eoas_date" type="date" title="From" />
+                        <span class="eosl-date-sep" aria-hidden="true">–</span>
+                        <input class="eosl-filter-date" data-eosl-to="eoas_date" type="date" title="To" />
+                      </div>
+                    </div>
+                  </th>
+                  <th>
+                    <div class="eosl-filter-cell">
+                      <select class="eosl-filter-select" data-eosl-supported aria-label="Filter Supported">
+                        <option value="">All</option>
+                        <option value="yes">Yes</option>
+                        <option value="no">No</option>
+                      </select>
+                    </div>
+                  </th>
+                </tr>
+              </thead>
+            </table>
+          </div>
+          <div class="eosl-table-body-wrap">
+            <table class="eosl-table eosl-table-body-table">
+              <colgroup>
+                <col class="eosl-col-product" />
+                <col class="eosl-col-release" />
+                <col class="eosl-col-date" />
+                <col class="eosl-col-date" />
+                <col class="eosl-col-date" />
+                <col class="eosl-col-supported" />
+              </colgroup>
+              <tbody id="eosl-table-body"></tbody>
+            </table>
+            <p id="eosl-empty-note" class="eosl-empty-note hidden"></p>
+          </div>
+        </div>
+
+        <div class="pagination-bar eosl-pagination">
+          <div class="pagination-left">
+            <label class="page-size-field">
+              <span>Show</span>
+              <select id="eosl-page-size">
+                <option value="25">25</option>
+                <option value="50" selected>50</option>
+                <option value="100">100</option>
+                <option value="250">250</option>
+              </select>
+              <span>per page</span>
+            </label>
+          </div>
+          <div class="pagination-right">
+            <span id="eosl-page-status" class="page-status">Page 1 of 1</span>
+            <button id="eosl-prev-page" class="ghost-button" type="button">Previous</button>
+            <button id="eosl-next-page" class="ghost-button" type="button">Next</button>
+          </div>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="eosl-progress-dialog" class="modal eosl-progress-dialog">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow" id="eosl-progress-eyebrow">Vendor Lookups</p>
+            <h2 id="eosl-progress-title">Updating vendor lookup</h2>
+          </div>
+        </div>
+
+        <p id="eosl-progress-text" class="bulk-progress-text">Scraping vendor source…</p>
+        <div class="progress-track" aria-hidden="true">
+          <div id="eosl-progress-bar" class="progress-fill eosl-progress-indeterminate"></div>
+        </div>
+        <p id="eosl-progress-stage" class="bulk-progress-stage">
+          This can take a minute or two. Please keep this dialog open.
+        </p>
+
+        <div class="modal-actions">
+          <button id="eosl-progress-close" class="primary-button" type="button" hidden>Close</button>
+        </div>
+      </div>
+    </dialog>
+
     <script>
       const headers = {{ headers | tojson }};
       const headerLabels = {
@@ -657,6 +871,58 @@
       const addRowButton = document.getElementById("add-row-button");
       const bulkUploadButton = document.getElementById("bulk-upload-button");
       const refreshEolButton = document.getElementById("refresh-eol-button");
+      const eoslViewButton = document.getElementById("eosl-view-button");
+      const eoslDialog = document.getElementById("eosl-dialog");
+      const eoslDialogClose = document.getElementById("eosl-dialog-close");
+      const eoslFilterInput = document.getElementById("eosl-filter-input");
+      const eoslDialogMeta = document.getElementById("eosl-dialog-meta");
+      const eoslUpdateButton = document.getElementById("eosl-update-button");
+      const eoslClearFiltersButton = document.getElementById("eosl-clear-filters");
+      const eoslTableBody = document.getElementById("eosl-table-body");
+      const eoslTableHead = document.querySelector(".eosl-table-head");
+      const eoslTableBodyWrap = document.querySelector(".eosl-table-body-wrap");
+      const eoslTableShell = document.querySelector(".eosl-table-shell");
+      const eoslEmptyNote = document.getElementById("eosl-empty-note");
+      const eoslPageSizeSelect = document.getElementById("eosl-page-size");
+      const eoslPageStatus = document.getElementById("eosl-page-status");
+      const eoslPrevPageButton = document.getElementById("eosl-prev-page");
+      const eoslNextPageButton = document.getElementById("eosl-next-page");
+      const eoslProgressDialog = document.getElementById("eosl-progress-dialog");
+      const eoslProgressClose = document.getElementById("eosl-progress-close");
+      const eoslProgressText = document.getElementById("eosl-progress-text");
+      const eoslProgressStage = document.getElementById("eosl-progress-stage");
+      const eoslProgressTitle = document.getElementById("eosl-progress-title");
+      const eoslProgressBar = document.getElementById("eosl-progress-bar");
+      const eoslProgressEyebrow = document.getElementById("eosl-progress-eyebrow");
+      const eoslSourceSelect = document.getElementById("eosl-source-select");
+      let eoslActiveSource = "eosl";
+      const vendorSourceMeta = {
+        eosl: {
+          label: "eosl.date",
+          emptyHint: "The local eosl.date database is empty. Click Update to scrape eosl.date.",
+          headers: {
+            product: "Product",
+            release: "Release",
+            released: "Released",
+            eol_date: "EOL date",
+            eoas_date: "EOAS date",
+            supported: "Supported",
+          },
+        },
+        junos: {
+          label: "Juniper Junos",
+          emptyHint:
+            "The local Junos database is empty. Click Update to scrape Juniper Dates & Milestones.",
+          headers: {
+            product: "Product",
+            release: "Release",
+            released: "FRS",
+            eol_date: "EOE (EOL)",
+            eoas_date: "EOS (EOAS)",
+            supported: "Supported",
+          },
+        },
+      };
       const dataReadonlyHint = document.getElementById("data-readonly-hint");
       const confirmDialog = document.getElementById("confirm-dialog");
       const confirmForm = document.getElementById("confirm-form");
@@ -831,8 +1097,11 @@
         if (
           select.classList.contains("column-filter-mode") ||
           select.classList.contains("status-select") ||
+          select.classList.contains("eosl-filter-select") ||
           select.id === "source-select" ||
           select.id === "page-size-select" ||
+          select.id === "eosl-page-size" ||
+          select.id === "eosl-source-select" ||
           select.id === "evidence-filter"
         ) {
           wrapper.classList.add("is-block");
@@ -868,7 +1137,11 @@
         parent.insertBefore(wrapper, select);
         wrapper.appendChild(select);
         wrapper.appendChild(trigger);
-        document.body.appendChild(menu);
+        // A menu appended to document.body renders behind a top-layer <dialog>.
+        // For selects inside a dialog, append the menu into that dialog so it
+        // shares the dialog's top-layer stacking context and paints above it.
+        const dialogHost = select.closest("dialog");
+        (dialogHost || document.body).appendChild(menu);
 
         trigger.addEventListener("click", (event) => {
           event.preventDefault();
@@ -941,7 +1214,18 @@
 
       window.addEventListener(
         "scroll",
-        () => {
+        (event) => {
+          if (!openThemeSelect) {
+            return;
+          }
+          // Keep the menu open when the user scrolls its own option list.
+          const scrollTarget = event.target;
+          if (
+            scrollTarget instanceof Element &&
+            openThemeSelect.menu.contains(scrollTarget)
+          ) {
+            return;
+          }
           closeThemeSelectMenu();
         },
         true
@@ -1094,6 +1378,10 @@
             return "Fuzzy + AI";
           case "eol":
             return "EOL API";
+          case "eosl":
+            return "eosl.date";
+          case "junos":
+            return "Juniper Junos";
           case "ambiguous":
             return "Ambiguous";
           case "manual":
@@ -1124,6 +1412,10 @@
           case "eol":
           case "api":
             return "api";
+          case "eosl":
+            return "eosl";
+          case "junos":
+            return "junos";
           case "lookup-fallback":
             return "fallback";
           case "ambiguous":
@@ -1195,7 +1487,7 @@
         return `<div class="proof-panel"><p class="proof-panel-title">${escapeHtml(title)}</p>${kv}</div>`;
       }
 
-      function formatQuerySourceHtml(proofMeta) {
+      function formatQuerySourceHtml(proofMeta, { title = "Match source" } = {}) {
         if (!proofMeta) {
           return "";
         }
@@ -1220,7 +1512,9 @@
           rows.push(["Release", release]);
         }
         const kv = proofKvHtml(rows);
-        return kv ? `<div class="proof-panel"><p class="proof-panel-title">API query</p>${kv}</div>` : "";
+        return kv
+          ? `<div class="proof-panel"><p class="proof-panel-title">${escapeHtml(title)}</p>${kv}</div>`
+          : "";
       }
 
       function describeNormalizationMethod(fieldProof, currentValue) {
@@ -1394,7 +1688,27 @@
           method = "api";
           summary = "Dates and statuses came from the endoflife.date API.";
           const got = eolProof.got || {};
-          detailHtml = `${formatQuerySourceHtml(eolProof)}<div class="proof-panel"><p class="proof-panel-title">Values applied</p>${proofKvHtml(
+          detailHtml = `${formatQuerySourceHtml(eolProof, { title: "EOL API query" })}<div class="proof-panel"><p class="proof-panel-title">Values applied</p>${proofKvHtml(
+            [
+              ["EOL date", formatProofValue("eol_date", got.eol_date || row.eol_date)],
+              ["EOL status", got.eol_status || row.eol_status],
+              ["EOAS date", formatProofValue("eoas_date", got.eoas_date || row.eoas_date)],
+              ["EOAS status", got.eoas_status || row.eoas_status],
+            ]
+          )}</div>`;
+        } else if (rawMethod === "eosl" || rawMethod === "junos") {
+          method = rawMethod;
+          const sourceLabel =
+            rawMethod === "junos" ? "Juniper Junos Vendor Lookup" : "eosl.date Vendor Lookup";
+          summary =
+            `EOL API had no match, so dates and statuses were taken from the local ${sourceLabel} (product + release).`;
+          const got = eolProof.got || {};
+          const note = eolProof.apiNote || eolProof.note;
+          detailHtml = `${formatQuerySourceHtml(eolProof, { title: `${sourceLabel} match` })}${
+            note
+              ? `<p class="proof-summary">${escapeHtml(String(note))}</p>`
+              : ""
+          }<div class="proof-panel"><p class="proof-panel-title">Values applied</p>${proofKvHtml(
             [
               ["EOL date", formatProofValue("eol_date", got.eol_date || row.eol_date)],
               ["EOL status", got.eol_status || row.eol_status],
@@ -1477,7 +1791,12 @@
         }
 
         const eolMethod = proof.eol?.method || "none";
-        if (eolMethod === "api" || eolMethod === "lookup-fallback" || eolMethod === "manual") {
+        if (
+          eolMethod === "api" ||
+          eolMethod === "eosl" ||
+          eolMethod === "lookup-fallback" ||
+          eolMethod === "manual"
+        ) {
           methods.push(eolMethod);
         } else if (rowHasEolData(row) && eolMethod === "none") {
           methods.push("loaded");
@@ -1923,6 +2242,7 @@
         ["freebsd", [/\bfreebsd\b/i]],
         ["f5", [/\bf5\b/i, /\bbig[\s-]?ip\b/i]],
         ["citrix", [/\bcitrix\b/i, /\bxenserver\b/i]],
+        ["juniper", [/\bjuniper\b/i, /\bjunos\b/i]],
       ];
 
       function vendorTags(value) {
@@ -2004,6 +2324,9 @@
 
         const detailed = candidate.normalized_os_detailed_name;
         const normalized = candidate.normalized_os;
+        if (isRubbishOsValue(detailed) || isRubbishOsValue(normalized)) {
+          return 0;
+        }
         if (!vendorsCompatible(osValue, `${detailed || ""} ${normalized || ""}`)) {
           return 0;
         }
@@ -2158,6 +2481,88 @@
         };
       }
 
+      function isPlaceholderOsValue(value) {
+        const cleaned = String(value ?? "").trim();
+        if (!cleaned) {
+          return true;
+        }
+        const lowered = cleaned.toLowerCase();
+        if (lowered === "ambiguous os") {
+          return true;
+        }
+        const placeholders = new Set([
+          "-",
+          "--",
+          "---",
+          "n/a",
+          "na",
+          "null",
+          "none",
+          "nil",
+          "unknown",
+          "default",
+          "<!-- default -->",
+          "<default>",
+          "tbd",
+          "todo",
+          "placeholder",
+          "rubbish",
+        ]);
+        if (placeholders.has(lowered)) {
+          return true;
+        }
+        if (lowered.startsWith("unknown ") || lowered.endsWith(" unknown")) {
+          return true;
+        }
+        if (/<!--[\s\S]*-->/i.test(cleaned) || /^\s*<[^>]+>\s*$/i.test(cleaned)) {
+          return true;
+        }
+        if (/^\[?\s*default\s*\]?$/i.test(cleaned)) {
+          return true;
+        }
+        if (/^[\W_]+$/u.test(cleaned)) {
+          return true;
+        }
+        return false;
+      }
+
+      function isRubbishOsValue(value) {
+        if (isPlaceholderOsValue(value)) {
+          return true;
+        }
+        const cleaned = String(value ?? "").trim();
+        if (cleaned.length < 8) {
+          return false;
+        }
+        const compact = cleaned.replace(/[\s\-_:]/g, "");
+        if (compact.length >= 16 && /^[0-9a-fA-F]+$/.test(compact)) {
+          return true;
+        }
+        if (
+          /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/i.test(
+            cleaned
+          )
+        ) {
+          return true;
+        }
+        const letterWords = cleaned.match(/[A-Za-z]{2,}/g) || [];
+        if (!letterWords.length && /\d/.test(cleaned) && cleaned.length >= 10) {
+          return true;
+        }
+        if (compact.length >= 24) {
+          const hexChars = (compact.match(/[0-9a-fA-F]/g) || []).length;
+          if (
+            hexChars / Math.max(compact.length, 1) >= 0.9 &&
+            !/\b(?:linux|windows|ubuntu|debian|centos|redhat|rhel|oracle|android|macos|ios|junos|juniper|cisco|suse|fedora|alma|rocky|solaris|aix|freebsd|esxi|forti|pan-?os)\b/i.test(
+              cleaned
+            )
+          ) {
+            return true;
+          }
+        }
+        return false;
+      }
+
       function buildAllowedPairs(candidates, excludeRowId = null) {
         const seen = new Set();
         const pairs = [];
@@ -2172,10 +2577,7 @@
           if (!detailed || !normalized) {
             return;
           }
-          if (
-            detailed.toLowerCase() === "ambiguous os" ||
-            normalized.toLowerCase() === "ambiguous os"
-          ) {
+          if (isRubbishOsValue(detailed) || isRubbishOsValue(normalized)) {
             return;
           }
 
@@ -2198,6 +2600,40 @@
         const fallbackValue = String(osValue ?? "").trim();
         if (!fallbackValue) {
           return { ...emptyNormalizationSuggestion(), fuzzyMatched: false };
+        }
+
+        // Rubbish / hex dumps: only copy an exact same existing rubbish pair.
+        // Never map garbage onto a real OS name.
+        if (isRubbishOsValue(fallbackValue)) {
+          const needle = fallbackValue.toLowerCase();
+          let exact = null;
+          candidates.some((candidate) => {
+            if (candidate.__id === excludeRowId) {
+              return false;
+            }
+            const detailed = String(candidate.normalized_os_detailed_name ?? "").trim();
+            const normalized = String(candidate.normalized_os ?? "").trim();
+            if (!detailed || !normalized) {
+              return false;
+            }
+            if (detailed.toLowerCase() !== needle || normalized.toLowerCase() !== needle) {
+              return false;
+            }
+            exact = candidate;
+            return true;
+          });
+          if (!exact) {
+            return { ...emptyNormalizationSuggestion(), fuzzyMatched: false };
+          }
+          return {
+            normalized_os_detailed_name: String(exact.normalized_os_detailed_name ?? "").trim(),
+            normalized_os: String(exact.normalized_os ?? "").trim(),
+            detailedAuto: true,
+            normalizedAuto: true,
+            fuzzyMatched: true,
+            matchScore: 100,
+            matchedFrom: matchedFromSnapshot(exact),
+          };
         }
 
         let bestCandidate = null;
@@ -2309,6 +2745,12 @@
           return { ...suggestion, matchMethod: "fuzzy" };
         }
 
+        // Rubbish OS strings are never sent to AI — leave blank unless exact
+        // same rubbish already exists (handled by fuzzy above).
+        if (isRubbishOsValue(osValue)) {
+          return { ...emptyNormalizationSuggestion(), matchMethod: "none" };
+        }
+
         if (!isAiMatchingEnabled()) {
           return { ...emptyNormalizationSuggestion(), matchMethod: "none" };
         }
@@ -2372,6 +2814,9 @@
 
         const rowsNeedingAi = rows.filter((row) => {
           if (isAmbiguousOsRow(row)) {
+            return false;
+          }
+          if (isRubbishOsValue(row.os_string)) {
             return false;
           }
           return (
@@ -2795,9 +3240,87 @@
         };
       }
 
+      function buildVendorProofMetaFromApi(vendorResult, eolApiResult = null) {
+        const source = String(vendorResult.source ?? "eosl").trim() || "eosl";
+        const sourceLabel = source === "junos" ? "Juniper Junos" : "eosl.date";
+        const eolNote = String(eolApiResult?.api_note ?? "").trim();
+        const product = String(vendorResult.product_slug ?? "").trim();
+        const release = String(
+          vendorResult.release_label || vendorResult.release_name || ""
+        ).trim();
+        const matchBits = [product && `product ${product}`, release && `release ${release}`]
+          .filter(Boolean)
+          .join(", ");
+        const vendorNote = matchBits
+          ? `Matched via ${sourceLabel} (${matchBits}).`
+          : `Matched via ${sourceLabel} (product + release).`;
+        return {
+          method: source === "junos" ? "junos" : "eosl",
+          queryUsed: String(vendorResult.query_used ?? "").trim(),
+          queryField: String(vendorResult.query_field ?? "").trim(),
+          productSlug: product,
+          releaseName: String(vendorResult.release_name ?? "").trim(),
+          releaseLabel: String(vendorResult.release_label ?? "").trim(),
+          apiNote: eolNote ? `EOL API: ${eolNote}. ${vendorNote}` : vendorNote,
+        };
+      }
+
+      async function fetchVendorLookupResults(rows, signal) {
+        if (!rows.length) {
+          return [];
+        }
+        const items = rows.map((row) => ({
+          os_string: row.os_string ?? "",
+          normalized_os_detailed_name: row.normalized_os_detailed_name ?? "",
+          normalized_os: row.normalized_os ?? "",
+        }));
+        const response = await fetch("/api/vendor-lookup", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items }),
+          signal,
+        });
+        if (!response.ok) {
+          throw new Error("Unable to look up vendor lifecycle data.");
+        }
+        const payload = await response.json();
+        return Array.isArray(payload.results) ? payload.results : [];
+      }
+
+      function applyEmptyEolProof(row, apiResult, extraNote = "") {
+        const proof = ensureProof(row);
+        const noteParts = [
+          String(apiResult?.api_note ?? "").trim(),
+          String(extraNote ?? "").trim(),
+        ].filter(Boolean);
+        proof.eol = {
+          method: "none",
+          queryUsed: String(apiResult?.query_used ?? "").trim(),
+          queryField: String(apiResult?.query_field ?? "").trim(),
+          productSlug: String(apiResult?.product_slug ?? "").trim(),
+          releaseName: String(apiResult?.release_name ?? "").trim(),
+          releaseLabel: String(apiResult?.release_label ?? "").trim(),
+          apiNote: noteParts.join(" ") || "No EOL/EOAS data found.",
+          got: {
+            eol_date: "",
+            eol_status: "",
+            eoas_date: "",
+            eoas_status: "",
+            normalized_os_detailed_name: "",
+            normalized_os: "",
+          },
+        };
+      }
+
       async function applyEolFromApi(
         rows,
-        { signal, fallbackCandidates, includeExisting = false, forceLifecycle = false } = {}
+        {
+          signal,
+          fallbackCandidates,
+          includeExisting = false,
+          forceLifecycle = false,
+          endpoint = "/api/eol-lookup",
+        } = {}
       ) {
         const uiRows = rows.filter(
           (row) =>
@@ -2813,8 +3336,13 @@
           normalized_os: row.normalized_os ?? "",
         }));
 
+        const candidates = fallbackCandidates ?? uiRows.concat(allRows);
+        let updated = 0;
+        let failed = 0;
+        const needVendor = [];
+
         try {
-          const response = await fetch("/api/eol-lookup", {
+          const response = await fetch(endpoint, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ items }),
@@ -2826,39 +3354,10 @@
           }
 
           const payload = await response.json();
-          let updated = 0;
-          let failed = 0;
           uiRows.forEach((row, index) => {
             const apiResult = payload.results[index] ?? {};
             if (isEmptyEolPayload(apiResult)) {
-              const usedFallback = applyExistingEolFallback(
-                row,
-                fallbackCandidates ?? uiRows.concat(allRows),
-                { forceLifecycle }
-              );
-              if (usedFallback) {
-                updated += 1;
-              } else {
-                const proof = ensureProof(row);
-                proof.eol = {
-                  method: "none",
-                  queryUsed: String(apiResult.query_used ?? "").trim(),
-                  queryField: String(apiResult.query_field ?? "").trim(),
-                  productSlug: String(apiResult.product_slug ?? "").trim(),
-                  releaseName: "",
-                  releaseLabel: "",
-                  apiNote: String(apiResult.api_note ?? "No EOL/EOAS data found.").trim(),
-                  got: {
-                    eol_date: "",
-                    eol_status: "",
-                    eoas_date: "",
-                    eoas_status: "",
-                    normalized_os_detailed_name: "",
-                    normalized_os: "",
-                  },
-                };
-                failed += 1;
-              }
+              needVendor.push({ row, apiResult });
             } else {
               applyEolResultToRow(row, apiResult, {
                 forceLifecycle,
@@ -2867,24 +3366,58 @@
               updated += 1;
             }
           });
-          return { updated, failed };
         } catch (error) {
           if (signal?.aborted) {
             throw error;
           }
-          showStatus(error.message, "error");
-          let updated = 0;
+          // EOL API unavailable — try vendor lookups for every row, then lookup-copy.
           uiRows.forEach((row) => {
-            if (
-              applyExistingEolFallback(row, fallbackCandidates ?? uiRows.concat(allRows), {
-                forceLifecycle,
-              })
-            ) {
-              updated += 1;
-            }
+            needVendor.push({ row, apiResult: { api_note: error.message } });
           });
-          return { updated, failed: uiRows.length - updated };
         }
+
+        if (needVendor.length) {
+          let vendorResults = [];
+          try {
+            vendorResults = await fetchVendorLookupResults(
+              needVendor.map((entry) => entry.row),
+              signal
+            );
+          } catch (vendorError) {
+            if (signal?.aborted) {
+              throw vendorError;
+            }
+            // Fall through with empty results; lookup-copy / none still apply.
+            vendorResults = [];
+          }
+
+          needVendor.forEach(({ row, apiResult }, index) => {
+            const vendorResult = vendorResults[index] ?? {};
+            if (!isEmptyEolPayload(vendorResult)) {
+              applyEolResultToRow(row, vendorResult, {
+                forceLifecycle,
+                proofMeta: buildVendorProofMetaFromApi(vendorResult, apiResult),
+              });
+              updated += 1;
+              return;
+            }
+            if (applyExistingEolFallback(row, candidates, { forceLifecycle })) {
+              updated += 1;
+              return;
+            }
+            const vendorNote = String(vendorResult.api_note ?? "").trim();
+            applyEmptyEolProof(
+              row,
+              apiResult,
+              vendorNote
+                ? `Vendor Lookup: ${vendorNote}`
+                : "Vendor Lookups also found no match."
+            );
+            failed += 1;
+          });
+        }
+
+        return { updated, failed };
       }
 
       async function yieldToUi() {
@@ -3634,7 +4167,12 @@
         }
       }
 
-      async function refreshAllEolData() {
+      async function refreshAllEolData(options = {}) {
+        const {
+          endpoint = "/api/eol-lookup",
+          sourceLabel = "endoflife.date API",
+          eyebrow = "EOL/EOAS refresh",
+        } = options;
         if (bulkProcessing) {
           return;
         }
@@ -3664,7 +4202,7 @@
         }
 
         const confirmed = await askConfirm({
-          eyebrow: "EOL/EOAS refresh",
+          eyebrow,
           title: "Refresh lifecycle data?",
           message:
             `Look up EOL and EOAS data for ${targetRows.length} of ${allRows.length} operating systems` +
@@ -3672,7 +4210,7 @@
               ? `. Excluded ${excludedCount}` +
                 (excludeParts.length ? ` (${excludeParts.join(", ")})` : "")
               : "") +
-            `. Existing EOL/EOAS values will be updated from the API.`,
+            `. Existing EOL/EOAS values will be updated from the ${sourceLabel}.`,
           confirmLabel: "Refresh EOL/EOAS",
         });
         if (!confirmed) {
@@ -3689,7 +4227,7 @@
 
         setBulkProcessingActive(true);
         openBulkProgress(targetRows.length, {
-          eyebrow: "EOL/EOAS refresh",
+          eyebrow,
           title: "Refreshing EOL/EOAS data",
           stageText: "Preparing EOL/EOAS lookup...",
         });
@@ -3718,6 +4256,7 @@
               includeExisting: true,
               forceLifecycle: true,
               fallbackCandidates: allRows,
+              endpoint,
             });
 
             commitQueue = commitQueue.then(async () => {
@@ -3755,7 +4294,7 @@
           } else {
             showStatus(
               `EOL/EOAS refresh complete. Updated ${updated} entries` +
-                (failed ? `, ${failed} without API data.` : "."),
+                (failed ? `, ${failed} without lifecycle data.` : "."),
               failed ? "info" : "success"
             );
           }
@@ -3845,6 +4384,14 @@
             kinds.add("manual");
           } else if (method === "eol" || method === "api") {
             kinds.add("eol");
+          } else if (method === "eosl") {
+            kinds.add("eosl");
+          } else if (method === "junos") {
+            kinds.add("junos");
+          } else if (method === "lookup-fallback") {
+            kinds.add("lookup-fallback");
+          } else if (method === "ambiguous") {
+            kinds.add("ambiguous");
           }
         });
 
@@ -3853,7 +4400,11 @@
           !kinds.has("ai") &&
           !kinds.has("fuzzy+ai") &&
           !kinds.has("manual") &&
-          !kinds.has("eol")
+          !kinds.has("eol") &&
+          !kinds.has("eosl") &&
+          !kinds.has("junos") &&
+          !kinds.has("lookup-fallback") &&
+          !kinds.has("ambiguous")
         ) {
           kinds.add("null");
         }
@@ -4430,18 +4981,23 @@
         });
       }
 
-      function revertRows() {
+      async function revertRows() {
         if (currentSource === "draft") {
           currentEvidenceByOs = { ...dataEvidenceByOs };
           allRows = hydrateRows(cloneRows(dataBaselineRows), currentEvidenceByOs);
-          promoteToDraftSource();
-          syncDirtyState();
-        } else {
-          allRows = hydrateRows(cloneRows(originalRows), currentEvidenceByOs);
-          setDirty(false);
+          clearStatus();
+          applyFilter();
+          // Persist immediately — in-memory revert alone left _draft/ stale on disk
+          // (especially when Auto-save is off).
+          const saved = await saveRows({ mode: "manual", quiet: true });
+          return saved;
         }
+
+        allRows = hydrateRows(cloneRows(originalRows), currentEvidenceByOs);
+        setDirty(false);
         clearStatus();
         applyFilter();
+        return true;
       }
 
       function handleCellEdit(event) {
@@ -4566,7 +5122,7 @@
         applyFilter();
       }
 
-      function revertRow(rowId) {
+      async function revertRow(rowId) {
         const rowIndex = allRows.findIndex((row) => row.__id === rowId);
         if (rowIndex === -1) {
           return;
@@ -4583,9 +5139,14 @@
         promoteToDraftSource();
         if (currentSource === "draft") {
           const dataBaselineRow = findDataBaselineRow(targetRow);
+          const osKey = String(targetRow.os_string ?? "").trim();
           if (!dataBaselineRow) {
             allRows.splice(rowIndex, 1);
+            if (osKey && currentEvidenceByOs[osKey]) {
+              delete currentEvidenceByOs[osKey];
+            }
           } else {
+            const storedProof = osKey ? dataEvidenceByOs[osKey] : null;
             allRows[rowIndex] = {
               __id: targetRow.__id,
               __sourceIndex: targetRow.__sourceIndex,
@@ -4596,7 +5157,7 @@
               __eolStatusAuto: false,
               __eoasDateAuto: false,
               __eoasStatusAuto: false,
-              __proof: emptyProof(),
+              __proof: proofFromStored(storedProof),
               ...blankRow(),
               ...dataBaselineRow,
             };
@@ -4623,6 +5184,10 @@
 
         syncDirtyState();
         applyFilter();
+        if (currentSource === "draft") {
+          await saveRows({ mode: "manual", quiet: true });
+          showStatus("Row reverted to Data and Draft saved.", "success");
+        }
       }
 
       function copyOsAsNormalized(rowId) {
@@ -4711,13 +5276,13 @@
         }
       }
 
-      async function saveRows({ mode = "manual" } = {}) {
+      async function saveRows({ mode = "manual", quiet = false } = {}) {
         if (!isLookupEditable()) {
           showStatus("Click Edit Data to add or modify the lookup.", "info");
           return false;
         }
         if (saveInFlight) {
-          if (mode === "manual") {
+          if (mode === "manual" && !quiet) {
             showStatus("A save is already in progress...", "info");
           }
           return false;
@@ -4730,9 +5295,9 @@
         saveInFlight = true;
         updateSourceUi();
 
-        if (mode === "manual") {
+        if (mode === "manual" && !quiet) {
           showStatus("Saving draft...");
-        } else {
+        } else if (!quiet) {
           dirtyIndicator.textContent = "Saving...";
           dirtyIndicator.classList.add("dirty");
         }
@@ -4761,10 +5326,12 @@
           saveInFlight = false;
           setDirty(false);
           updateSourceUi();
-          if (mode === "manual") {
-            showStatus("Draft saved successfully.", "success");
-          } else {
-            showStatus("Draft auto-saved.", "success");
+          if (!quiet) {
+            if (mode === "manual") {
+              showStatus("Draft saved successfully.", "success");
+            } else {
+              showStatus("Draft auto-saved.", "success");
+            }
           }
           return true;
         } catch (error) {
@@ -5030,6 +5597,438 @@
           azureMenuButton.setAttribute("aria-expanded", "true");
         } else {
           closeAzureMenu();
+        }
+      }
+
+      let eoslRows = [];
+      let eoslFilteredRows = [];
+      let eoslUpdating = false;
+      let eoslPage = 1;
+      let eoslPageSize = 50;
+      const EOSL_DATE_COLUMNS = ["released", "eol_date", "eoas_date"];
+      function eoslDefaultFilters() {
+        return {
+          product: { mode: "", text: "" },
+          release: { mode: "", text: "" },
+          released: { mode: "", from: "", to: "" },
+          eol_date: { mode: "", from: "", to: "" },
+          eoas_date: { mode: "", from: "", to: "" },
+          supported: { value: "" },
+        };
+      }
+      let eoslColumnFilters = eoslDefaultFilters();
+
+      function formatEoslTimestamp(value) {
+        const cleaned = String(value ?? "").trim();
+        if (!cleaned) {
+          return "";
+        }
+        const parsed = new Date(cleaned);
+        if (Number.isNaN(parsed.getTime())) {
+          return cleaned;
+        }
+        return parsed.toLocaleString();
+      }
+
+      function applyVendorViewerHeaders() {
+        const meta = vendorSourceMeta[eoslActiveSource] || vendorSourceMeta.eosl;
+        const headers = meta.headers || {};
+        document.querySelectorAll("[data-eosl-header]").forEach((th) => {
+          const key = th.getAttribute("data-eosl-header");
+          if (headers[key]) {
+            th.textContent = headers[key];
+          }
+        });
+        const releasedFilter = document.querySelector('[data-eosl-mode="released"]');
+        if (releasedFilter) {
+          releasedFilter.setAttribute(
+            "aria-label",
+            `Filter ${headers.released || "Released"}`
+          );
+        }
+        const eolFilter = document.querySelector('[data-eosl-mode="eol_date"]');
+        if (eolFilter) {
+          eolFilter.setAttribute("aria-label", `Filter ${headers.eol_date || "EOL"}`);
+        }
+        const eoasFilter = document.querySelector('[data-eosl-mode="eoas_date"]');
+        if (eoasFilter) {
+          eoasFilter.setAttribute("aria-label", `Filter ${headers.eoas_date || "EOAS"}`);
+        }
+      }
+
+      function renderEoslMeta(status) {
+        const productCount = Number(status?.product_count ?? 0);
+        const releaseCount = Number(status?.release_count ?? 0);
+        const lastUpdated = formatEoslTimestamp(status?.last_updated);
+        const sourceMeta = vendorSourceMeta[eoslActiveSource] || vendorSourceMeta.eosl;
+        if (!eoslDialogMeta) {
+          return;
+        }
+        if (!lastUpdated || (!productCount && !releaseCount)) {
+          eoslDialogMeta.textContent = `Not built yet — click Update`;
+          eoslDialogMeta.title = `${sourceMeta.label} has not been scraped yet.`;
+          return;
+        }
+        eoslDialogMeta.textContent =
+          `Last updated ${lastUpdated} · ${productCount} products · ${releaseCount} releases`;
+        eoslDialogMeta.title = `Source: ${status?.source_url ?? sourceMeta.label}`;
+      }
+
+      function eoslDateDisplay(value) {
+        const cleaned = String(value ?? "").trim();
+        return cleaned || "—";
+      }
+
+      function eoslMatchesGlobal(row, needle) {
+        if (!needle) {
+          return true;
+        }
+        return [row.product, row.release, row.released, row.eol_date, row.eoas_date]
+          .map((value) => String(value ?? "").toLowerCase())
+          .some((value) => value.includes(needle));
+      }
+
+      function eoslMatchesTextColumn(raw, filter) {
+        const value = String(raw ?? "").trim();
+        const isEmpty = !value;
+        if (filter.mode === "empty") {
+          return isEmpty;
+        }
+        if (filter.mode === "not_empty") {
+          return !isEmpty;
+        }
+        const text = String(filter.text ?? "").trim().toLowerCase();
+        if (!text) {
+          return true;
+        }
+        const lower = value.toLowerCase();
+        if (filter.mode === "equals") {
+          return lower === text;
+        }
+        if (filter.mode === "not_equals") {
+          return lower !== text;
+        }
+        if (filter.mode === "not_contains") {
+          return !lower.includes(text);
+        }
+        return lower.includes(text);
+      }
+
+      function eoslMatchesDateColumn(raw, filter) {
+        const value = String(raw ?? "").trim();
+        const isEmpty = !value;
+        if (filter.mode === "empty") {
+          return isEmpty;
+        }
+        if (filter.mode === "not_empty" && isEmpty) {
+          return false;
+        }
+        const from = String(filter.from ?? "").trim();
+        const to = String(filter.to ?? "").trim();
+        if (!from && !to) {
+          return true;
+        }
+        if (isEmpty) {
+          return false;
+        }
+        if (from && value < from) {
+          return false;
+        }
+        if (to && value > to) {
+          return false;
+        }
+        return true;
+      }
+
+      function eoslRowMatchesFilters(row, needle) {
+        if (!eoslMatchesGlobal(row, needle)) {
+          return false;
+        }
+        if (!eoslMatchesTextColumn(row.product, eoslColumnFilters.product)) {
+          return false;
+        }
+        if (!eoslMatchesTextColumn(row.release, eoslColumnFilters.release)) {
+          return false;
+        }
+        for (const column of EOSL_DATE_COLUMNS) {
+          if (!eoslMatchesDateColumn(row[column], eoslColumnFilters[column])) {
+            return false;
+          }
+        }
+        const supported = eoslColumnFilters.supported.value;
+        if (supported === "yes" && !row.supported) {
+          return false;
+        }
+        if (supported === "no" && row.supported) {
+          return false;
+        }
+        return true;
+      }
+
+      function eoslTotalPages() {
+        return Math.max(1, Math.ceil(eoslFilteredRows.length / eoslPageSize));
+      }
+
+      function updateEoslPagination() {
+        const totalPages = eoslTotalPages();
+        eoslPage = Math.min(Math.max(1, eoslPage), totalPages);
+        if (eoslPageStatus) {
+          const total = eoslFilteredRows.length;
+          eoslPageStatus.textContent = total
+            ? `Page ${eoslPage} of ${totalPages} · ${total} releases`
+            : "No releases";
+        }
+        if (eoslPrevPageButton) {
+          eoslPrevPageButton.disabled = eoslPage <= 1;
+        }
+        if (eoslNextPageButton) {
+          eoslNextPageButton.disabled = eoslPage >= totalPages;
+        }
+      }
+
+      function syncEoslTableLayout() {
+        if (!eoslTableBodyWrap) {
+          return;
+        }
+        const gutter = eoslTableBodyWrap.offsetWidth - eoslTableBodyWrap.clientWidth;
+        const target = eoslTableShell || eoslTableHead;
+        if (target) {
+          target.style.setProperty("--eosl-scrollbar-size", `${gutter}px`);
+        }
+      }
+
+      function scheduleEoslTableLayoutSync() {
+        requestAnimationFrame(() => {
+          syncEoslTableLayout();
+        });
+      }
+
+      if (eoslTableBodyWrap && typeof ResizeObserver !== "undefined") {
+        const eoslLayoutObserver = new ResizeObserver(() => {
+          syncEoslTableLayout();
+        });
+        eoslLayoutObserver.observe(eoslTableBodyWrap);
+      }
+
+      function renderEoslTable() {
+        if (!eoslTableBody) {
+          return;
+        }
+        const needle = (eoslFilterInput ? eoslFilterInput.value : "").trim().toLowerCase();
+        eoslFilteredRows = eoslRows.filter((row) => eoslRowMatchesFilters(row, needle));
+
+        const totalPages = eoslTotalPages();
+        eoslPage = Math.min(Math.max(1, eoslPage), totalPages);
+        const start = (eoslPage - 1) * eoslPageSize;
+        const pageRows = eoslFilteredRows.slice(start, start + eoslPageSize);
+
+        eoslTableBody.innerHTML = "";
+        if (!eoslFilteredRows.length) {
+          eoslEmptyNote.classList.remove("hidden");
+          eoslEmptyNote.textContent = eoslRows.length
+            ? "No releases match your filters."
+            : (vendorSourceMeta[eoslActiveSource] || vendorSourceMeta.eosl).emptyHint;
+          updateEoslPagination();
+          scheduleEoslTableLayoutSync();
+          return;
+        }
+        eoslEmptyNote.classList.add("hidden");
+
+        const fragment = document.createDocumentFragment();
+        pageRows.forEach((row) => {
+          const tr = document.createElement("tr");
+          const cells = [
+            row.product,
+            row.release,
+            eoslDateDisplay(row.released),
+            eoslDateDisplay(row.eol_date),
+            eoslDateDisplay(row.eoas_date),
+            row.supported ? "Yes" : "No",
+          ];
+          cells.forEach((value, index) => {
+            const td = document.createElement("td");
+            td.textContent = String(value ?? "");
+            if (index === 5) {
+              td.classList.add(row.supported ? "eosl-supported" : "eosl-unsupported");
+            }
+            tr.appendChild(td);
+          });
+          fragment.appendChild(tr);
+        });
+        eoslTableBody.appendChild(fragment);
+        updateEoslPagination();
+        scheduleEoslTableLayoutSync();
+      }
+
+      function syncEoslFilterInputs() {
+        document.querySelectorAll("[data-eosl-mode]").forEach((select) => {
+          const column = select.dataset.eoslMode;
+          const filter = eoslColumnFilters[column] || {};
+          select.value = filter.mode || "";
+          syncThemeSelectUi(select);
+          const textInput = document.querySelector(`[data-eosl-text="${column}"]`);
+          if (textInput) {
+            textInput.value = filter.text || "";
+            const disabled = filter.mode === "empty" || filter.mode === "not_empty";
+            textInput.disabled = disabled;
+          }
+          const fromInput = document.querySelector(`[data-eosl-from="${column}"]`);
+          const toInput = document.querySelector(`[data-eosl-to="${column}"]`);
+          const dateDisabled = filter.mode === "empty";
+          if (fromInput) {
+            fromInput.value = filter.from || "";
+            fromInput.disabled = dateDisabled;
+          }
+          if (toInput) {
+            toInput.value = filter.to || "";
+            toInput.disabled = dateDisabled;
+          }
+        });
+        const supportedSelect = document.querySelector("[data-eosl-supported]");
+        if (supportedSelect) {
+          supportedSelect.value = eoslColumnFilters.supported.value || "";
+          syncThemeSelectUi(supportedSelect);
+        }
+      }
+
+      function clearEoslFilters() {
+        eoslColumnFilters = eoslDefaultFilters();
+        if (eoslFilterInput) {
+          eoslFilterInput.value = "";
+        }
+        eoslPage = 1;
+        syncEoslFilterInputs();
+        renderEoslTable();
+      }
+
+      async function loadEoslDialogData() {
+        if (eoslDialogMeta) {
+          eoslDialogMeta.textContent = "Loading…";
+        }
+        applyVendorViewerHeaders();
+        try {
+          const response = await fetch(`/api/vendor-lookups/${eoslActiveSource}/rows`);
+          if (!response.ok) {
+            throw new Error("Unable to load vendor lookup data.");
+          }
+          const payload = await response.json();
+          eoslRows = Array.isArray(payload.rows) ? payload.rows : [];
+          if (payload.status?.viewer_headers) {
+            const meta = vendorSourceMeta[eoslActiveSource];
+            if (meta) {
+              meta.headers = { ...meta.headers, ...payload.status.viewer_headers };
+              applyVendorViewerHeaders();
+            }
+          }
+          renderEoslMeta(payload.status);
+          renderEoslTable();
+        } catch (error) {
+          eoslRows = [];
+          if (eoslDialogMeta) {
+            eoslDialogMeta.textContent = "Unable to load vendor data";
+            eoslDialogMeta.title = error.message;
+          }
+          renderEoslTable();
+        }
+      }
+
+      function closeEoslDialog() {
+        if (eoslDialog.open) {
+          eoslDialog.close();
+        }
+      }
+
+      async function openEoslDialog() {
+        eoslActiveSource = eoslSourceSelect?.value || "eosl";
+        eoslColumnFilters = eoslDefaultFilters();
+        eoslPage = 1;
+        if (eoslFilterInput) {
+          eoslFilterInput.value = "";
+        }
+        syncEoslFilterInputs();
+        applyVendorViewerHeaders();
+        if (!eoslDialog.open) {
+          eoslDialog.showModal();
+        }
+        await loadEoslDialogData();
+        scheduleEoslTableLayoutSync();
+      }
+
+      function setEoslProgressState({ text, stage, done = false, error = false } = {}) {
+        if (text != null) {
+          eoslProgressText.textContent = text;
+        }
+        if (stage != null) {
+          eoslProgressStage.textContent = stage;
+        }
+        eoslProgressBar.classList.toggle("eosl-progress-indeterminate", !done && !error);
+        eoslProgressBar.classList.toggle("is-error", error);
+        eoslProgressBar.style.width = done || error ? "100%" : "";
+        eoslProgressClose.hidden = !(done || error);
+      }
+
+      function closeEoslProgress() {
+        if (eoslProgressDialog.open) {
+          eoslProgressDialog.close();
+        }
+      }
+
+      async function handleEoslUpdate() {
+        if (eoslUpdating) {
+          return;
+        }
+        const sourceId = eoslActiveSource || eoslSourceSelect?.value || "eosl";
+        const sourceMeta = vendorSourceMeta[sourceId] || vendorSourceMeta.eosl;
+        eoslUpdating = true;
+        eoslUpdateButton.disabled = true;
+        if (eoslProgressEyebrow) {
+          eoslProgressEyebrow.textContent = sourceMeta.label;
+        }
+        eoslProgressTitle.textContent = `Updating ${sourceMeta.label}`;
+        setEoslProgressState({
+          text: `Scraping ${sourceMeta.label}…`,
+          stage:
+            sourceId === "junos"
+              ? "Fetching the Juniper Dates & Milestones table…"
+              : "This can take a minute or two. Please keep this dialog open.",
+        });
+        if (!eoslProgressDialog.open) {
+          eoslProgressDialog.showModal();
+        }
+        showStatus(`Updating ${sourceMeta.label}…`, "info");
+        try {
+          const response = await fetch(`/api/vendor-lookups/${sourceId}/sync`, {
+            method: "POST",
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(payload.detail || `Failed to update ${sourceMeta.label}.`);
+          }
+          const result = payload.result ?? {};
+          setEoslProgressState({
+            text: `Updated ${result.product_count ?? 0} products, ${result.release_count ?? 0} releases.`,
+            stage: "Done. You can close this dialog.",
+            done: true,
+          });
+          showStatus(
+            `${sourceMeta.label} updated: ${result.product_count ?? 0} products, ` +
+              `${result.release_count ?? 0} releases.`,
+            (result.errors && result.errors.length) ? "info" : "success"
+          );
+          // Refresh the viewer table behind the progress dialog.
+          if (eoslDialog.open) {
+            await loadEoslDialogData();
+          }
+        } catch (error) {
+          setEoslProgressState({
+            text: "Update failed.",
+            stage: error.message,
+            error: true,
+          });
+          showStatus(error.message, "error");
+        } finally {
+          eoslUpdating = false;
+          eoslUpdateButton.disabled = false;
         }
       }
 
@@ -5342,13 +6341,16 @@
           return;
         }
 
-        revertRows();
-        showStatus(
-          currentSource === "draft"
-            ? "Reverted draft rows to the data lookup state."
-            : "Reverted to the last loaded lookup state.",
-          "success"
-        );
+        void (async () => {
+          const saved = await revertRows();
+          if (currentSource === "draft") {
+            if (saved) {
+              showStatus("Reverted Draft to Data and saved `_draft`.", "success");
+            }
+            return;
+          }
+          showStatus("Reverted to the last loaded lookup state.", "success");
+        })();
       });
 
       saveButton.addEventListener("click", () => {
@@ -5430,6 +6432,96 @@
         event.stopPropagation();
       });
       document.addEventListener("click", closeAzureMenu);
+      eoslViewButton.addEventListener("click", openEoslDialog);
+      eoslDialogClose.addEventListener("click", closeEoslDialog);
+      eoslUpdateButton.addEventListener("click", handleEoslUpdate);
+      eoslProgressClose.addEventListener("click", closeEoslProgress);
+      if (eoslSourceSelect) {
+        eoslSourceSelect.addEventListener("change", async () => {
+          eoslActiveSource = eoslSourceSelect.value || "eosl";
+          eoslPage = 1;
+          clearEoslFilters();
+          await loadEoslDialogData();
+        });
+      }
+      if (eoslFilterInput) {
+        eoslFilterInput.addEventListener("input", () => {
+          eoslPage = 1;
+          renderEoslTable();
+        });
+      }
+      if (eoslClearFiltersButton) {
+        eoslClearFiltersButton.addEventListener("click", clearEoslFilters);
+      }
+      document.querySelectorAll("[data-eosl-mode]").forEach((select) => {
+        select.addEventListener("change", () => {
+          const column = select.dataset.eoslMode;
+          eoslColumnFilters[column].mode = select.value;
+          eoslPage = 1;
+          syncEoslFilterInputs();
+          renderEoslTable();
+        });
+      });
+      document.querySelectorAll("[data-eosl-text]").forEach((input) => {
+        input.addEventListener("input", () => {
+          const column = input.dataset.eoslText;
+          eoslColumnFilters[column].text = input.value;
+          eoslPage = 1;
+          renderEoslTable();
+        });
+      });
+      document.querySelectorAll("[data-eosl-from]").forEach((input) => {
+        input.addEventListener("change", () => {
+          const column = input.dataset.eoslFrom;
+          eoslColumnFilters[column].from = input.value;
+          eoslPage = 1;
+          renderEoslTable();
+        });
+      });
+      document.querySelectorAll("[data-eosl-to]").forEach((input) => {
+        input.addEventListener("change", () => {
+          const column = input.dataset.eoslTo;
+          eoslColumnFilters[column].to = input.value;
+          eoslPage = 1;
+          renderEoslTable();
+        });
+      });
+      const eoslSupportedSelect = document.querySelector("[data-eosl-supported]");
+      if (eoslSupportedSelect) {
+        eoslSupportedSelect.addEventListener("change", () => {
+          eoslColumnFilters.supported.value = eoslSupportedSelect.value;
+          eoslPage = 1;
+          renderEoslTable();
+        });
+      }
+      if (eoslPageSizeSelect) {
+        eoslPageSizeSelect.addEventListener("change", () => {
+          eoslPageSize = Number(eoslPageSizeSelect.value) || 50;
+          eoslPage = 1;
+          renderEoslTable();
+        });
+      }
+      if (eoslPrevPageButton) {
+        eoslPrevPageButton.addEventListener("click", () => {
+          if (eoslPage > 1) {
+            eoslPage -= 1;
+            renderEoslTable();
+          }
+        });
+      }
+      if (eoslNextPageButton) {
+        eoslNextPageButton.addEventListener("click", () => {
+          if (eoslPage < eoslTotalPages()) {
+            eoslPage += 1;
+            renderEoslTable();
+          }
+        });
+      }
+      eoslProgressDialog.addEventListener("cancel", (event) => {
+        if (eoslUpdating) {
+          event.preventDefault();
+        }
+      });
       azureUploadButton.addEventListener("click", handleAzureUploadClick);
       azureSettingsButton.addEventListener("click", openAzureSettingsDialog);
       azureSaveSettingsButton.addEventListener("click", saveAzureSettings);

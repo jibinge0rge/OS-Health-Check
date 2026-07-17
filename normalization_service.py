@@ -24,6 +24,63 @@ GEMINI_GENERATE_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 )
 
+# Placeholder / junk values that must never be used as normalization targets.
+_PLACEHOLDER_OS_VALUES = frozenset(
+    {
+        "-",
+        "--",
+        "---",
+        "n/a",
+        "na",
+        "null",
+        "none",
+        "nil",
+        "unknown",
+        "default",
+        "<!-- default -->",
+        "<default>",
+        "tbd",
+        "todo",
+        "placeholder",
+        "rubish",
+        "rubbish",
+    }
+)
+_PLACEHOLDER_OS_RE = re.compile(
+    r"<!--.*?-->|^\s*<[^>]+>\s*$|^\[?\s*default\s*\]?$",
+    re.I | re.S,
+)
+
+# Clear SKU / edition words. Broader product words like "enterprise" (RHEL) or
+# "server" (Windows Server) are handled with a Windows-focused extra set below.
+_SKU_TOKENS = frozenset(
+    {
+        "pro",
+        "professional",
+        "home",
+        "education",
+        "datacenter",
+        "essentials",
+        "iot",
+        "embedded",
+        "preview",
+        "insider",
+        "workstation",
+    }
+)
+_WINDOWS_SKU_TOKENS = _SKU_TOKENS | frozenset(
+    {
+        "enterprise",
+        "standard",
+        "core",
+        "ltsc",
+        "ltse",
+    }
+)
+
+# Numbers that are almost never OS release versions.
+_NON_VERSION_NUMBERS = frozenset({"16", "32", "64", "86", "128", "256"})
+
 # Strong vendor / product-family signals seen in _data/eol_lookup.csv.
 # Shared words like "ios" are intentionally NOT enough by themselves.
 _VENDOR_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -48,6 +105,7 @@ _VENDOR_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("freebsd", (r"\bfreebsd\b",)),
     ("f5", (r"\bf5\b", r"\bbig[\s\-]?ip\b")),
     ("citrix", (r"\bcitrix\b", r"\bxenserver\b")),
+    ("juniper", (r"\bjuniper\b", r"\bjunos\b")),
 )
 
 
@@ -115,8 +173,164 @@ def pair_match_percent(os_string: str, pair: dict[str, str]) -> int:
     )
 
 
+def _edition_tokens(value: object, *, windows: bool = False) -> set[str]:
+    lexicon = _WINDOWS_SKU_TOKENS if windows else _SKU_TOKENS
+    return set(_tokenize(value)) & lexicon
+
+
+def _collapse_version_parts(version: str) -> str:
+    parts: list[str] = []
+    for part in version.split("."):
+        if part.isdigit():
+            parts.append(str(int(part)))
+        else:
+            parts.append(part)
+    return ".".join(parts)
+
+
+def _extract_version_tokens(value: object) -> list[str]:
+    text = _clean(value)
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"\d+(?:\.\d+)*", text):
+        raw = match.group(0)
+        if raw in _NON_VERSION_NUMBERS:
+            continue
+        # Skip N.x wildcards ("3.x or later") — not a concrete release.
+        if re.search(rf"(?<!\d){re.escape(raw)}\.x\b", text, re.I):
+            continue
+        collapsed = _collapse_version_parts(raw)
+        if collapsed not in seen:
+            seen.add(collapsed)
+            tokens.append(collapsed)
+    return tokens
+
+
+def _versions_compatible(query: object, candidate: object) -> bool:
+    """When both sides expose versions, require a shared major/prefix family."""
+    query_versions = _extract_version_tokens(query)
+    candidate_versions = _extract_version_tokens(candidate)
+    if not query_versions or not candidate_versions:
+        return True
+
+    for candidate_version in candidate_versions:
+        candidate_parts = candidate_version.split(".")
+        for query_version in query_versions:
+            query_parts = query_version.split(".")
+            shorter = min(len(candidate_parts), len(query_parts))
+            if candidate_parts[:shorter] == query_parts[:shorter]:
+                return True
+            # Allow "Oracle Linux 9.5" -> "Oracle Linux 9".
+            if len(candidate_parts) == 1 and candidate_parts[0] == query_parts[0]:
+                return True
+    return False
+
+
+def _is_windows_blob(*values: object) -> bool:
+    blob = " ".join(_clean(value).lower() for value in values)
+    return bool(re.search(r"\bwindows\b|\bwin(?:dows)?(?:\s|$)", blob))
+
+
+def _editions_compatible(query: object, candidate: object) -> bool:
+    """Reject candidates that introduce SKU words absent from the OS string."""
+    windows = _is_windows_blob(query, candidate)
+    extra = _edition_tokens(candidate, windows=windows) - _edition_tokens(
+        query, windows=windows
+    )
+    return not extra
+
+
+def ai_pair_acceptable(os_string: str, pair: dict[str, str]) -> bool:
+    """Hard post-checks for AI picks (OpenAI especially tends to over-match)."""
+    detailed = _clean(pair.get("normalized_os_detailed_name"))
+    normalized = _clean(pair.get("normalized_os"))
+    if is_rubbish_os_value(detailed) or is_rubbish_os_value(normalized):
+        return False
+    # Rubbish OS strings must never be mapped to a real OS pair.
+    if is_rubbish_os_value(os_string):
+        return False
+
+    if not pair_compatible_with_os(os_string, pair):
+        return False
+
+    candidate_blob = " ".join(part for part in (detailed, normalized) if part)
+    if not candidate_blob:
+        return False
+
+    if not _editions_compatible(os_string, candidate_blob):
+        return False
+
+    # Prefer the more specific detailed name for version checks when present.
+    version_target = detailed or normalized
+    if not _versions_compatible(os_string, version_target):
+        return False
+
+    return True
+
+
 def _clean(value: object) -> str:
     return str(value or "").strip()
+
+
+def is_placeholder_os_value(value: object) -> bool:
+    """True for junk placeholders like ``<!-- default -->``, ``-``, ``Unknown``."""
+    cleaned = _clean(value)
+    if not cleaned:
+        return True
+    lowered = cleaned.casefold()
+    if lowered == AMBIGUOUS_OS:
+        return True
+    if lowered in _PLACEHOLDER_OS_VALUES:
+        return True
+    if lowered.startswith("unknown ") or lowered.endswith(" unknown"):
+        return True
+    if _PLACEHOLDER_OS_RE.search(cleaned):
+        return True
+    # Pure punctuation / symbol noise.
+    if re.fullmatch(r"[\W_]+", cleaned, re.UNICODE):
+        return True
+    return False
+
+
+def is_rubbish_os_value(value: object) -> bool:
+    """True for non-OS garbage (hex dumps, IDs) that must not map to a real OS.
+
+    Placeholders are included. Real product strings like ``Juniper Junos OS 15.1``
+    are not.
+    """
+    if is_placeholder_os_value(value):
+        return True
+
+    cleaned = _clean(value)
+    if len(cleaned) < 8:
+        return False
+
+    compact = re.sub(r"[\s\-_:]", "", cleaned)
+    # Long hex / GUID-like blobs (e.g. 4735303000b47080000000000000000000000000).
+    if len(compact) >= 16 and re.fullmatch(r"[0-9a-fA-F]+", compact):
+        return True
+    if re.fullmatch(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+        cleaned,
+        re.I,
+    ):
+        return True
+
+    letter_words = re.findall(r"[A-Za-z]{2,}", cleaned)
+    if not letter_words and re.search(r"\d", cleaned) and len(cleaned) >= 10:
+        return True
+
+    if len(compact) >= 24:
+        hex_chars = len(re.findall(r"[0-9a-fA-F]", compact))
+        if hex_chars / max(len(compact), 1) >= 0.9 and not re.search(
+            r"(?i)\b(?:linux|windows|ubuntu|debian|centos|redhat|rhel|oracle|"
+            r"android|macos|ios|junos|juniper|cisco|suse|fedora|alma|rocky|"
+            r"solaris|aix|freebsd|esxi|forti|pan-?os)\b",
+            cleaned,
+        ):
+            return True
+
+    return False
 
 
 def normalize_ai_provider(value: object) -> AiProvider:
@@ -309,7 +523,10 @@ def _is_valid_pair(pair: dict[str, str]) -> bool:
     normalized = _clean(pair.get("normalized_os"))
     if not detailed or not normalized:
         return False
-    return detailed.lower() != AMBIGUOUS_OS and normalized.lower() != AMBIGUOUS_OS
+    # Never offer placeholders or hex-dump rubbish as normalization targets.
+    if is_rubbish_os_value(detailed) or is_rubbish_os_value(normalized):
+        return False
+    return True
 
 
 def unique_allowed_pairs(pairs: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -348,6 +565,28 @@ def _parse_index(value: Any) -> int | None:
         return int(value)
     if isinstance(value, str) and re.fullmatch(r"-?\d+", value.strip()):
         return int(value.strip())
+    return None
+
+
+def _parse_confidence(value: Any) -> int | None:
+    """Accept 0-100 integers, or 0-1 floats as percentages."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+    elif isinstance(value, str):
+        cleaned = value.strip().rstrip("%")
+        try:
+            number = float(cleaned)
+        except ValueError:
+            return None
+    else:
+        return None
+
+    if 0.0 <= number <= 1.0:
+        return int(round(number * 100))
+    if 0.0 <= number <= 100.0:
+        return int(round(number))
     return None
 
 
@@ -450,17 +689,30 @@ def suggest_normalization_batch(
     # Group by vendor so Oracle batches never see AlmaLinux pairs in the same prompt.
     groups: dict[tuple[str, ...], list[int]] = {}
     for index, value in enumerate(cleaned_strings):
-        if not value:
+        if not value or is_rubbish_os_value(value):
+            # Rubbish / placeholder OS strings are left unmatched on purpose.
             continue
         key = tuple(sorted(_vendor_tags(value)))
         groups.setdefault(key, []).append(index)
 
     system_prompt = (
-        "Match each operating system string to one existing normalization pair only when "
-        f"you are at least {threshold}% confident it is the same product family and edition. "
+        "Match each operating system string to one existing normalization pair ONLY when "
+        f"you are at least {threshold}% confident it is the same product family, major version, "
+        "and edition/SKU. Be conservative: prefer pair_index null over a risky guess. "
         "You must only choose pair_index values from the allowed_pairs list. "
         "Never invent normalized values. "
         "Vendor / product family is mandatory. Shared tokens are not enough. "
+        "Version family must agree (major or dotted prefix). "
+        "'Windows Server 2019' must NOT match 'Windows Server 2022'. "
+        "'Ubuntu 20.04' must NOT match 'Ubuntu 22.04'. "
+        "Edition, SKU, and qualifier words matter. "
+        "If the candidate adds qualifiers missing from the OS string, reject it "
+        "(example: 'Windows 11 Pro' must NOT match 'Windows 11 Pro Enterprise'). "
+        "Vague strings such as 'Other … Linux', 'or later', or unspecified families "
+        "must return null unless an exact same-vendor pair clearly fits. "
+        "Never choose placeholder or junk pairs such as '<!-- default -->', '-', "
+        "'Unknown', 'n/a', HTML comments, or hex/id dumps. Those are not real operating systems. "
+        "Never map a garbage/hex/id string to a real OS pair — return null instead. "
         "Examples of INVALID matches: "
         "'Cisco IOS 12.2(55)SE9' must NOT match 'Apple iOS 12'; "
         "'Cisco IOS-XE 17.09.05a' must NOT match 'Apple iOS 17'; "
@@ -473,12 +725,17 @@ def suggest_normalization_batch(
         "'Oracle Linux Server 9.5' -> 'Oracle Linux 9'. "
         "Treat dotted versions that differ only by trailing .0 as the same "
         "(for example 3.2 and 3.2.0; also 17.03 ~= 17.3 when the pair uses the short form). "
-        "Edition, SKU, and qualifier words matter. "
-        "For example, 'Windows 11 Pro' must NOT match 'Windows 11 Pro Enterprise'. "
-        "If the OS string is missing qualifiers present in a candidate, reject that candidate. "
         "If no pair is a very sure same-vendor match, return pair_index as null for that item. "
-        'Respond with JSON: {"matches":[{"item_index":0,"pair_index":1}]}'
+        "For every accepted match include confidence as an integer 0-100. "
+        "Do not return a pair_index when confidence is below "
+        f"{threshold}. "
+        'Respond with JSON: {"matches":[{"item_index":0,"pair_index":1,"confidence":98}]}'
     )
+    if selected == "openai":
+        system_prompt += (
+            " Extra strictness for this request: when two candidates are merely similar, "
+            "return null. Do not fill gaps with the closest-looking pair."
+        )
 
     for indexes in groups.values():
         group_strings = [cleaned_strings[index] for index in indexes]
@@ -536,9 +793,13 @@ def suggest_normalization_batch(
             if selected_pair is None:
                 continue
 
+            confidence = _parse_confidence(match.get("confidence"))
+            if confidence is None or confidence < threshold:
+                continue
+
             global_index = indexes[local_index]
             os_string = cleaned_strings[global_index]
-            if not pair_compatible_with_os(os_string, selected_pair):
+            if not ai_pair_acceptable(os_string, selected_pair):
                 continue
 
             results[global_index] = selected_pair
