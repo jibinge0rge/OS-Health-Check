@@ -215,7 +215,7 @@ flowchart TD
 
 ### Per-row decision order
 
-1. **endoflife.date API** — always tried first (same query preference as below). Release matching is **conservative**: no version (or only bitness / `SP3`-style pack digits used alone as a version) → **no match** (never guess the latest release); bare major like `11` does not pick `11.4`; only a strong version hit populates dates/names. (SUSE Vendor Lookup still understands `11 SP3` as a full release identity.)
+1. **endoflife.date API** — always tried first (same query preference as below). Release matching is **conservative**: no version (or only bitness / `SP3`-style pack digits used alone as a version) → **no match** (never guess the latest release); bare major like `11` does not pick `11.4`; only a strong version hit populates dates/names. Train matching compares **numeric** dotted segments (`17.09.08` → API release `17.9`; `11.4` → `11`). (SUSE Vendor Lookup still understands `11 SP3` as a full release identity.)
 2. **If the API returned dates/status** → write them (evidence `api` / `eol`). **Stop.** Vendor DBs are **not** consulted.
 3. **If the API missed (or failed)** → call **Vendor Lookups** (`POST /api/vendor-lookup`):
    - **`junos` / `juniper` token** → `_data/junos_os.db` first (evidence `junos`); on miss → eosl.date
@@ -225,6 +225,8 @@ flowchart TD
 5. **Still nothing** → leave blank (evidence `none`).
 
 **Query preference** (for API and vendor lookup): try `normalized_os` → `normalized_os_detailed_name` → `os_string`, but **skip** a normalized value if its vendor doesn’t match the raw OS.
+
+**Product slug detection** (endoflife.date): the v1 product catalog (`GET /api/v1/products`) is cached and indexed by slug, label, and aliases. Inventory strings are normalized first (letter/digit boundaries, glued names like `UbuntuLinux`), then matched longest-phrase-first against that index, with a small regex override table for ambiguous families (e.g. `windows-server` vs `windows`, RHEL vs OpenShift).
 
 **Important:** scraping / **Update** under Vendor Lookups only rebuilds the local SQLite DBs. It does **not** apply dates to your CSV. Dates are applied only by **Refresh EOL/EOAS** (or equivalent lookup APIs).
 

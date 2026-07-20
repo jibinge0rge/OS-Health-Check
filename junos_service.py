@@ -18,6 +18,7 @@ from eol_service import (
     resolve_lifecycle_status,
 )
 from normalization_service import vendors_compatible
+from version_match import score_release_against_hint
 
 
 SOURCE_URL = "https://support.juniper.net/support/eol/software/junos/"
@@ -440,16 +441,7 @@ def _version_match_score(release_version: str, hint: str) -> int:
     # X-train hint against a non-X release with the same base — too ambiguous.
     if hint_has_x and not rel_has_x:
         return 0
-    rel_parts = rel_base.split(".")
-    hint_parts = hint_base.split(".")
-    shorter = min(len(rel_parts), len(hint_parts))
-    if rel_parts[:shorter] == hint_parts[:shorter]:
-        if len(hint_parts) == 1 and len(rel_parts) > 1:
-            return 0
-        return 90
-    if len(hint_parts) > 1 and rel_parts[0] == hint_parts[0]:
-        return 55
-    return 0
+    return score_release_against_hint(rel_base, hint_base)
 
 
 def _release_score(release_name: str, hint: str) -> int:

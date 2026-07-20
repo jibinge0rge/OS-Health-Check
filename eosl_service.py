@@ -20,6 +20,7 @@ from eol_service import (
     resolve_lifecycle_status,
 )
 from normalization_service import vendors_compatible
+from version_match import score_release_against_hint
 
 
 BASE_URL = "https://eosl.date"
@@ -411,24 +412,7 @@ def _eosl_version_hints(os_name: str) -> list[str]:
 
 
 def _version_match_score(release_version: str, hint: str) -> int:
-    if not release_version or not hint:
-        return 0
-    if release_version == hint:
-        return 100
-    rel_parts = release_version.split(".")
-    hint_parts = hint.split(".")
-    shorter = min(len(rel_parts), len(hint_parts))
-    if rel_parts[:shorter] == hint_parts[:shorter]:
-        # Dot-aware prefix match (e.g. release "22.04" vs hint "22.04.3").
-        # Require the hint to carry at least as many segments as it claims —
-        # a bare major like "3" must not prefix-match "3.18".
-        if len(hint_parts) == 1 and len(rel_parts) > 1:
-            return 0
-        return 90
-    if len(hint_parts) > 1 and rel_parts[0] == hint_parts[0]:
-        # Shared major only when both sides are multi-part (e.g. 8.6 vs 8.4).
-        return 55
-    return 0
+    return score_release_against_hint(release_version, hint)
 
 
 def _release_score(release_name: str, hint: str) -> int:

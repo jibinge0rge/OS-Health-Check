@@ -1,13 +1,4 @@
 os_string,normalized_os_detailed_name,normalized_os,eol_date,eol_status,eoas_date,eoas_status
-Rocky Linux 8.1,Rocky Linux 8,Rocky Linux 8,1874880000,,1717113600,
-Rocky Linux 9.4,Rocky Linux 9,Rocky Linux 9,1969574400,,1811721600,
-Rocky Linux 9.6,Rocky Linux 9,Rocky Linux 9,1969574400,,1811721600,
-Rocky Linux release 10.1 (Red Quartz),Rocky Linux 10,Rocky Linux 10,2064182400,,1906416000,
-Rocky Linux release 10.2 (Red Quartz),Rocky Linux 10,Rocky Linux 10,2064182400,,1906416000,
-Rocky Linux release 9.7 (Blue Onyx),Rocky Linux 9,Rocky Linux 9,1969574400,,1811721600,
-Rocky Linux release 9.8 (Blue Onyx),Rocky Linux 9,Rocky Linux 9,1969574400,,1811721600,
-Rocky Linux9.6,Rocky Linux 9,Rocky Linux 9,1969574400,,1811721600,
-Rocky Linux9.7,Rocky Linux 9,Rocky Linux 9,1969574400,,1811721600,
 -,-,-,,,,
 <!-- default -->,<!-- default -->,<!-- default -->,,,,
 4735303000b47080000000000000000000000000,4735303000b47080000000000000000000000000,4735303000b47080000000000000000000000000,,,,
