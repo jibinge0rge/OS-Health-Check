@@ -1,11 +1,4 @@
 os_string,normalized_os_detailed_name,normalized_os,eol_date,eol_status,eoas_date,eoas_status
-Palo Alto Networks PAN-OS 10.2.13-h7,Palo Alto Networks PAN-OS 10.2,Palo Alto Networks PAN-OS 10.2,1756252800,,,
-Palo Alto Networks PAN-OS 11.1.4-h7,Palo Alto Networks PAN-OS 11.1,Palo Alto Networks PAN-OS 11.1,1809302400,,,
-Palo Alto Networks PAN-OS 11.1.6-h14,Palo Alto Networks PAN-OS 11.1,Palo Alto Networks PAN-OS 11.1,1809302400,,,
-Palo Alto Networks PAN-OS 11.2.10-h2,Palo Alto Networks PAN-OS 11.2,Palo Alto Networks PAN-OS 11.2,1809216000,,,
-Palo Alto Networks PAN-OS 11.2.10-h3,Palo Alto Networks PAN-OS 11.2,Palo Alto Networks PAN-OS 11.2,1809216000,,,
-Palo Alto Networks PAN-OS 11.1.13,Palo Alto Networks PAN-OS 11.1,Palo Alto Networks PAN-OS 11.1,1809302400,,,
-Palo Alto Networks PAN-OS 11.1.13-h3,Palo Alto Networks PAN-OS 11.1,Palo Alto Networks PAN-OS 11.1,1809302400,,,
 -,-,-,,,,
 <!-- default -->,<!-- default -->,<!-- default -->,,,,
 4735303000b47080000000000000000000000000,4735303000b47080000000000000000000000000,4735303000b47080000000000000000000000000,,,,

@@ -11,6 +11,7 @@ from typing import Any
 import requests
 
 from normalization_service import vendors_compatible
+from version_match import score_release_against_hint
 
 BASE_URL = "https://endoflife.date/api"
 PRODUCT_V1_URL = f"{BASE_URL}/v1/products"
@@ -311,34 +312,9 @@ def extract_version_hints(os_name: str) -> list[str]:
     return hints
 
 
-def _version_parts(value: str) -> list[str]:
-    return [part for part in str(value or "").split(".") if part != ""]
-
-
 def _release_score(release_name: str, hint: str) -> int:
     """Score a release name against a version hint (dot-aware, no weak majors)."""
-    if not release_name or not hint:
-        return 0
-    if release_name == hint:
-        return 100
-
-    rel_parts = _version_parts(release_name)
-    hint_parts = _version_parts(hint)
-    if not rel_parts or not hint_parts:
-        return 0
-
-    shorter = min(len(rel_parts), len(hint_parts))
-    if rel_parts[:shorter] == hint_parts[:shorter]:
-        # Bare major like "11" must not prefix-match "11.4".
-        if len(hint_parts) == 1 and len(rel_parts) > 1:
-            return 0
-        # Hint "11.4.1" against release "11.4" (hint longer) — still a solid family hit.
-        return 90
-
-    # Shared major only when both sides are multi-part (e.g. 8.6 vs 8.4) — too weak alone.
-    if len(hint_parts) > 1 and len(rel_parts) > 1 and rel_parts[0] == hint_parts[0]:
-        return 55
-    return 0
+    return score_release_against_hint(release_name, hint)
 
 
 def pick_release(releases: list[dict[str, Any]], hints: list[str]) -> dict[str, Any]:

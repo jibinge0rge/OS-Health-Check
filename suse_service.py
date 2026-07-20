@@ -18,6 +18,7 @@ from eol_service import (
     resolve_lifecycle_status,
 )
 from normalization_service import vendors_compatible
+from version_match import score_release_against_hint
 
 
 SOURCE_URL = "https://www.suse.com/lifecycle/"
@@ -155,7 +156,7 @@ def _normalize_sp_release(major: str, sp: str | None = None) -> str:
     if sp:
         sp_num = re.sub(r"\D", "", _clean(sp))
         if sp_num:
-            return f"{major} SP{sp_num}"
+            return f"{major} SP{int(sp_num)}"
     return major
 
 
@@ -526,18 +527,9 @@ def _release_score(release_name: str, hint: str) -> int:
         if hint_sp.group(1) == rel:
             return 0
 
-    # Multi-segment dotted prefix only (no bare major → x.y).
-    rel_parts = rel.split(".")
-    hint_parts = hint_key.split(".")
-    if len(hint_parts) > 1 and len(rel_parts) >= 1:
-        shorter = min(len(rel_parts), len(hint_parts))
-        if rel_parts[:shorter] == hint_parts[:shorter]:
-            if len(hint_parts) == 1 and len(rel_parts) > 1:
-                return 0
-            if "sp" in rel or "sp" in hint_key:
-                return 0
-            return 90
-    return 0
+    if "sp" in rel or "sp" in hint_key:
+        return 0
+    return score_release_against_hint(rel, hint_key)
 
 
 def _pick_release(releases: list[sqlite3.Row], hints: list[str]) -> sqlite3.Row | None:
