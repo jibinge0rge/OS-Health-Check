@@ -1,410 +1,95 @@
 {
   "by_os": {
-    "Rocky Linux 8.1": {
+    "Red Hat Enterprise Linux release 9.7 (Plow)": {
       "detailed": {
         "method": "eol",
-        "queryUsed": "Rocky Linux 8.1",
+        "queryUsed": "Red Hat Enterprise Linux release 9.7 (Plow)",
         "queryField": "os_string",
-        "productSlug": "rocky-linux",
-        "releaseName": "8",
-        "releaseLabel": "8",
+        "productSlug": "rhel",
+        "releaseName": "9",
+        "releaseLabel": "9 (Upcoming ELS)",
         "matchedFrom": {
           "os_string": "",
-          "normalized_os_detailed_name": "Rocky Linux 8",
-          "normalized_os": "Rocky Linux 8"
+          "normalized_os_detailed_name": "Red Hat Enterprise Linux 9 (Upcoming ELS)",
+          "normalized_os": "Red Hat Enterprise Linux 9"
         }
       },
       "normalized": {
         "method": "eol",
-        "queryUsed": "Rocky Linux 8.1",
+        "queryUsed": "Red Hat Enterprise Linux release 9.7 (Plow)",
         "queryField": "os_string",
-        "productSlug": "rocky-linux",
-        "releaseName": "8",
-        "releaseLabel": "8",
+        "productSlug": "rhel",
+        "releaseName": "9",
+        "releaseLabel": "9 (Upcoming ELS)",
         "matchedFrom": {
           "os_string": "",
-          "normalized_os_detailed_name": "Rocky Linux 8",
-          "normalized_os": "Rocky Linux 8"
+          "normalized_os_detailed_name": "Red Hat Enterprise Linux 9 (Upcoming ELS)",
+          "normalized_os": "Red Hat Enterprise Linux 9"
         }
       },
       "eol": {
         "method": "api",
-        "queryUsed": "Rocky Linux 8.1",
+        "queryUsed": "Red Hat Enterprise Linux release 9.7 (Plow)",
         "queryField": "os_string",
-        "productSlug": "rocky-linux",
-        "releaseName": "8",
-        "releaseLabel": "8",
-        "apiNote": "",
-        "got": {
-          "eol_date": "1874880000",
-          "eol_status": "",
-          "eoas_date": "1717113600",
-          "eoas_status": "",
-          "normalized_os_detailed_name": "Rocky Linux 8",
-          "normalized_os": "Rocky Linux 8"
-        }
-      }
-    },
-    "Rocky Linux 9.4": {
-      "detailed": {
-        "method": "eol",
-        "queryUsed": "Rocky Linux 9.4",
-        "queryField": "os_string",
-        "productSlug": "rocky-linux",
+        "productSlug": "rhel",
         "releaseName": "9",
-        "releaseLabel": "9",
-        "matchedFrom": {
-          "os_string": "",
-          "normalized_os_detailed_name": "Rocky Linux 9",
-          "normalized_os": "Rocky Linux 9"
-        }
-      },
-      "normalized": {
-        "method": "eol",
-        "queryUsed": "Rocky Linux 9.4",
-        "queryField": "os_string",
-        "productSlug": "rocky-linux",
-        "releaseName": "9",
-        "releaseLabel": "9",
-        "matchedFrom": {
-          "os_string": "",
-          "normalized_os_detailed_name": "Rocky Linux 9",
-          "normalized_os": "Rocky Linux 9"
-        }
-      },
-      "eol": {
-        "method": "api",
-        "queryUsed": "Rocky Linux 9.4",
-        "queryField": "os_string",
-        "productSlug": "rocky-linux",
-        "releaseName": "9",
-        "releaseLabel": "9",
+        "releaseLabel": "9 (Upcoming ELS)",
         "apiNote": "",
         "got": {
           "eol_date": "1969574400",
           "eol_status": "",
           "eoas_date": "1811721600",
           "eoas_status": "",
-          "normalized_os_detailed_name": "Rocky Linux 9",
-          "normalized_os": "Rocky Linux 9"
+          "normalized_os_detailed_name": "Red Hat Enterprise Linux 9 (Upcoming ELS)",
+          "normalized_os": "Red Hat Enterprise Linux 9"
         }
       }
     },
-    "Rocky Linux 9.6": {
+    "Red Hat Enterprise Linux release 9.8 (Plow)": {
       "detailed": {
         "method": "eol",
-        "queryUsed": "Rocky Linux 9.6",
+        "queryUsed": "Red Hat Enterprise Linux release 9.8 (Plow)",
         "queryField": "os_string",
-        "productSlug": "rocky-linux",
+        "productSlug": "rhel",
         "releaseName": "9",
-        "releaseLabel": "9",
+        "releaseLabel": "9 (Upcoming ELS)",
         "matchedFrom": {
           "os_string": "",
-          "normalized_os_detailed_name": "Rocky Linux 9",
-          "normalized_os": "Rocky Linux 9"
+          "normalized_os_detailed_name": "Red Hat Enterprise Linux 9 (Upcoming ELS)",
+          "normalized_os": "Red Hat Enterprise Linux 9"
         }
       },
       "normalized": {
         "method": "eol",
-        "queryUsed": "Rocky Linux 9.6",
+        "queryUsed": "Red Hat Enterprise Linux release 9.8 (Plow)",
         "queryField": "os_string",
-        "productSlug": "rocky-linux",
+        "productSlug": "rhel",
         "releaseName": "9",
-        "releaseLabel": "9",
+        "releaseLabel": "9 (Upcoming ELS)",
         "matchedFrom": {
           "os_string": "",
-          "normalized_os_detailed_name": "Rocky Linux 9",
-          "normalized_os": "Rocky Linux 9"
+          "normalized_os_detailed_name": "Red Hat Enterprise Linux 9 (Upcoming ELS)",
+          "normalized_os": "Red Hat Enterprise Linux 9"
         }
       },
       "eol": {
         "method": "api",
-        "queryUsed": "Rocky Linux 9.6",
+        "queryUsed": "Red Hat Enterprise Linux release 9.8 (Plow)",
         "queryField": "os_string",
-        "productSlug": "rocky-linux",
+        "productSlug": "rhel",
         "releaseName": "9",
-        "releaseLabel": "9",
+        "releaseLabel": "9 (Upcoming ELS)",
         "apiNote": "",
         "got": {
           "eol_date": "1969574400",
           "eol_status": "",
           "eoas_date": "1811721600",
           "eoas_status": "",
-          "normalized_os_detailed_name": "Rocky Linux 9",
-          "normalized_os": "Rocky Linux 9"
-        }
-      }
-    },
-    "Rocky Linux release 10.1 (Red Quartz)": {
-      "detailed": {
-        "method": "eol",
-        "queryUsed": "Rocky Linux release 10.1 (Red Quartz)",
-        "queryField": "os_string",
-        "productSlug": "rocky-linux",
-        "releaseName": "10",
-        "releaseLabel": "10",
-        "matchedFrom": {
-          "os_string": "",
-          "normalized_os_detailed_name": "Rocky Linux 10",
-          "normalized_os": "Rocky Linux 10"
-        }
-      },
-      "normalized": {
-        "method": "eol",
-        "queryUsed": "Rocky Linux release 10.1 (Red Quartz)",
-        "queryField": "os_string",
-        "productSlug": "rocky-linux",
-        "releaseName": "10",
-        "releaseLabel": "10",
-        "matchedFrom": {
-          "os_string": "",
-          "normalized_os_detailed_name": "Rocky Linux 10",
-          "normalized_os": "Rocky Linux 10"
-        }
-      },
-      "eol": {
-        "method": "api",
-        "queryUsed": "Rocky Linux release 10.1 (Red Quartz)",
-        "queryField": "os_string",
-        "productSlug": "rocky-linux",
-        "releaseName": "10",
-        "releaseLabel": "10",
-        "apiNote": "",
-        "got": {
-          "eol_date": "2064182400",
-          "eol_status": "",
-          "eoas_date": "1906416000",
-          "eoas_status": "",
-          "normalized_os_detailed_name": "Rocky Linux 10",
-          "normalized_os": "Rocky Linux 10"
-        }
-      }
-    },
-    "Rocky Linux release 10.2 (Red Quartz)": {
-      "detailed": {
-        "method": "eol",
-        "queryUsed": "Rocky Linux release 10.2 (Red Quartz)",
-        "queryField": "os_string",
-        "productSlug": "rocky-linux",
-        "releaseName": "10",
-        "releaseLabel": "10",
-        "matchedFrom": {
-          "os_string": "",
-          "normalized_os_detailed_name": "Rocky Linux 10",
-          "normalized_os": "Rocky Linux 10"
-        }
-      },
-      "normalized": {
-        "method": "eol",
-        "queryUsed": "Rocky Linux release 10.2 (Red Quartz)",
-        "queryField": "os_string",
-        "productSlug": "rocky-linux",
-        "releaseName": "10",
-        "releaseLabel": "10",
-        "matchedFrom": {
-          "os_string": "",
-          "normalized_os_detailed_name": "Rocky Linux 10",
-          "normalized_os": "Rocky Linux 10"
-        }
-      },
-      "eol": {
-        "method": "api",
-        "queryUsed": "Rocky Linux release 10.2 (Red Quartz)",
-        "queryField": "os_string",
-        "productSlug": "rocky-linux",
-        "releaseName": "10",
-        "releaseLabel": "10",
-        "apiNote": "",
-        "got": {
-          "eol_date": "2064182400",
-          "eol_status": "",
-          "eoas_date": "1906416000",
-          "eoas_status": "",
-          "normalized_os_detailed_name": "Rocky Linux 10",
-          "normalized_os": "Rocky Linux 10"
-        }
-      }
-    },
-    "Rocky Linux release 9.7 (Blue Onyx)": {
-      "detailed": {
-        "method": "eol",
-        "queryUsed": "Rocky Linux release 9.7 (Blue Onyx)",
-        "queryField": "os_string",
-        "productSlug": "rocky-linux",
-        "releaseName": "9",
-        "releaseLabel": "9",
-        "matchedFrom": {
-          "os_string": "",
-          "normalized_os_detailed_name": "Rocky Linux 9",
-          "normalized_os": "Rocky Linux 9"
-        }
-      },
-      "normalized": {
-        "method": "eol",
-        "queryUsed": "Rocky Linux release 9.7 (Blue Onyx)",
-        "queryField": "os_string",
-        "productSlug": "rocky-linux",
-        "releaseName": "9",
-        "releaseLabel": "9",
-        "matchedFrom": {
-          "os_string": "",
-          "normalized_os_detailed_name": "Rocky Linux 9",
-          "normalized_os": "Rocky Linux 9"
-        }
-      },
-      "eol": {
-        "method": "api",
-        "queryUsed": "Rocky Linux release 9.7 (Blue Onyx)",
-        "queryField": "os_string",
-        "productSlug": "rocky-linux",
-        "releaseName": "9",
-        "releaseLabel": "9",
-        "apiNote": "",
-        "got": {
-          "eol_date": "1969574400",
-          "eol_status": "",
-          "eoas_date": "1811721600",
-          "eoas_status": "",
-          "normalized_os_detailed_name": "Rocky Linux 9",
-          "normalized_os": "Rocky Linux 9"
-        }
-      }
-    },
-    "Rocky Linux release 9.8 (Blue Onyx)": {
-      "detailed": {
-        "method": "eol",
-        "queryUsed": "Rocky Linux release 9.8 (Blue Onyx)",
-        "queryField": "os_string",
-        "productSlug": "rocky-linux",
-        "releaseName": "9",
-        "releaseLabel": "9",
-        "matchedFrom": {
-          "os_string": "",
-          "normalized_os_detailed_name": "Rocky Linux 9",
-          "normalized_os": "Rocky Linux 9"
-        }
-      },
-      "normalized": {
-        "method": "eol",
-        "queryUsed": "Rocky Linux release 9.8 (Blue Onyx)",
-        "queryField": "os_string",
-        "productSlug": "rocky-linux",
-        "releaseName": "9",
-        "releaseLabel": "9",
-        "matchedFrom": {
-          "os_string": "",
-          "normalized_os_detailed_name": "Rocky Linux 9",
-          "normalized_os": "Rocky Linux 9"
-        }
-      },
-      "eol": {
-        "method": "api",
-        "queryUsed": "Rocky Linux release 9.8 (Blue Onyx)",
-        "queryField": "os_string",
-        "productSlug": "rocky-linux",
-        "releaseName": "9",
-        "releaseLabel": "9",
-        "apiNote": "",
-        "got": {
-          "eol_date": "1969574400",
-          "eol_status": "",
-          "eoas_date": "1811721600",
-          "eoas_status": "",
-          "normalized_os_detailed_name": "Rocky Linux 9",
-          "normalized_os": "Rocky Linux 9"
-        }
-      }
-    },
-    "Rocky Linux9.6": {
-      "detailed": {
-        "method": "eol",
-        "queryUsed": "Rocky Linux9.6",
-        "queryField": "os_string",
-        "productSlug": "rocky-linux",
-        "releaseName": "9",
-        "releaseLabel": "9",
-        "matchedFrom": {
-          "os_string": "",
-          "normalized_os_detailed_name": "Rocky Linux 9",
-          "normalized_os": "Rocky Linux 9"
-        }
-      },
-      "normalized": {
-        "method": "eol",
-        "queryUsed": "Rocky Linux9.6",
-        "queryField": "os_string",
-        "productSlug": "rocky-linux",
-        "releaseName": "9",
-        "releaseLabel": "9",
-        "matchedFrom": {
-          "os_string": "",
-          "normalized_os_detailed_name": "Rocky Linux 9",
-          "normalized_os": "Rocky Linux 9"
-        }
-      },
-      "eol": {
-        "method": "api",
-        "queryUsed": "Rocky Linux9.6",
-        "queryField": "os_string",
-        "productSlug": "rocky-linux",
-        "releaseName": "9",
-        "releaseLabel": "9",
-        "apiNote": "",
-        "got": {
-          "eol_date": "1969574400",
-          "eol_status": "",
-          "eoas_date": "1811721600",
-          "eoas_status": "",
-          "normalized_os_detailed_name": "Rocky Linux 9",
-          "normalized_os": "Rocky Linux 9"
-        }
-      }
-    },
-    "Rocky Linux9.7": {
-      "detailed": {
-        "method": "eol",
-        "queryUsed": "Rocky Linux9.7",
-        "queryField": "os_string",
-        "productSlug": "rocky-linux",
-        "releaseName": "9",
-        "releaseLabel": "9",
-        "matchedFrom": {
-          "os_string": "",
-          "normalized_os_detailed_name": "Rocky Linux 9",
-          "normalized_os": "Rocky Linux 9"
-        }
-      },
-      "normalized": {
-        "method": "eol",
-        "queryUsed": "Rocky Linux9.7",
-        "queryField": "os_string",
-        "productSlug": "rocky-linux",
-        "releaseName": "9",
-        "releaseLabel": "9",
-        "matchedFrom": {
-          "os_string": "",
-          "normalized_os_detailed_name": "Rocky Linux 9",
-          "normalized_os": "Rocky Linux 9"
-        }
-      },
-      "eol": {
-        "method": "api",
-        "queryUsed": "Rocky Linux9.7",
-        "queryField": "os_string",
-        "productSlug": "rocky-linux",
-        "releaseName": "9",
-        "releaseLabel": "9",
-        "apiNote": "",
-        "got": {
-          "eol_date": "1969574400",
-          "eol_status": "",
-          "eoas_date": "1811721600",
-          "eoas_status": "",
-          "normalized_os_detailed_name": "Rocky Linux 9",
-          "normalized_os": "Rocky Linux 9"
+          "normalized_os_detailed_name": "Red Hat Enterprise Linux 9 (Upcoming ELS)",
+          "normalized_os": "Red Hat Enterprise Linux 9"
         }
       }
     }
   },
-  "updated_at": "2026-07-20T12:11:59"
+  "updated_at": "2026-07-20T12:58:37"
 }

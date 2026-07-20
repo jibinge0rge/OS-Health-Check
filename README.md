@@ -226,6 +226,8 @@ flowchart TD
 
 **Query preference** (for API and vendor lookup): try `normalized_os` → `normalized_os_detailed_name` → `os_string`, but **skip** a normalized value if its vendor doesn’t match the raw OS.
 
+**Product slug detection** (endoflife.date): the v1 product catalog (`GET /api/v1/products`) is cached and indexed by slug, label, and aliases. Inventory strings are normalized first (letter/digit boundaries, glued names like `UbuntuLinux`), then matched longest-phrase-first against that index, with a small regex override table for ambiguous families (e.g. `windows-server` vs `windows`, RHEL vs OpenShift).
+
 **Important:** scraping / **Update** under Vendor Lookups only rebuilds the local SQLite DBs. It does **not** apply dates to your CSV. Dates are applied only by **Refresh EOL/EOAS** (or equivalent lookup APIs).
 
 ```mermaid
