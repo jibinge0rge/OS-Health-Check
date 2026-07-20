@@ -1,4 +1,8 @@
-"""Registry for local vendor lifecycle lookup sources (eosl.date, Junos, SUSE, …)."""
+"""Registry for local vendor lifecycle lookup sources (eosl.date, Junos, SUSE, …).
+
+Router-Switch is registered for the Vendor Lookups viewer/sync only — it is not
+part of ``lookup_vendor_batch`` / Refresh EOL/EOAS routing.
+"""
 
 from __future__ import annotations
 
@@ -26,6 +30,14 @@ from suse_service import (
     lookup_os_suse_batch,
     query_matches_suse,
     sync_suse_database,
+)
+from router_switch_service import (
+    get_status as router_switch_get_status,
+    list_all_rows as router_switch_list_all_rows,
+    list_manufacturers as router_switch_list_manufacturers,
+    manufacturers_from_slugs as router_switch_manufacturers_from_slugs,
+    save_selected_manufacturers as router_switch_save_selected_manufacturers,
+    sync_router_switch_database,
 )
 
 
@@ -86,19 +98,45 @@ VENDOR_SOURCES: dict[str, VendorSource] = {
         },
         "supported_as_type": False,
     },
+    # Viewer-only: scraped for browsing; not used by Refresh EOL/EOAS routing.
+    "router-switch": {
+        "id": "router-switch",
+        "label": "Router-Switch EOL",
+        "description": (
+            "Hardware EOL/EOSL from router-switch.com (viewer only; "
+            "not applied to inventory dates)"
+        ),
+        "get_status": router_switch_get_status,
+        "list_rows": router_switch_list_all_rows,
+        "sync": sync_router_switch_database,
+        "manufacturers": router_switch_list_manufacturers(),
+        "viewer_headers": {
+            "product": "Product Name",
+            "release": "Part Number",
+            "released": "End of Sale (EOS)",
+            "eol_date": "EOL Announcement",
+            "eoas_date": "End of Service Life (EOSL)",
+            "supported": "Supported",
+        },
+        "supported_as_type": False,
+    },
 }
 
 
 def list_sources() -> list[dict[str, object]]:
-    return [
-        {
+    sources: list[dict[str, object]] = []
+    for source in VENDOR_SOURCES.values():
+        entry: dict[str, object] = {
             "id": source["id"],
             "label": source["label"],
             "description": source["description"],
             "viewer_headers": source["viewer_headers"],
         }
-        for source in VENDOR_SOURCES.values()
-    ]
+        manufacturers = source.get("manufacturers")
+        if manufacturers:
+            entry["manufacturers"] = manufacturers
+        sources.append(entry)
+    return sources
 
 
 def get_source(source_id: str) -> VendorSource:
@@ -114,7 +152,29 @@ def get_status(source_id: str) -> dict[str, object]:
     status.setdefault("source_id", source["id"])
     status.setdefault("source_label", source["label"])
     status["viewer_headers"] = source["viewer_headers"]
+    manufacturers = source.get("manufacturers")
+    if manufacturers and "manufacturers" not in status:
+        status["manufacturers"] = manufacturers
     return status
+
+
+def save_source_preferences(
+    source_id: str,
+    options: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Persist source-specific UI preferences (Router-Switch manufacturers)."""
+    options = options or {}
+    if source_id != "router-switch":
+        raise KeyError(source_id)
+    slugs = options.get("manufacturers")
+    if not isinstance(slugs, list) or not slugs:
+        raise ValueError("Select at least one manufacturer.")
+    saved = router_switch_save_selected_manufacturers([str(s) for s in slugs])
+    return {
+        "source_id": source_id,
+        "manufacturers": saved,
+        "selected_manufacturers": saved,
+    }
 
 
 def list_rows(source_id: str) -> list[dict[str, object]]:
@@ -124,10 +184,21 @@ def list_rows(source_id: str) -> list[dict[str, object]]:
 def sync_source(
     source_id: str,
     progress_callback: Callable[[str, int, int], None] | None = None,
+    options: dict[str, object] | None = None,
 ) -> dict[str, object]:
     sync_fn = get_source(source_id)["sync"]
+    options = options or {}
+    kwargs: dict[str, object] = {}
     if progress_callback is not None:
-        return sync_fn(progress_callback=progress_callback)
+        kwargs["progress_callback"] = progress_callback
+    if source_id == "router-switch":
+        slugs = options.get("manufacturers")
+        if slugs is not None:
+            kwargs["manufacturers"] = router_switch_manufacturers_from_slugs(
+                [str(s) for s in slugs]  # type: ignore[arg-type]
+            )
+    if kwargs:
+        return sync_fn(**kwargs)
     return sync_fn()
 
 

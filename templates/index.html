@@ -606,6 +606,7 @@
               <option value="eosl">eosl.date</option>
               <option value="junos">Juniper Junos</option>
               <option value="suse">SUSE Lifecycle</option>
+              <option value="router-switch">Router-Switch EOL</option>
             </select>
           </label>
           <label class="search-field eosl-search">
@@ -625,6 +626,21 @@
               Update
             </button>
           </div>
+        </div>
+
+        <div id="eosl-rs-manufacturers" class="eosl-rs-manufacturers" hidden>
+          <div class="eosl-rs-manufacturers-head">
+            <span class="eosl-rs-label">Manufacturers to pull</span>
+            <div class="eosl-rs-manufacturers-actions">
+              <button id="eosl-rs-select-all" class="ghost-button compact-button" type="button">
+                All
+              </button>
+              <button id="eosl-rs-select-none" class="ghost-button compact-button" type="button">
+                None
+              </button>
+            </div>
+          </div>
+          <div id="eosl-rs-checks" class="eosl-rs-checks" role="group" aria-label="Router-Switch manufacturers"></div>
         </div>
 
         <div class="eosl-table-shell">
@@ -897,7 +913,12 @@
       const eoslProgressBar = document.getElementById("eosl-progress-bar");
       const eoslProgressEyebrow = document.getElementById("eosl-progress-eyebrow");
       const eoslSourceSelect = document.getElementById("eosl-source-select");
+      const eoslRsManufacturers = document.getElementById("eosl-rs-manufacturers");
+      const eoslRsChecks = document.getElementById("eosl-rs-checks");
+      const eoslRsSelectAll = document.getElementById("eosl-rs-select-all");
+      const eoslRsSelectNone = document.getElementById("eosl-rs-select-none");
       let eoslActiveSource = "eosl";
+      let eoslRsManufacturersReady = false;
       const vendorSourceMeta = {
         eosl: {
           label: "eosl.date",
@@ -936,6 +957,32 @@
             eoas_date: "LTSS Ends (EOAS)",
             supported: "Supported",
           },
+        },
+        "router-switch": {
+          label: "Router-Switch EOL",
+          emptyHint:
+            "The local Router-Switch database is empty. Click Update to scrape router-switch.com (full sync can take a long time).",
+          headers: {
+            product: "Product Name",
+            release: "Part Number",
+            released: "End of Sale (EOS)",
+            eol_date: "EOL Announcement",
+            eoas_date: "End of Service Life (EOSL)",
+            supported: "Supported",
+          },
+          manufacturers: [
+            { slug: "arista", label: "Arista" },
+            { slug: "aruba", label: "Aruba" },
+            { slug: "cisco", label: "Cisco" },
+            { slug: "dell", label: "Dell" },
+            { slug: "fortinet", label: "Fortinet" },
+            { slug: "h3c", label: "H3C" },
+            { slug: "hpe", label: "HPE" },
+            { slug: "juniper", label: "Juniper" },
+            { slug: "mellanox", label: "Mellanox" },
+            { slug: "palo-alto-networks", label: "Palo Alto Networks" },
+            { slug: "ruckus", label: "Ruckus" },
+          ],
         },
       };
       const dataReadonlyHint = document.getElementById("data-readonly-hint");
@@ -5662,6 +5709,114 @@
         return parsed.toLocaleString();
       }
 
+      function ensureRouterSwitchManufacturerChecks(manufacturers, selectedSlugs) {
+        const list =
+          Array.isArray(manufacturers) && manufacturers.length
+            ? manufacturers
+            : vendorSourceMeta["router-switch"]?.manufacturers || [];
+        const selected = new Set(
+          Array.isArray(selectedSlugs)
+            ? selectedSlugs.map((slug) => String(slug || "").trim().toLowerCase())
+            : list.map((item) => String(item.slug || "").trim().toLowerCase())
+        );
+        if (!eoslRsChecks) {
+          return;
+        }
+        if (eoslRsManufacturersReady) {
+          eoslRsChecks.querySelectorAll("input[data-rs-slug]").forEach((input) => {
+            input.checked = selected.has(String(input.dataset.rsSlug || "").toLowerCase());
+          });
+          return;
+        }
+        eoslRsChecks.innerHTML = "";
+        list.forEach((item) => {
+          const slug = String(item.slug || "").trim();
+          if (!slug) {
+            return;
+          }
+          const label = document.createElement("label");
+          label.className = "eosl-rs-check";
+          const input = document.createElement("input");
+          input.type = "checkbox";
+          input.dataset.rsSlug = slug;
+          input.checked = selected.has(slug.toLowerCase());
+          input.addEventListener("change", () => {
+            persistRouterSwitchManufacturers();
+          });
+          const text = document.createElement("span");
+          text.className = "eosl-rs-check-label";
+          text.textContent = item.label || slug;
+          label.appendChild(input);
+          label.appendChild(text);
+          eoslRsChecks.appendChild(label);
+        });
+        eoslRsManufacturersReady = true;
+      }
+
+      function updateRouterSwitchManufacturerPanel(selectedSlugs) {
+        const isRs = eoslActiveSource === "router-switch";
+        if (eoslRsManufacturers) {
+          eoslRsManufacturers.hidden = !isRs;
+        }
+        if (isRs) {
+          ensureRouterSwitchManufacturerChecks(
+            vendorSourceMeta["router-switch"]?.manufacturers,
+            selectedSlugs
+          );
+        }
+      }
+
+      function getSelectedRouterSwitchManufacturers() {
+        if (!eoslRsChecks) {
+          return [];
+        }
+        return Array.from(
+          eoslRsChecks.querySelectorAll("input[data-rs-slug]:checked")
+        ).map((input) => input.dataset.rsSlug);
+      }
+
+      function setRouterSwitchManufacturersChecked(checked) {
+        if (!eoslRsChecks) {
+          return;
+        }
+        eoslRsChecks.querySelectorAll("input[data-rs-slug]").forEach((input) => {
+          input.checked = Boolean(checked);
+        });
+        persistRouterSwitchManufacturers();
+      }
+
+      let eoslRsPersistTimer = null;
+      async function persistRouterSwitchManufacturers() {
+        if (eoslActiveSource !== "router-switch") {
+          return;
+        }
+        const selected = getSelectedRouterSwitchManufacturers();
+        if (!selected.length) {
+          return;
+        }
+        if (eoslRsPersistTimer) {
+          clearTimeout(eoslRsPersistTimer);
+        }
+        eoslRsPersistTimer = setTimeout(async () => {
+          try {
+            const response = await fetch(
+              "/api/vendor-lookups/router-switch/preferences",
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ manufacturers: selected }),
+              }
+            );
+            if (!response.ok) {
+              const payload = await response.json().catch(() => ({}));
+              throw new Error(payload.detail || "Unable to save manufacturer selection.");
+            }
+          } catch (error) {
+            showStatus(error.message, "error");
+          }
+        }, 250);
+      }
+
       function applyVendorViewerHeaders() {
         const meta = vendorSourceMeta[eoslActiveSource] || vendorSourceMeta.eosl;
         const headers = meta.headers || {};
@@ -5945,6 +6100,7 @@
           eoslDialogMeta.textContent = "Loading…";
         }
         applyVendorViewerHeaders();
+        updateRouterSwitchManufacturerPanel();
         try {
           const response = await fetch(`/api/vendor-lookups/${eoslActiveSource}/rows`);
           if (!response.ok) {
@@ -5959,6 +6115,17 @@
               applyVendorViewerHeaders();
             }
           }
+          if (
+            eoslActiveSource === "router-switch" &&
+            Array.isArray(payload.status?.manufacturers)
+          ) {
+            vendorSourceMeta["router-switch"].manufacturers = payload.status.manufacturers;
+          }
+          updateRouterSwitchManufacturerPanel(
+            eoslActiveSource === "router-switch"
+              ? payload.status?.selected_manufacturers
+              : undefined
+          );
           renderEoslMeta(payload.status);
           renderEoslTable();
         } catch (error) {
@@ -5986,6 +6153,7 @@
         }
         syncEoslFilterInputs();
         applyVendorViewerHeaders();
+        updateRouterSwitchManufacturerPanel();
         if (!eoslDialog.open) {
           eoslDialog.showModal();
         }
@@ -6018,20 +6186,43 @@
         }
         const sourceId = eoslActiveSource || eoslSourceSelect?.value || "eosl";
         const sourceMeta = vendorSourceMeta[sourceId] || vendorSourceMeta.eosl;
+        const syncBody = {};
+        if (sourceId === "router-switch") {
+          const selected = getSelectedRouterSwitchManufacturers();
+          if (!selected.length) {
+            showStatus("Select at least one manufacturer to pull.", "error");
+            return;
+          }
+          syncBody.manufacturers = selected;
+        }
         eoslUpdating = true;
         eoslUpdateButton.disabled = true;
         if (eoslProgressEyebrow) {
           eoslProgressEyebrow.textContent = sourceMeta.label;
         }
+        const selectedLabels =
+          sourceId === "router-switch"
+            ? (syncBody.manufacturers || [])
+                .map((slug) => {
+                  const item = (sourceMeta.manufacturers || []).find((m) => m.slug === slug);
+                  return item?.label || slug;
+                })
+                .join(", ")
+            : "";
         eoslProgressTitle.textContent = `Updating ${sourceMeta.label}`;
         setEoslProgressState({
-          text: `Scraping ${sourceMeta.label}…`,
+          text:
+            sourceId === "router-switch"
+              ? `Scraping ${selectedLabels}…`
+              : `Scraping ${sourceMeta.label}…`,
           stage:
             sourceId === "junos"
               ? "Fetching the Juniper Dates & Milestones table…"
               : sourceId === "suse"
                 ? "Fetching suse.com/lifecycle tables…"
-                : "This can take a minute or two. Please keep this dialog open.",
+                : sourceId === "router-switch"
+                  ? `Pulling ${selectedLabels}. Large vendors (e.g. Cisco) can take a long time…`
+                  : "This can take a minute or two. Please keep this dialog open.",
         });
         if (!eoslProgressDialog.open) {
           eoslProgressDialog.showModal();
@@ -6040,6 +6231,11 @@
         try {
           const response = await fetch(`/api/vendor-lookups/${sourceId}/sync`, {
             method: "POST",
+            headers:
+              Object.keys(syncBody).length > 0
+                ? { "Content-Type": "application/json" }
+                : undefined,
+            body: Object.keys(syncBody).length > 0 ? JSON.stringify(syncBody) : undefined,
           });
           const payload = await response.json().catch(() => ({}));
           if (!response.ok) {
@@ -6052,11 +6248,13 @@
             done: true,
           });
           showStatus(
-            `${sourceMeta.label} updated: ${result.product_count ?? 0} products, ` +
-              `${result.release_count ?? 0} releases.`,
-            (result.errors && result.errors.length) ? "info" : "success"
+            `${sourceMeta.label} updated: ${result.release_count ?? 0} releases` +
+              (result.manufacturer_labels?.length
+                ? ` (${result.manufacturer_labels.join(", ")})`
+                : "") +
+              `.`,
+            result.errors && result.errors.length ? "info" : "success"
           );
-          // Refresh the viewer table behind the progress dialog.
           if (eoslDialog.open) {
             await loadEoslDialogData();
           }
@@ -6482,7 +6680,18 @@
           eoslActiveSource = eoslSourceSelect.value || "eosl";
           eoslPage = 1;
           clearEoslFilters();
+          updateRouterSwitchManufacturerPanel();
           await loadEoslDialogData();
+        });
+      }
+      if (eoslRsSelectAll) {
+        eoslRsSelectAll.addEventListener("click", () => {
+          setRouterSwitchManufacturersChecked(true);
+        });
+      }
+      if (eoslRsSelectNone) {
+        eoslRsSelectNone.addEventListener("click", () => {
+          setRouterSwitchManufacturersChecked(false);
         });
       }
       if (eoslFilterInput) {

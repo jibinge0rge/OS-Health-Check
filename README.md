@@ -7,7 +7,7 @@ Use it to:
 - Search and browse existing OS lookup rows
 - Add one or many OS strings with fuzzy (and optional AI) matching
 - Refresh EOL / EOAS dates from [endoflife.date](https://endoflife.date)
-- Refresh EOL / EOAS from local **Vendor Lookups** ([eosl.date](https://eosl.date) OS scrape, [Juniper Junos](https://support.juniper.net/support/eol/software/junos/) scrape, [SUSE lifecycle](https://www.suse.com/lifecycle/))
+- Refresh EOL / EOAS from local **Vendor Lookups** ([eosl.date](https://eosl.date) OS scrape, [Juniper Junos](https://support.juniper.net/support/eol/software/junos/) scrape, [SUSE lifecycle](https://www.suse.com/lifecycle/)). [Router-Switch EOL](https://www.router-switch.com/eol-eosl-checker/) is available for browsing only.
 - Keep match/EOL **evidence** (proof) in a JSON sidecar
 - Promote Draft → Data via Validate, then optionally upload Data to Azure Blob
 
@@ -18,7 +18,7 @@ Use it to:
 - **Vanilla HTML / CSS / JS** — table UI and workflows
 - **OpenAI** (optional) — AI match + Ambiguous OS detection
 - **endoflife.date API** — lifecycle dates
-- **Vendor Lookups (SQLite)** — local scrapes: eosl.date (OS) + Juniper Junos Dates & Milestones
+- **Vendor Lookups (SQLite)** — local scrapes: eosl.date (OS), Juniper Junos, SUSE lifecycle, and Router-Switch EOL (viewer only)
 
 ## Run locally
 
@@ -71,6 +71,7 @@ OS-Health-Check/
 ├── eosl_service.py             # eosl.date scraper + SQLite cache (OS only)
 ├── junos_service.py            # Juniper Junos Dates & Milestones scraper
 ├── suse_service.py             # SUSE lifecycle scraper (suse.com/lifecycle)
+├── router_switch_service.py    # Router-Switch EOL/EOSL scraper (viewer only)
 ├── vendor_lookup_service.py    # Registry + routed vendor fallback lookup
 ├── os_import_service.py        # Bulk import from CSV/XLSX
 ├── templates/index.html        # UI + client workflows
@@ -80,7 +81,8 @@ OS-Health-Check/
 │   ├── eol_lookup_evidence.json
 │   ├── eosl_os.db              # SQLite cache of eosl.date OS data (gitignored)
 │   ├── junos_os.db             # SQLite cache of Junos EOL table (gitignored)
-│   └── suse_os.db              # SQLite cache of SUSE lifecycle (gitignored)
+│   ├── suse_os.db              # SQLite cache of SUSE lifecycle (gitignored)
+│   └── router_switch_os.db     # SQLite cache of Router-Switch EOL (gitignored)
 ├── _draft/                     # Working editable copy (+ evidence)
 ├── _config/                    # Local settings (gitignored)
 │   ├── app_settings.json       # ai_enabled, ai_provider (openai|gemini)
@@ -294,6 +296,7 @@ Umbrella for **offline** lifecycle scrapers used as the Refresh fallback above. 
 | **eosl.date** | [eosl.date](https://eosl.date) OS category | `_data/eosl_os.db` | EOAS = earliest support date, EOL = latest | API missed; also after Junos/SUSE miss |
 | **Juniper Junos** | [Junos Dates & Milestones](https://support.juniper.net/support/eol/software/junos/) (**that table only**) | `_data/junos_os.db` | **EOE → `eol_date`**, **EOS → `eoas_date`**, FRS → released | API missed **and** `junos`/`juniper` token |
 | **SUSE Lifecycle** | [suse.com/lifecycle](https://www.suse.com/lifecycle/) | `_data/suse_os.db` | **General Ends → `eol_date`**, **LTSS Ends → `eoas_date`**, FCS → released | API missed **and** `suse`/`sles`/`opensuse` token |
+| **Router-Switch EOL** | [router-switch.com EOL checker](https://www.router-switch.com/eol-eosl-checker/) | `_data/router_switch_os.db` | **EOL Announcement → `eol_date`**, **EOSL → `eoas_date`**, EOS → released | **Never** (viewer / browse only) |
 
 ```mermaid
 flowchart LR
@@ -312,6 +315,7 @@ flowchart LR
     U --> C
     U --> S
     U --> D
+    U --> RS[router_switch_os.db]
   end
 ```
 
@@ -335,6 +339,14 @@ flowchart LR
 - Releases keep SP identity (`11 SP3`, `15 SP4`); generic `SUSE`/`SLES` prefers **SUSE Linux Enterprise Server** (not Desktop/SAP/HPC unless named).
 - Conservative: no SP/version → no match; bare `11` does not pick `11 SP3`.
 
+### Router-Switch notes
+
+- Scrapes paginated manufacturer lists under [router-switch.com/eol-eosl-checker](https://www.router-switch.com/eol-eosl-checker/) (Arista, Aruba, Cisco, Dell, Fortinet, H3C, HPE, Juniper, Mellanox, Palo Alto, Ruckus).
+- **EOL Announcement → `eol_date`**, **End of Service Life (EOSL) → `eoas_date`**, End of Sale (EOS) → released / viewer “End of Sale”.
+- **Viewer only** — not consulted by Refresh EOL/EOAS or `/api/vendor-lookup`.
+- Site is behind Cloudflare; sync uses `curl_cffi` Chrome TLS impersonation. Full sync is large (Cisco alone is ~2k pages) and can take a long time.
+- **Update** shows a manufacturer checklist (same set as the site dropdown). Selection is stored in `_data/router_switch_sync.json` (shared for everyone using this codebase — not browser storage). Only selected vendors are re-scraped; others already in the local DB are kept.
+
 ```mermaid
 flowchart TD
   View[View / Update Vendor Lookups] --> Modal[Source select + filterable viewer]
@@ -343,9 +355,11 @@ flowchart TD
   Prog --> EoslPath[eosl.date: crawl OS products]
   Prog --> JunosPath[Juniper: fetch junos EOL table]
   Prog --> SusePath[SUSE: fetch lifecycle tables]
+  Prog --> RsPath[Router-Switch: paginated manufacturer lists]
   EoslPath --> Store[(SQLite per source)]
   JunosPath --> Store
   SusePath --> Store
+  RsPath --> Store
   Store --> RefreshUI[Viewer table refreshes]
 ```
 
@@ -396,7 +410,7 @@ The Actions column filter can narrow rows by: Fuzzy, AI, Fuzzy + AI, Manual, EOL
 | **Revert** | Reset Draft rows (+ evidence) to the Data baseline and **save `_draft/`** immediately |
 | **Delete draft** | Remove Draft (+ evidence), return to Data |
 | **Show Delta / Download Delta** | Draft-only change view |
-| **View / Update Vendor Lookups** | Read-only viewer for eosl.date / Juniper Junos / SUSE Lifecycle DBs; update/re-scrape per source |
+| **View / Update Vendor Lookups** | Read-only viewer for eosl.date / Juniper Junos / SUSE Lifecycle / Router-Switch EOL DBs; update/re-scrape per source |
 | **Azure** | Data mode: settings + upload via `az storage blob upload` |
 
 ---
