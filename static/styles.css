@@ -1275,6 +1275,12 @@ body.lookup-readonly td .theme-select-trigger:disabled {
   border-color: rgba(251, 191, 36, 0.4);
 }
 
+.proof-badge--suse {
+  color: #dcfce7;
+  background: rgba(22, 163, 74, 0.28);
+  border-color: rgba(74, 222, 128, 0.4);
+}
+
 .proof-badge--fallback {
   color: #e2e8f0;
   background: rgba(71, 85, 105, 0.4);

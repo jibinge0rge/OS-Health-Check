@@ -1,4 +1,4 @@
-"""Registry for local vendor lifecycle lookup sources (eosl.date, Junos, …)."""
+"""Registry for local vendor lifecycle lookup sources (eosl.date, Junos, SUSE, …)."""
 
 from __future__ import annotations
 
@@ -18,6 +18,14 @@ from junos_service import (
     lookup_os_junos_batch,
     query_matches_junos,
     sync_junos_database,
+)
+from suse_service import (
+    get_status as suse_get_status,
+    list_all_rows as suse_list_all_rows,
+    lookup_os_suse,
+    lookup_os_suse_batch,
+    query_matches_suse,
+    sync_suse_database,
 )
 
 
@@ -56,6 +64,24 @@ VENDOR_SOURCES: dict[str, VendorSource] = {
             "released": "FRS",
             "eol_date": "EOE (EOL)",
             "eoas_date": "EOS (EOAS)",
+            "supported": "Supported",
+        },
+        "supported_as_type": False,
+    },
+    "suse": {
+        "id": "suse",
+        "label": "SUSE Lifecycle",
+        "description": "SUSE product support lifecycle (suse.com/lifecycle)",
+        "get_status": suse_get_status,
+        "list_rows": suse_list_all_rows,
+        "sync": sync_suse_database,
+        "lookup_batch": lookup_os_suse_batch,
+        "viewer_headers": {
+            "product": "Product",
+            "release": "Release",
+            "released": "FCS",
+            "eol_date": "General Ends (EOL)",
+            "eoas_date": "LTSS Ends (EOAS)",
             "supported": "Supported",
         },
         "supported_as_type": False,
@@ -112,13 +138,36 @@ def _has_lifecycle_data(result: dict[str, str]) -> bool:
     )
 
 
+def _with_fallback_note(
+    primary: dict[str, str],
+    fallback: dict[str, str],
+    fallback_label: str,
+) -> dict[str, str]:
+    combined = dict(primary)
+    fallback_note = str(fallback.get("api_note") or "").strip()
+    if fallback_note:
+        primary_note = str(combined.get("api_note") or "").strip()
+        combined["api_note"] = (
+            f"{primary_note} {fallback_label}: {fallback_note}".strip()
+            if primary_note
+            else f"{fallback_label}: {fallback_note}"
+        )
+    return combined
+
+
 def lookup_vendor_batch(items: list[dict[str, str]]) -> list[dict[str, str]]:
-    """Vendor fallback: Junos first for Juniper rows, then eosl.date; else eosl only."""
+    """Vendor fallback routing.
+
+    - Junos/Juniper → junos DB, then eosl.date
+    - SUSE/SLES/openSUSE → suse DB, then eosl.date
+    - otherwise → eosl.date only
+    """
     results: list[dict[str, str]] = []
     for item in items:
         os_string = item.get("os_string", "")
         detailed = item.get("normalized_os_detailed_name", "")
         normalized = item.get("normalized_os", "")
+
         if query_matches_junos(os_string, detailed, normalized):
             junos_result = lookup_os_junos(os_string, detailed, normalized)
             if _has_lifecycle_data(junos_result):
@@ -128,17 +177,20 @@ def lookup_vendor_batch(items: list[dict[str, str]]) -> list[dict[str, str]]:
             if _has_lifecycle_data(eosl_result):
                 results.append(eosl_result)
                 continue
-            # Prefer the Junos miss note when both miss (still the primary route).
-            combined = dict(junos_result)
-            eosl_note = str(eosl_result.get("api_note") or "").strip()
-            if eosl_note:
-                junos_note = str(combined.get("api_note") or "").strip()
-                combined["api_note"] = (
-                    f"{junos_note} eosl.date: {eosl_note}".strip()
-                    if junos_note
-                    else f"eosl.date: {eosl_note}"
-                )
-            results.append(combined)
-        else:
-            results.append(lookup_os_eosl(os_string, detailed, normalized))
+            results.append(_with_fallback_note(junos_result, eosl_result, "eosl.date"))
+            continue
+
+        if query_matches_suse(os_string, detailed, normalized):
+            suse_result = lookup_os_suse(os_string, detailed, normalized)
+            if _has_lifecycle_data(suse_result):
+                results.append(suse_result)
+                continue
+            eosl_result = lookup_os_eosl(os_string, detailed, normalized)
+            if _has_lifecycle_data(eosl_result):
+                results.append(eosl_result)
+                continue
+            results.append(_with_fallback_note(suse_result, eosl_result, "eosl.date"))
+            continue
+
+        results.append(lookup_os_eosl(os_string, detailed, normalized))
     return results

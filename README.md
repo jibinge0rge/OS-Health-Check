@@ -7,7 +7,7 @@ Use it to:
 - Search and browse existing OS lookup rows
 - Add one or many OS strings with fuzzy (and optional AI) matching
 - Refresh EOL / EOAS dates from [endoflife.date](https://endoflife.date)
-- Refresh EOL / EOAS from local **Vendor Lookups** ([eosl.date](https://eosl.date) OS scrape, [Juniper Junos](https://support.juniper.net/support/eol/software/junos/) scrape)
+- Refresh EOL / EOAS from local **Vendor Lookups** ([eosl.date](https://eosl.date) OS scrape, [Juniper Junos](https://support.juniper.net/support/eol/software/junos/) scrape, [SUSE lifecycle](https://www.suse.com/lifecycle/))
 - Keep match/EOL **evidence** (proof) in a JSON sidecar
 - Promote Draft → Data via Validate, then optionally upload Data to Azure Blob
 
@@ -70,6 +70,7 @@ OS-Health-Check/
 ├── eol_service.py              # endoflife.date lookup
 ├── eosl_service.py             # eosl.date scraper + SQLite cache (OS only)
 ├── junos_service.py            # Juniper Junos Dates & Milestones scraper
+├── suse_service.py             # SUSE lifecycle scraper (suse.com/lifecycle)
 ├── vendor_lookup_service.py    # Registry + routed vendor fallback lookup
 ├── os_import_service.py        # Bulk import from CSV/XLSX
 ├── templates/index.html        # UI + client workflows
@@ -78,7 +79,8 @@ OS-Health-Check/
 │   ├── eol_lookup.csv          # Canonical published lookup
 │   ├── eol_lookup_evidence.json
 │   ├── eosl_os.db              # SQLite cache of eosl.date OS data (gitignored)
-│   └── junos_os.db             # SQLite cache of Junos EOL table (gitignored)
+│   ├── junos_os.db             # SQLite cache of Junos EOL table (gitignored)
+│   └── suse_os.db              # SQLite cache of SUSE lifecycle (gitignored)
 ├── _draft/                     # Working editable copy (+ evidence)
 ├── _config/                    # Local settings (gitignored)
 │   ├── app_settings.json       # ai_enabled, ai_provider (openai|gemini)
@@ -209,15 +211,16 @@ flowchart TD
 
 ## EOL / EOAS refresh flow
 
-**Refresh EOL/EOAS** fills dates per row in this order. Junos is **not** checked on every row — only as a **fallback** after the API misses, and only when the OS has a Juniper/Junos token (then eosl if Junos misses).
+**Refresh EOL/EOAS** fills dates per row in this order. Vendor DBs are **fallbacks after the API misses**, routed by OS tokens (Junos → junos then eosl; SUSE → suse then eosl; else eosl).
 
 ### Per-row decision order
 
-1. **endoflife.date API** — always tried first (same query preference as below). Release matching is **conservative**: no version (or only bitness / `SP3`-style pack digits) → **no match** (never guess the latest release); bare major like `11` does not pick `11.4`; only a strong version hit populates dates/names.
-2. **If the API returned dates/status** → write them (evidence `api` / `eol`). **Stop.** Junos and eosl are **not** consulted.
+1. **endoflife.date API** — always tried first (same query preference as below). Release matching is **conservative**: no version (or only bitness / `SP3`-style pack digits used alone as a version) → **no match** (never guess the latest release); bare major like `11` does not pick `11.4`; only a strong version hit populates dates/names. (SUSE Vendor Lookup still understands `11 SP3` as a full release identity.)
+2. **If the API returned dates/status** → write them (evidence `api` / `eol`). **Stop.** Vendor DBs are **not** consulted.
 3. **If the API missed (or failed)** → call **Vendor Lookups** (`POST /api/vendor-lookup`):
-   - If `os_string` / normalized fields contain **`junos` or `juniper` as whole tokens** (letter/digit boundaries — so `xjunosy` does **not** match) → try **`_data/junos_os.db` first** (evidence `junos` on hit). **If Junos misses**, fall through to **`_data/eosl_os.db`** (evidence `eosl` on hit).
-   - Otherwise → look up **`_data/eosl_os.db`** only (evidence `eosl` on hit).
+   - **`junos` / `juniper` token** → `_data/junos_os.db` first (evidence `junos`); on miss → eosl.date
+   - **`suse` / `sles` / `opensuse` token** → `_data/suse_os.db` first (evidence `suse`); on miss → eosl.date
+   - **Otherwise** → `_data/eosl_os.db` only (evidence `eosl`)
 4. **If vendor DBs also miss** → copy dates from another row with the same normalized pair when possible (evidence `lookup-fallback`).
 5. **Still nothing** → leave blank (evidence `none`).
 
@@ -236,42 +239,45 @@ flowchart TD
 
   API --> ApiOk{Dates or status returned?}
   ApiOk -->|Yes| ApplyApi[Write dates<br/>evidence: api]
-  ApiOk -->|No| Vendor[POST /api/vendor-lookup]
+  ApiOk -->|No| Route{Vendor token?}
 
-  Vendor --> Token{junos or juniper<br/>token in OS fields?}
-  Token -->|Yes| JunosDB[Match version in junos_os.db]
-  Token -->|No| EoslDB[Match product + release in eosl_os.db]
+  Route -->|junos/juniper| JunosDB[junos_os.db]
+  Route -->|suse/sles/opensuse| SuseDB[suse_os.db]
+  Route -->|else| EoslDB[eosl_os.db]
 
-  JunosDB --> JunosHit{Junos hit?}
-  JunosHit -->|Yes| ApplyJunos[Write dates<br/>evidence: junos]
-  JunosHit -->|No| EoslAfterJunos[Try eosl_os.db]
-  EoslAfterJunos --> EoslDB
+  JunosDB --> JunosHit{Hit?}
+  JunosHit -->|Yes| ApplyJ[evidence: junos]
+  JunosHit -->|No| EoslDB
+
+  SuseDB --> SuseHit{Hit?}
+  SuseHit -->|Yes| ApplyS[evidence: suse]
+  SuseHit -->|No| EoslDB
 
   EoslDB --> EoslHit{eosl hit?}
-  EoslHit -->|Yes| ApplyEosl[Write dates<br/>evidence: eosl]
+  EoslHit -->|Yes| ApplyE[evidence: eosl]
   EoslHit -->|No| CopyFb{Same normalized pair<br/>has dates elsewhere?}
-  CopyFb -->|Yes| ApplyCopy[Copy dates<br/>evidence: lookup-fallback]
-  CopyFb -->|No| Empty[Leave blank<br/>evidence: none]
+  CopyFb -->|Yes| ApplyCopy[evidence: lookup-fallback]
+  CopyFb -->|No| Empty[evidence: none]
 
   ApplyApi --> Proof[Store EOL proof]
-  ApplyJunos --> Proof
-  ApplyEosl --> Proof
+  ApplyJ --> Proof
+  ApplyS --> Proof
+  ApplyE --> Proof
   ApplyCopy --> Proof
   Empty --> Proof
 ```
 
-### When is the Junos check done?
+### When are vendor DBs checked?
 
-| Situation | Junos DB checked? | Then eosl? |
-|-----------|-------------------|------------|
-| Row matched endoflife.date | **No** | **No** |
-| Non-Juniper row and API missed | **No** | **Yes** |
-| `Junos OS 24.2` / `Juniper …` and API missed | **Yes** (first) | **Only if Junos misses** |
-| You only clicked **Update** in Vendor Lookups | **No** (scrape only) | **No** |
-| Substring noise like `xjunosy` | **No** | **Yes** (treated as normal eosl path) |
+| Situation | Junos | SUSE | eosl |
+|-----------|-------|------|------|
+| API hit | No | No | No |
+| `Junos OS 24.2`, API miss | Yes (first) | No | If Junos misses |
+| `SUSE Linux 11 SP3`, API miss | No | Yes (first) | If SUSE misses |
+| Ubuntu / other, API miss | No | No | Yes |
+| Update scrape only | No CSV write | No CSV write | No CSV write |
 
-Example: `Junos OS 24.2` → API miss → Junos DB hit → evidence `junos`.  
-If that release is missing from Junos DB → try eosl.date → evidence `eosl` if found.
+Example: `SUSE Linux 11 SP3` → API conservative miss → SUSE DB → General Ends → EOL, LTSS Ends → EOAS → evidence `suse`.
 
 Dates are stored as Unix epoch. Status `true`/`false` is only used when a date is missing.
 
@@ -283,22 +289,26 @@ Umbrella for **offline** lifecycle scrapers used as the Refresh fallback above. 
 
 | Source | Origin | Local DB | Date mapping | Used on Refresh when… |
 |--------|--------|----------|--------------|------------------------|
-| **eosl.date** | [eosl.date](https://eosl.date) OS category | `_data/eosl_os.db` | EOAS = earliest support date, EOL = latest | API missed, and either the row is **not** Junos/Juniper **or** Junos DB already missed |
-| **Juniper Junos** | [Junos Dates & Milestones](https://support.juniper.net/support/eol/software/junos/) (**that table only**) | `_data/junos_os.db` | **EOE → `eol_date`**, **EOS → `eoas_date`**, FRS → released | API missed **and** row has a **junos/juniper** token (tried before eosl) |
+| **eosl.date** | [eosl.date](https://eosl.date) OS category | `_data/eosl_os.db` | EOAS = earliest support date, EOL = latest | API missed; also after Junos/SUSE miss |
+| **Juniper Junos** | [Junos Dates & Milestones](https://support.juniper.net/support/eol/software/junos/) (**that table only**) | `_data/junos_os.db` | **EOE → `eol_date`**, **EOS → `eoas_date`**, FRS → released | API missed **and** `junos`/`juniper` token |
+| **SUSE Lifecycle** | [suse.com/lifecycle](https://www.suse.com/lifecycle/) | `_data/suse_os.db` | **General Ends → `eol_date`**, **LTSS Ends → `eoas_date`**, FCS → released | API missed **and** `suse`/`sles`/`opensuse` token |
 
 ```mermaid
 flowchart LR
   subgraph refresh [Refresh EOL/EOAS]
-    A[endoflife.date] -->|miss| B{junos/juniper token?}
-    B -->|yes| C[junos_os.db]
-    C -->|miss| D[eosl_os.db]
-    B -->|no| D
+    A[endoflife.date] -->|miss| B{token?}
+    B -->|junos| C[junos_os.db]
+    B -->|suse| S[suse_os.db]
+    B -->|else| D[eosl_os.db]
+    C -->|miss| D
+    S -->|miss| D
     D -->|miss| E[lookup-copy]
   end
 
   subgraph viewer [View / Update Vendor Lookups]
     V[Source select] --> U[Update scrape]
     U --> C
+    U --> S
     U --> D
   end
 ```
@@ -316,6 +326,13 @@ flowchart LR
 - For Junos rows, EOE is often **before** EOS, so **EOL may be earlier than EOAS** in the app (intentional naming).
 - Matching: token gate first, then strong version score. Family-only versions (e.g. `15.1`) do **not** guess an X-train (`15.1X53`); if unsure, blank.
 
+### SUSE notes
+
+- Scrapes [suse.com/lifecycle](https://www.suse.com/lifecycle/) tables that include **General Ends** / **General Support Ends** and **LTSS Ends**.
+- **General Ends → `eol_date`**, **LTSS Ends → `eoas_date`**, FCS → released.
+- Releases keep SP identity (`11 SP3`, `15 SP4`); generic `SUSE`/`SLES` prefers **SUSE Linux Enterprise Server** (not Desktop/SAP/HPC unless named).
+- Conservative: no SP/version → no match; bare `11` does not pick `11 SP3`.
+
 ```mermaid
 flowchart TD
   View[View / Update Vendor Lookups] --> Modal[Source select + filterable viewer]
@@ -323,8 +340,10 @@ flowchart TD
   U --> Prog[Progress dialog]
   Prog --> EoslPath[eosl.date: crawl OS products]
   Prog --> JunosPath[Juniper: fetch junos EOL table]
+  Prog --> SusePath[SUSE: fetch lifecycle tables]
   EoslPath --> Store[(SQLite per source)]
   JunosPath --> Store
+  SusePath --> Store
   Store --> RefreshUI[Viewer table refreshes]
 ```
 
@@ -358,9 +377,9 @@ Shape:
 }
 ```
 
-Proof methods include: `fuzzy`, `ai`, `fuzzy+ai`, `eol` / `api`, `eosl`, `junos`, `lookup-fallback`, `ambiguous`, `manual`, `none`.
+Proof methods include: `fuzzy`, `ai`, `fuzzy+ai`, `eol` / `api`, `eosl`, `junos`, `suse`, `lookup-fallback`, `ambiguous`, `manual`, `none`.
 
-The Actions column filter can narrow rows by: Fuzzy, AI, Fuzzy + AI, Manual, EOL API, eosl.date, Juniper Junos, Lookup copy, Ambiguous, or NULL.
+The Actions column filter can narrow rows by: Fuzzy, AI, Fuzzy + AI, Manual, EOL API, eosl.date, Juniper Junos, SUSE Lifecycle, Lookup copy, Ambiguous, or NULL.
 
 ---
 
@@ -375,7 +394,7 @@ The Actions column filter can narrow rows by: Fuzzy, AI, Fuzzy + AI, Manual, EOL
 | **Revert** | Reset Draft rows (+ evidence) to the Data baseline and **save `_draft/`** immediately |
 | **Delete draft** | Remove Draft (+ evidence), return to Data |
 | **Show Delta / Download Delta** | Draft-only change view |
-| **View / Update Vendor Lookups** | Read-only viewer for eosl.date / Juniper Junos DBs; update/re-scrape per source |
+| **View / Update Vendor Lookups** | Read-only viewer for eosl.date / Juniper Junos / SUSE Lifecycle DBs; update/re-scrape per source |
 | **Azure** | Data mode: settings + upload via `az storage blob upload` |
 
 ---
@@ -398,6 +417,8 @@ The Actions column filter can narrow rows by: Fuzzy, AI, Fuzzy + AI, Manual, EOL
 | `GET` / `POST` | `/api/eosl/*` | eosl.date status / rows / sync (compat) |
 | `POST` | `/api/junos-lookup` | Batch from Junos DB only |
 | `GET` / `POST` | `/api/junos/*` | Junos status / rows / sync |
+| `POST` | `/api/suse-lookup` | Batch from SUSE DB only |
+| `GET` / `POST` | `/api/suse/*` | SUSE status / rows / sync |
 | `GET` / `PUT` | `/api/settings` | Persist `ai_enabled` + `ai_provider` |
 
 ---

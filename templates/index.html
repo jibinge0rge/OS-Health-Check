@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OS Health Check</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=49" />
+    <link rel="stylesheet" href="/static/styles.css?v=51" />
   </head>
   <body>
     <main class="app-shell">
@@ -294,6 +294,7 @@
                       <option value="eol">EOL API</option>
                       <option value="eosl">eosl.date</option>
                       <option value="junos">Juniper Junos</option>
+                      <option value="suse">SUSE Lifecycle</option>
                       <option value="lookup-fallback">Lookup copy</option>
                       <option value="ambiguous">Ambiguous</option>
                       <option value="null">NULL</option>
@@ -604,6 +605,7 @@
             <select id="eosl-source-select" aria-label="Vendor source">
               <option value="eosl">eosl.date</option>
               <option value="junos">Juniper Junos</option>
+              <option value="suse">SUSE Lifecycle</option>
             </select>
           </label>
           <label class="search-field eosl-search">
@@ -919,6 +921,19 @@
             released: "FRS",
             eol_date: "EOE (EOL)",
             eoas_date: "EOS (EOAS)",
+            supported: "Supported",
+          },
+        },
+        suse: {
+          label: "SUSE Lifecycle",
+          emptyHint:
+            "The local SUSE database is empty. Click Update to scrape suse.com/lifecycle.",
+          headers: {
+            product: "Product",
+            release: "Release",
+            released: "FCS",
+            eol_date: "General Ends (EOL)",
+            eoas_date: "LTSS Ends (EOAS)",
             supported: "Supported",
           },
         },
@@ -1382,6 +1397,8 @@
             return "eosl.date";
           case "junos":
             return "Juniper Junos";
+          case "suse":
+            return "SUSE Lifecycle";
           case "ambiguous":
             return "Ambiguous";
           case "manual":
@@ -1416,6 +1433,8 @@
             return "eosl";
           case "junos":
             return "junos";
+          case "suse":
+            return "suse";
           case "lookup-fallback":
             return "fallback";
           case "ambiguous":
@@ -1696,10 +1715,14 @@
               ["EOAS status", got.eoas_status || row.eoas_status],
             ]
           )}</div>`;
-        } else if (rawMethod === "eosl" || rawMethod === "junos") {
+        } else if (rawMethod === "eosl" || rawMethod === "junos" || rawMethod === "suse") {
           method = rawMethod;
           const sourceLabel =
-            rawMethod === "junos" ? "Juniper Junos Vendor Lookup" : "eosl.date Vendor Lookup";
+            rawMethod === "junos"
+              ? "Juniper Junos Vendor Lookup"
+              : rawMethod === "suse"
+                ? "SUSE Lifecycle Vendor Lookup"
+                : "eosl.date Vendor Lookup";
           summary =
             `EOL API had no match, so dates and statuses were taken from the local ${sourceLabel} (product + release).`;
           const got = eolProof.got || {};
@@ -3241,8 +3264,14 @@
       }
 
       function buildVendorProofMetaFromApi(vendorResult, eolApiResult = null) {
-        const source = String(vendorResult.source ?? "eosl").trim() || "eosl";
-        const sourceLabel = source === "junos" ? "Juniper Junos" : "eosl.date";
+        const source =
+          String(vendorResult.source ?? "eosl").trim() || "eosl";
+        const sourceLabel =
+          source === "junos"
+            ? "Juniper Junos"
+            : source === "suse"
+              ? "SUSE Lifecycle"
+              : "eosl.date";
         const eolNote = String(eolApiResult?.api_note ?? "").trim();
         const product = String(vendorResult.product_slug ?? "").trim();
         const release = String(
@@ -3255,7 +3284,7 @@
           ? `Matched via ${sourceLabel} (${matchBits}).`
           : `Matched via ${sourceLabel} (product + release).`;
         return {
-          method: source === "junos" ? "junos" : "eosl",
+          method: source === "junos" || source === "suse" || source === "eosl" ? source : "eosl",
           queryUsed: String(vendorResult.query_used ?? "").trim(),
           queryField: String(vendorResult.query_field ?? "").trim(),
           productSlug: product,
@@ -4388,6 +4417,8 @@
             kinds.add("eosl");
           } else if (method === "junos") {
             kinds.add("junos");
+          } else if (method === "suse") {
+            kinds.add("suse");
           } else if (method === "lookup-fallback") {
             kinds.add("lookup-fallback");
           } else if (method === "ambiguous") {
@@ -4403,6 +4434,7 @@
           !kinds.has("eol") &&
           !kinds.has("eosl") &&
           !kinds.has("junos") &&
+          !kinds.has("suse") &&
           !kinds.has("lookup-fallback") &&
           !kinds.has("ambiguous")
         ) {
@@ -5683,9 +5715,16 @@
         if (!needle) {
           return true;
         }
-        return [row.product, row.release, row.released, row.eol_date, row.eoas_date]
+        // Join product + release so queries like
+        // "SUSE Linux Enterprise Server 11 SP3" match split columns.
+        const haystack = [row.product, row.release, row.released, row.eol_date, row.eoas_date]
           .map((value) => String(value ?? "").toLowerCase())
-          .some((value) => value.includes(needle));
+          .join(" ");
+        if (haystack.includes(needle)) {
+          return true;
+        }
+        const tokens = needle.split(/\s+/).filter(Boolean);
+        return tokens.length > 1 && tokens.every((token) => haystack.includes(token));
       }
 
       function eoslMatchesTextColumn(raw, filter) {
@@ -5990,7 +6029,9 @@
           stage:
             sourceId === "junos"
               ? "Fetching the Juniper Dates & Milestones table…"
-              : "This can take a minute or two. Please keep this dialog open.",
+              : sourceId === "suse"
+                ? "Fetching suse.com/lifecycle tables…"
+                : "This can take a minute or two. Please keep this dialog open.",
         });
         if (!eoslProgressDialog.open) {
           eoslProgressDialog.showModal();
