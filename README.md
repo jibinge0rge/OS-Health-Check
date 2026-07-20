@@ -213,7 +213,7 @@ flowchart TD
 
 ### Per-row decision order
 
-1. **endoflife.date API** — always tried first (same query preference as below).
+1. **endoflife.date API** — always tried first (same query preference as below). Release matching is **conservative**: no version (or only bitness / `SP3`-style pack digits) → **no match** (never guess the latest release); bare major like `11` does not pick `11.4`; only a strong version hit populates dates/names.
 2. **If the API returned dates/status** → write them (evidence `api` / `eol`). **Stop.** Junos and eosl are **not** consulted.
 3. **If the API missed (or failed)** → call **Vendor Lookups** (`POST /api/vendor-lookup`):
    - If `os_string` / normalized fields contain **`junos` or `juniper` as whole tokens** (letter/digit boundaries — so `xjunosy` does **not** match) → try **`_data/junos_os.db` first** (evidence `junos` on hit). **If Junos misses**, fall through to **`_data/eosl_os.db`** (evidence `eosl` on hit).
@@ -314,7 +314,7 @@ flowchart LR
 - One page scrape; table HTML is embedded in the Juniper CMS payload (`sw-eol-table`).
 - Product cells like `Junos OS 24.2` (sometimes with trailing maintenance markers) split into product `Junos OS` + release `24.2` / `15.1X53`.
 - For Junos rows, EOE is often **before** EOS, so **EOL may be earlier than EOAS** in the app (intentional naming).
-- Matching: token gate first, then strong version score (X-trains like `15.1X53` must not collapse onto `15.1X49`).
+- Matching: token gate first, then strong version score. Family-only versions (e.g. `15.1`) do **not** guess an X-train (`15.1X53`); if unsure, blank.
 
 ```mermaid
 flowchart TD
@@ -419,6 +419,7 @@ flowchart LR
 
 - **Fuzzy before AI** — fast, local, no API key required.
 - **AI opt-in** — avoids surprise wrong matches; toggle in Edit mode when needed.
+- **EOL release matching** — if unsure, don’t populate (no version / weak major / bitness → blank; never default to latest release).
 - **Vendor keywords** — guardrails for known traps (Oracle/AlmaLinux, Cisco/Apple iOS). Not a full brand encyclopedia; AI + “unsure = no match” covers unknown brands.
 - **Draft vs Data** — safe editing; Validate is the promote step; Refresh never silently wipes an existing Draft.
 - **Evidence sidecar** — audit trail without changing CSV schema.
