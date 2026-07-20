@@ -33,6 +33,12 @@ from junos_service import (
     lookup_os_junos_batch,
     sync_junos_database,
 )
+from suse_service import (
+    get_status as suse_get_status,
+    list_all_rows as suse_list_all_rows,
+    lookup_os_suse_batch,
+    sync_suse_database,
+)
 from vendor_lookup_service import (
     get_status as vendor_get_status,
     list_rows as vendor_list_rows,
@@ -80,7 +86,7 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 VENDOR_SYNC_LOCK = asyncio.Lock()
 # Back-compat alias used by older EOSL-only call sites.
 EOSL_SYNC_LOCK = VENDOR_SYNC_LOCK
-VALID_VENDOR_SOURCES = {"eosl", "junos"}
+VALID_VENDOR_SOURCES = {"eosl", "junos", "suse"}
 
 
 class LookupRow(BaseModel):
@@ -858,7 +864,7 @@ async def vendor_lookup_sync(source_id: str) -> dict[str, object]:
 
 @app.post("/api/vendor-lookup")
 async def vendor_lookup(payload: EolLookupBatchRequest) -> dict[str, object]:
-    """Junos/Juniper rows: junos DB first, then eosl.date; others: eosl.date only."""
+    """Junos → junos then eosl; SUSE → suse then eosl; else eosl."""
     results = await asyncio.to_thread(
         lookup_vendor_batch,
         [item.model_dump() for item in payload.items],
@@ -901,6 +907,46 @@ async def junos_sync() -> dict[str, object]:
 async def junos_lookup(payload: EolLookupBatchRequest) -> dict[str, object]:
     results = await asyncio.to_thread(
         lookup_os_junos_batch,
+        [item.model_dump() for item in payload.items],
+    )
+    return {"results": results}
+
+
+@app.get("/api/suse/status")
+async def suse_status() -> dict[str, object]:
+    return await asyncio.to_thread(suse_get_status)
+
+
+@app.get("/api/suse/rows")
+async def suse_rows() -> dict[str, object]:
+    rows = await asyncio.to_thread(suse_list_all_rows)
+    status = await asyncio.to_thread(suse_get_status)
+    return {"rows": rows, "status": status}
+
+
+@app.post("/api/suse/sync")
+async def suse_sync() -> dict[str, object]:
+    if VENDOR_SYNC_LOCK.locked():
+        raise HTTPException(
+            status_code=409,
+            detail="A vendor lookup update is already running. Please wait for it to finish.",
+        )
+    async with VENDOR_SYNC_LOCK:
+        try:
+            result = await asyncio.to_thread(sync_suse_database)
+        except Exception as error:  # noqa: BLE001 - surface scrape failures to UI
+            raise HTTPException(
+                status_code=502,
+                detail=f"Failed to update SUSE database: {error}",
+            ) from error
+    status = await asyncio.to_thread(suse_get_status)
+    return {"result": result, "status": status}
+
+
+@app.post("/api/suse-lookup")
+async def suse_lookup(payload: EolLookupBatchRequest) -> dict[str, object]:
+    results = await asyncio.to_thread(
+        lookup_os_suse_batch,
         [item.model_dump() for item in payload.items],
     )
     return {"results": results}
