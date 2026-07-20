@@ -42,9 +42,6 @@ NON_SUPPORT_LABELS = (
 # "Still supported / no fixed end date" markers seen in support columns.
 ACTIVE_MARKERS = ("active", "supported", "yes", "tbd", "n/a", "-", "")
 
-# Numbers that look like versions but are almost always architecture / bitness.
-_NON_VERSION_HINTS = frozenset({"16", "32", "64", "86", "128", "256"})
-
 # Ultra-generic product pages that must not absorb vague "Other … Linux" strings.
 _GENERIC_FAMILY_SLUGS = frozenset({"linux", "windows", "unix"})
 
@@ -405,18 +402,12 @@ def _version_tokens(text: str) -> list[str]:
 def _eosl_version_hints(os_name: str) -> list[str]:
     """Version hints suitable for EOSL product+release matching.
 
-    Drops architecture bitness (64-bit) and wildcard families like ``3.x``,
-    which must not score against unrelated releases such as ``6.13``.
+    Uses shared ``extract_version_hints`` (drops bitness / SP pack digits / ``N.x``
+    ranges). Product alone is never enough — see ``_pick_release``.
     """
-    hints: list[str] = []
-    for hint in extract_version_hints(os_name):
-        if hint in _NON_VERSION_HINTS:
-            continue
-        # "3.x or later" is a range, not version 3.
-        if re.search(rf"(?<!\d){re.escape(hint)}\.x\b", os_name, re.I):
-            continue
-        hints.append(hint)
-    return hints
+    # extract_version_hints already applies the conservative filters; keep this
+    # wrapper so call sites stay explicit about EOSL hint policy.
+    return extract_version_hints(os_name)
 
 
 def _version_match_score(release_version: str, hint: str) -> int:

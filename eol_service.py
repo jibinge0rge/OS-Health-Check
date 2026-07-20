@@ -134,44 +134,87 @@ def resolve_product_slug(os_name: str, valid_slugs: frozenset[str]) -> str | Non
     return None
 
 
+# Numbers that look like versions but are almost always architecture / bitness.
+_NON_VERSION_HINTS = frozenset({"16", "32", "64", "86", "128", "256"})
+
+# Accept only strong release matches (exact or multi-segment prefix).
+_MIN_RELEASE_SCORE = 80
+
+
 def extract_version_hints(os_name: str) -> list[str]:
+    """Numeric version tokens suitable for release matching.
+
+    Drops architecture bitness and lone service-pack / update markers
+    (``SP3``, ``R2``, ``U1``) so they cannot drive a false release pick.
+    """
+    text = str(os_name or "")
     hints: list[str] = []
     seen: set[str] = set()
-    for match in re.finditer(r"\d+(?:\.\d+)*", os_name):
+    for match in re.finditer(r"\d+(?:\.\d+)*", text):
         value = match.group()
-        if value not in seen:
-            seen.add(value)
-            hints.append(value)
+        if value in seen or value in _NON_VERSION_HINTS:
+            continue
+        # "3.x or later" is a range, not version 3.
+        if re.search(rf"(?<!\d){re.escape(value)}\.x\b", text, re.I):
+            continue
+        # Lone digit after SP / R / U is a pack marker, not a product version.
+        if "." not in value:
+            prefix = text[max(0, match.start() - 4) : match.start()]
+            if re.search(r"(?:^|[^A-Za-z0-9])(?:SP|R|U)\s*$", prefix, re.I):
+                continue
+        seen.add(value)
+        hints.append(value)
     return hints
 
 
+def _version_parts(value: str) -> list[str]:
+    return [part for part in str(value or "").split(".") if part != ""]
+
+
 def _release_score(release_name: str, hint: str) -> int:
+    """Score a release name against a version hint (dot-aware, no weak majors)."""
+    if not release_name or not hint:
+        return 0
     if release_name == hint:
         return 100
-    if release_name.startswith(hint) or hint.startswith(release_name):
-        return 80
-    if release_name.split(".")[0] == hint.split(".")[0]:
-        return 60
-    if hint in release_name:
-        return 40
+
+    rel_parts = _version_parts(release_name)
+    hint_parts = _version_parts(hint)
+    if not rel_parts or not hint_parts:
+        return 0
+
+    shorter = min(len(rel_parts), len(hint_parts))
+    if rel_parts[:shorter] == hint_parts[:shorter]:
+        # Bare major like "11" must not prefix-match "11.4".
+        if len(hint_parts) == 1 and len(rel_parts) > 1:
+            return 0
+        # Hint "11.4.1" against release "11.4" (hint longer) — still a solid family hit.
+        return 90
+
+    # Shared major only when both sides are multi-part (e.g. 8.6 vs 8.4) — too weak alone.
+    if len(hint_parts) > 1 and len(rel_parts) > 1 and rel_parts[0] == hint_parts[0]:
+        return 55
     return 0
 
 
 def pick_release(releases: list[dict[str, Any]], hints: list[str]) -> dict[str, Any]:
-    if not releases:
-        return {}
-    if not hints:
-        return releases[0]
+    """Pick a release only when version evidence is strong.
 
-    best_release = releases[0]
-    best_score = -1
+    - No version hints → no match (never guess the first/latest release).
+    - Best score must be >= ``_MIN_RELEASE_SCORE``.
+    """
+    if not releases or not hints:
+        return {}
+
+    best_release: dict[str, Any] = {}
+    best_score = 0
     for release in releases:
-        release_name = str(release.get("name", ""))
+        release_name = str(release.get("name", "") or "")
         score = max((_release_score(release_name, hint) for hint in hints), default=0)
         if score > best_score:
             best_score = score
             best_release = release
-    return best_release
+    return best_release if best_score >= _MIN_RELEASE_SCORE else {}
 
 
 def fetch_product(slug: str) -> dict[str, Any]:

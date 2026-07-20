@@ -375,8 +375,9 @@ def _version_tokens(text: str) -> list[str]:
 def _junos_version_hints(os_name: str) -> list[str]:
     hints: list[str] = []
     seen: set[str] = set()
-    candidates = _version_tokens(os_name)
-    for hint in extract_version_hints(os_name):
+    text = str(os_name or "")
+    candidates = _version_tokens(text)
+    for hint in extract_version_hints(text):
         cleaned = _clean(hint)
         if not cleaned or "." not in cleaned:
             continue
@@ -391,7 +392,10 @@ def _junos_version_hints(os_name: str) -> list[str]:
         cleaned = _clean(hint)
         if not cleaned or cleaned in _NON_VERSION_HINTS:
             continue
-        if re.search(rf"(?<!\d){re.escape(cleaned)}\.x\b", os_name, re.I):
+        if re.search(rf"(?<!\d){re.escape(cleaned)}\.x\b", text, re.I):
+            continue
+        # Drop lone SP/R/U pack digits kept by bare-token extraction (e.g. SP3 → 3).
+        if "." not in cleaned and _is_service_pack_digit(text, cleaned):
             continue
         key = cleaned.lower()
         if key in seen:
@@ -399,6 +403,17 @@ def _junos_version_hints(os_name: str) -> list[str]:
         seen.add(key)
         hints.append(cleaned)
     return hints
+
+
+def _is_service_pack_digit(os_name: str, digit: str) -> bool:
+    """True when every occurrence of ``digit`` is an SP/R/U pack marker."""
+    found = False
+    for match in re.finditer(rf"(?<!\d){re.escape(digit)}(?!\d)", os_name):
+        found = True
+        prefix = os_name[max(0, match.start() - 4) : match.start()]
+        if not re.search(r"(?:^|[^A-Za-z0-9])(?:SP|R|U)\s*$", prefix, re.I):
+            return False
+    return found
 
 
 def _normalize_version_key(value: str) -> str:
@@ -417,11 +432,14 @@ def _version_match_score(release_version: str, hint: str) -> int:
     rel_base = re.split(r"x", rel, maxsplit=1)[0]
     hint_base = re.split(r"x", hint_key, maxsplit=1)[0]
     # Different X-trains that share a base (15.1X53 vs 15.1X49) must not match.
-    if rel_has_x and hint_has_x:
+    if rel_has_x and hint_has_x and rel != hint_key:
         return 0
-    # Bare family hint (15.1) against an X-train release (15.1X53).
-    if rel_has_x and not hint_has_x and rel_base == hint_base:
-        return 88
+    # Family-only hint (15.1) must not guess an X-train (15.1X53) — if unsure, blank.
+    if rel_has_x and not hint_has_x:
+        return 0
+    # X-train hint against a non-X release with the same base — too ambiguous.
+    if hint_has_x and not rel_has_x:
+        return 0
     rel_parts = rel_base.split(".")
     hint_parts = hint_base.split(".")
     shorter = min(len(rel_parts), len(hint_parts))
