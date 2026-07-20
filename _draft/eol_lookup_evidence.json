@@ -1,95 +1,320 @@
 {
   "by_os": {
-    "Red Hat Enterprise Linux release 9.7 (Plow)": {
+    "Palo Alto Networks PAN-OS 10.2.13-h7": {
       "detailed": {
         "method": "eol",
-        "queryUsed": "Red Hat Enterprise Linux release 9.7 (Plow)",
+        "queryUsed": "Palo Alto Networks PAN-OS 10.2.13-h7",
         "queryField": "os_string",
-        "productSlug": "rhel",
-        "releaseName": "9",
-        "releaseLabel": "9 (Upcoming ELS)",
+        "productSlug": "panos",
+        "releaseName": "10.2",
+        "releaseLabel": "10.2",
         "matchedFrom": {
           "os_string": "",
-          "normalized_os_detailed_name": "Red Hat Enterprise Linux 9 (Upcoming ELS)",
-          "normalized_os": "Red Hat Enterprise Linux 9"
+          "normalized_os_detailed_name": "Palo Alto Networks PAN-OS 10.2",
+          "normalized_os": "Palo Alto Networks PAN-OS 10.2"
         }
       },
       "normalized": {
         "method": "eol",
-        "queryUsed": "Red Hat Enterprise Linux release 9.7 (Plow)",
+        "queryUsed": "Palo Alto Networks PAN-OS 10.2.13-h7",
         "queryField": "os_string",
-        "productSlug": "rhel",
-        "releaseName": "9",
-        "releaseLabel": "9 (Upcoming ELS)",
+        "productSlug": "panos",
+        "releaseName": "10.2",
+        "releaseLabel": "10.2",
         "matchedFrom": {
           "os_string": "",
-          "normalized_os_detailed_name": "Red Hat Enterprise Linux 9 (Upcoming ELS)",
-          "normalized_os": "Red Hat Enterprise Linux 9"
+          "normalized_os_detailed_name": "Palo Alto Networks PAN-OS 10.2",
+          "normalized_os": "Palo Alto Networks PAN-OS 10.2"
         }
       },
       "eol": {
         "method": "api",
-        "queryUsed": "Red Hat Enterprise Linux release 9.7 (Plow)",
+        "queryUsed": "Palo Alto Networks PAN-OS 10.2.13-h7",
         "queryField": "os_string",
-        "productSlug": "rhel",
-        "releaseName": "9",
-        "releaseLabel": "9 (Upcoming ELS)",
+        "productSlug": "panos",
+        "releaseName": "10.2",
+        "releaseLabel": "10.2",
         "apiNote": "",
         "got": {
-          "eol_date": "1969574400",
+          "eol_date": "1756252800",
           "eol_status": "",
-          "eoas_date": "1811721600",
+          "eoas_date": "",
           "eoas_status": "",
-          "normalized_os_detailed_name": "Red Hat Enterprise Linux 9 (Upcoming ELS)",
-          "normalized_os": "Red Hat Enterprise Linux 9"
+          "normalized_os_detailed_name": "Palo Alto Networks PAN-OS 10.2",
+          "normalized_os": "Palo Alto Networks PAN-OS 10.2"
         }
       }
     },
-    "Red Hat Enterprise Linux release 9.8 (Plow)": {
+    "Palo Alto Networks PAN-OS 11.1.4-h7": {
       "detailed": {
         "method": "eol",
-        "queryUsed": "Red Hat Enterprise Linux release 9.8 (Plow)",
+        "queryUsed": "Palo Alto Networks PAN-OS 11.1.4-h7",
         "queryField": "os_string",
-        "productSlug": "rhel",
-        "releaseName": "9",
-        "releaseLabel": "9 (Upcoming ELS)",
+        "productSlug": "panos",
+        "releaseName": "11.1",
+        "releaseLabel": "11.1",
         "matchedFrom": {
           "os_string": "",
-          "normalized_os_detailed_name": "Red Hat Enterprise Linux 9 (Upcoming ELS)",
-          "normalized_os": "Red Hat Enterprise Linux 9"
+          "normalized_os_detailed_name": "Palo Alto Networks PAN-OS 11.1",
+          "normalized_os": "Palo Alto Networks PAN-OS 11.1"
         }
       },
       "normalized": {
         "method": "eol",
-        "queryUsed": "Red Hat Enterprise Linux release 9.8 (Plow)",
+        "queryUsed": "Palo Alto Networks PAN-OS 11.1.4-h7",
         "queryField": "os_string",
-        "productSlug": "rhel",
-        "releaseName": "9",
-        "releaseLabel": "9 (Upcoming ELS)",
+        "productSlug": "panos",
+        "releaseName": "11.1",
+        "releaseLabel": "11.1",
         "matchedFrom": {
           "os_string": "",
-          "normalized_os_detailed_name": "Red Hat Enterprise Linux 9 (Upcoming ELS)",
-          "normalized_os": "Red Hat Enterprise Linux 9"
+          "normalized_os_detailed_name": "Palo Alto Networks PAN-OS 11.1",
+          "normalized_os": "Palo Alto Networks PAN-OS 11.1"
         }
       },
       "eol": {
         "method": "api",
-        "queryUsed": "Red Hat Enterprise Linux release 9.8 (Plow)",
+        "queryUsed": "Palo Alto Networks PAN-OS 11.1.4-h7",
         "queryField": "os_string",
-        "productSlug": "rhel",
-        "releaseName": "9",
-        "releaseLabel": "9 (Upcoming ELS)",
+        "productSlug": "panos",
+        "releaseName": "11.1",
+        "releaseLabel": "11.1",
         "apiNote": "",
         "got": {
-          "eol_date": "1969574400",
+          "eol_date": "1809302400",
           "eol_status": "",
-          "eoas_date": "1811721600",
+          "eoas_date": "",
           "eoas_status": "",
-          "normalized_os_detailed_name": "Red Hat Enterprise Linux 9 (Upcoming ELS)",
-          "normalized_os": "Red Hat Enterprise Linux 9"
+          "normalized_os_detailed_name": "Palo Alto Networks PAN-OS 11.1",
+          "normalized_os": "Palo Alto Networks PAN-OS 11.1"
+        }
+      }
+    },
+    "Palo Alto Networks PAN-OS 11.1.6-h14": {
+      "detailed": {
+        "method": "eol",
+        "queryUsed": "Palo Alto Networks PAN-OS 11.1.6-h14",
+        "queryField": "os_string",
+        "productSlug": "panos",
+        "releaseName": "11.1",
+        "releaseLabel": "11.1",
+        "matchedFrom": {
+          "os_string": "",
+          "normalized_os_detailed_name": "Palo Alto Networks PAN-OS 11.1",
+          "normalized_os": "Palo Alto Networks PAN-OS 11.1"
+        }
+      },
+      "normalized": {
+        "method": "eol",
+        "queryUsed": "Palo Alto Networks PAN-OS 11.1.6-h14",
+        "queryField": "os_string",
+        "productSlug": "panos",
+        "releaseName": "11.1",
+        "releaseLabel": "11.1",
+        "matchedFrom": {
+          "os_string": "",
+          "normalized_os_detailed_name": "Palo Alto Networks PAN-OS 11.1",
+          "normalized_os": "Palo Alto Networks PAN-OS 11.1"
+        }
+      },
+      "eol": {
+        "method": "api",
+        "queryUsed": "Palo Alto Networks PAN-OS 11.1.6-h14",
+        "queryField": "os_string",
+        "productSlug": "panos",
+        "releaseName": "11.1",
+        "releaseLabel": "11.1",
+        "apiNote": "",
+        "got": {
+          "eol_date": "1809302400",
+          "eol_status": "",
+          "eoas_date": "",
+          "eoas_status": "",
+          "normalized_os_detailed_name": "Palo Alto Networks PAN-OS 11.1",
+          "normalized_os": "Palo Alto Networks PAN-OS 11.1"
+        }
+      }
+    },
+    "Palo Alto Networks PAN-OS 11.2.10-h2": {
+      "detailed": {
+        "method": "eol",
+        "queryUsed": "Palo Alto Networks PAN-OS 11.2.10-h2",
+        "queryField": "os_string",
+        "productSlug": "panos",
+        "releaseName": "11.2",
+        "releaseLabel": "11.2",
+        "matchedFrom": {
+          "os_string": "",
+          "normalized_os_detailed_name": "Palo Alto Networks PAN-OS 11.2",
+          "normalized_os": "Palo Alto Networks PAN-OS 11.2"
+        }
+      },
+      "normalized": {
+        "method": "eol",
+        "queryUsed": "Palo Alto Networks PAN-OS 11.2.10-h2",
+        "queryField": "os_string",
+        "productSlug": "panos",
+        "releaseName": "11.2",
+        "releaseLabel": "11.2",
+        "matchedFrom": {
+          "os_string": "",
+          "normalized_os_detailed_name": "Palo Alto Networks PAN-OS 11.2",
+          "normalized_os": "Palo Alto Networks PAN-OS 11.2"
+        }
+      },
+      "eol": {
+        "method": "api",
+        "queryUsed": "Palo Alto Networks PAN-OS 11.2.10-h2",
+        "queryField": "os_string",
+        "productSlug": "panos",
+        "releaseName": "11.2",
+        "releaseLabel": "11.2",
+        "apiNote": "",
+        "got": {
+          "eol_date": "1809216000",
+          "eol_status": "",
+          "eoas_date": "",
+          "eoas_status": "",
+          "normalized_os_detailed_name": "Palo Alto Networks PAN-OS 11.2",
+          "normalized_os": "Palo Alto Networks PAN-OS 11.2"
+        }
+      }
+    },
+    "Palo Alto Networks PAN-OS 11.2.10-h3": {
+      "detailed": {
+        "method": "eol",
+        "queryUsed": "Palo Alto Networks PAN-OS 11.2.10-h3",
+        "queryField": "os_string",
+        "productSlug": "panos",
+        "releaseName": "11.2",
+        "releaseLabel": "11.2",
+        "matchedFrom": {
+          "os_string": "",
+          "normalized_os_detailed_name": "Palo Alto Networks PAN-OS 11.2",
+          "normalized_os": "Palo Alto Networks PAN-OS 11.2"
+        }
+      },
+      "normalized": {
+        "method": "eol",
+        "queryUsed": "Palo Alto Networks PAN-OS 11.2.10-h3",
+        "queryField": "os_string",
+        "productSlug": "panos",
+        "releaseName": "11.2",
+        "releaseLabel": "11.2",
+        "matchedFrom": {
+          "os_string": "",
+          "normalized_os_detailed_name": "Palo Alto Networks PAN-OS 11.2",
+          "normalized_os": "Palo Alto Networks PAN-OS 11.2"
+        }
+      },
+      "eol": {
+        "method": "api",
+        "queryUsed": "Palo Alto Networks PAN-OS 11.2.10-h3",
+        "queryField": "os_string",
+        "productSlug": "panos",
+        "releaseName": "11.2",
+        "releaseLabel": "11.2",
+        "apiNote": "",
+        "got": {
+          "eol_date": "1809216000",
+          "eol_status": "",
+          "eoas_date": "",
+          "eoas_status": "",
+          "normalized_os_detailed_name": "Palo Alto Networks PAN-OS 11.2",
+          "normalized_os": "Palo Alto Networks PAN-OS 11.2"
+        }
+      }
+    },
+    "Palo Alto Networks PAN-OS 11.1.13": {
+      "detailed": {
+        "method": "eol",
+        "queryUsed": "Palo Alto Networks PAN-OS 11.1.13",
+        "queryField": "os_string",
+        "productSlug": "panos",
+        "releaseName": "11.1",
+        "releaseLabel": "11.1",
+        "matchedFrom": {
+          "os_string": "",
+          "normalized_os_detailed_name": "Palo Alto Networks PAN-OS 11.1",
+          "normalized_os": "Palo Alto Networks PAN-OS 11.1"
+        }
+      },
+      "normalized": {
+        "method": "eol",
+        "queryUsed": "Palo Alto Networks PAN-OS 11.1.13",
+        "queryField": "os_string",
+        "productSlug": "panos",
+        "releaseName": "11.1",
+        "releaseLabel": "11.1",
+        "matchedFrom": {
+          "os_string": "",
+          "normalized_os_detailed_name": "Palo Alto Networks PAN-OS 11.1",
+          "normalized_os": "Palo Alto Networks PAN-OS 11.1"
+        }
+      },
+      "eol": {
+        "method": "api",
+        "queryUsed": "Palo Alto Networks PAN-OS 11.1.13",
+        "queryField": "os_string",
+        "productSlug": "panos",
+        "releaseName": "11.1",
+        "releaseLabel": "11.1",
+        "apiNote": "",
+        "got": {
+          "eol_date": "1809302400",
+          "eol_status": "",
+          "eoas_date": "",
+          "eoas_status": "",
+          "normalized_os_detailed_name": "Palo Alto Networks PAN-OS 11.1",
+          "normalized_os": "Palo Alto Networks PAN-OS 11.1"
+        }
+      }
+    },
+    "Palo Alto Networks PAN-OS 11.1.13-h3": {
+      "detailed": {
+        "method": "eol",
+        "queryUsed": "Palo Alto Networks PAN-OS 11.1.13-h3",
+        "queryField": "os_string",
+        "productSlug": "panos",
+        "releaseName": "11.1",
+        "releaseLabel": "11.1",
+        "matchedFrom": {
+          "os_string": "",
+          "normalized_os_detailed_name": "Palo Alto Networks PAN-OS 11.1",
+          "normalized_os": "Palo Alto Networks PAN-OS 11.1"
+        }
+      },
+      "normalized": {
+        "method": "eol",
+        "queryUsed": "Palo Alto Networks PAN-OS 11.1.13-h3",
+        "queryField": "os_string",
+        "productSlug": "panos",
+        "releaseName": "11.1",
+        "releaseLabel": "11.1",
+        "matchedFrom": {
+          "os_string": "",
+          "normalized_os_detailed_name": "Palo Alto Networks PAN-OS 11.1",
+          "normalized_os": "Palo Alto Networks PAN-OS 11.1"
+        }
+      },
+      "eol": {
+        "method": "api",
+        "queryUsed": "Palo Alto Networks PAN-OS 11.1.13-h3",
+        "queryField": "os_string",
+        "productSlug": "panos",
+        "releaseName": "11.1",
+        "releaseLabel": "11.1",
+        "apiNote": "",
+        "got": {
+          "eol_date": "1809302400",
+          "eol_status": "",
+          "eoas_date": "",
+          "eoas_status": "",
+          "normalized_os_detailed_name": "Palo Alto Networks PAN-OS 11.1",
+          "normalized_os": "Palo Alto Networks PAN-OS 11.1"
         }
       }
     }
   },
-  "updated_at": "2026-07-20T12:58:37"
+  "updated_at": "2026-07-20T14:05:26"
 }

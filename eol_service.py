@@ -34,6 +34,7 @@ _SLUG_PRIORITY_OVERRIDES: list[tuple[str, str]] = [
         "rhel",
     ),
     (r"\bopenshift\b|\bred[\s-]?hat[\s-]?openshift\b", "red-hat-openshift"),
+    (r"\bpalo\s+alto\b|\bpan[\s-]?os\b", "panos"),
 ]
 
 # Inventory phrases not present as API labels/aliases (longest-match index).
@@ -72,7 +73,8 @@ def _normalize_phrase(value: str) -> str:
 def _normalize_for_slug_lookup(os_name: str) -> str:
     """Normalize messy inventory strings for product slug detection."""
     text = _clean(os_name).lower()
-    text = text.replace("_", " ").replace("/", " ")
+    # Hyphens often separate product tokens (PAN-OS) and hotfix markers (11.2.10-h3).
+    text = text.replace("_", " ").replace("/", " ").replace("-", " ")
     for pattern, replacement in _GLUED_PHRASE_REPLACEMENTS:
         text = re.sub(pattern, replacement, text, flags=re.I)
     text = _LETTER_DIGIT_BOUNDARY_RE.sub(" ", text)

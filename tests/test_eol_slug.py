@@ -68,6 +68,11 @@ TEST_CATALOG: list[dict[str, object]] = [
         "label": "Red Hat OpenShift",
         "aliases": ["openshift", "rh-openshift"],
     },
+    {
+        "name": "panos",
+        "label": "Palo Alto Networks PAN-OS",
+        "aliases": ["pan-os"],
+    },
 ]
 
 VALID = frozenset(str(item["name"]) for item in TEST_CATALOG)
@@ -116,6 +121,29 @@ class ResolveProductSlugTests(unittest.TestCase):
         releases = [{"name": "7"}, {"name": "8"}, {"name": "9"}]
         picked = pick_release(releases, extract_version_hints("Red Hat Linux 7.4"))
         self.assertEqual(picked.get("name"), "7")
+
+    def test_panos_slug_and_release_trains(self) -> None:
+        cases = {
+            "Palo Alto Networks PAN-OS 10.2.13-h7": "panos",
+            "Palo Alto Networks PAN-OS 11.1.4-h7": "panos",
+            "Palo Alto Networks PAN-OS 11.2.10-h3": "panos",
+            "Palo Alto Networks PAN-OS 11.1.13": "panos",
+        }
+        for os_name, expected_slug in cases.items():
+            with self.subTest(os_name=os_name):
+                self.assertEqual(resolve(os_name), expected_slug)
+
+        releases = [{"name": "11.2"}, {"name": "11.1"}, {"name": "10.2"}]
+        picked = pick_release(
+            releases,
+            extract_version_hints("Palo Alto Networks PAN-OS 11.2.10-h3"),
+        )
+        self.assertEqual(picked.get("name"), "11.2")
+        picked_11_1 = pick_release(
+            releases,
+            extract_version_hints("Palo Alto Networks PAN-OS 11.1.13-h3"),
+        )
+        self.assertEqual(picked_11_1.get("name"), "11.1")
 
 
 if __name__ == "__main__":
