@@ -1,6 +1,6 @@
 """Scrape Router-Switch.com EOL/EOSL checker into a local SQLite cache.
 
-Viewer-only source: not used for Refresh EOL/EOAS date population.
+Used by Vendor Lookups (viewer/sync) and optionally by Refresh EOL/EOAS when enabled.
 Requires curl_cffi (Chrome TLS impersonation) because the site is behind Cloudflare.
 """
 
@@ -17,6 +17,15 @@ from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 from curl_cffi import requests as curl_requests
+
+from eol_service import (
+    extract_version_hints,
+    iso_date_to_epoch,
+    pick_api_os_value_with_field,
+    resolve_lifecycle_status,
+)
+from normalization_service import vendors_compatible
+from version_match import score_release_against_hint
 
 SOURCE_URL = "https://www.router-switch.com/eol-eosl-checker/"
 BASE_URL = "https://www.router-switch.com"
@@ -528,3 +537,176 @@ def list_all_rows(db_path: Path | None = None) -> list[dict[str, object]]:
                 }
             )
     return rows
+
+
+_MIN_RELEASE_SCORE = 80
+_VERSION_IN_TEXT_RE = re.compile(r"\d+(?:\.\d+)+(?:[a-zA-Z]+\d*)?")
+
+
+def _field_version_tokens(value: str) -> list[str]:
+    text = _clean(value)
+    if not text:
+        return []
+    tokens = extract_version_hints(text)
+    if tokens:
+        return tokens
+    return [match.group(0) for match in _VERSION_IN_TEXT_RE.finditer(text)]
+
+
+def _score_router_switch_row(
+    part_number: str,
+    product_name: str,
+    query: str,
+    hints: list[str],
+) -> int:
+    best = 0
+    query_key = re.sub(r"\s+", " ", query.lower()).strip()
+    for field in (part_number, product_name):
+        field_key = re.sub(r"\s+", " ", field.lower()).strip()
+        if not field_key:
+            continue
+        if field_key == query_key:
+            return 100
+        if query_key and (query_key in field_key or field_key in query_key):
+            # Require a shared multi-segment version when both sides expose one.
+            query_versions = _field_version_tokens(query)
+            field_versions = _field_version_tokens(field)
+            if query_versions and field_versions:
+                version_hit = max(
+                    (
+                        score_release_against_hint(field_ver, query_ver)
+                        for field_ver in field_versions
+                        for query_ver in query_versions
+                    ),
+                    default=0,
+                )
+                if version_hit >= _MIN_RELEASE_SCORE:
+                    best = max(best, 92)
+            elif not query_versions:
+                best = max(best, 85)
+        for hint in hints:
+            for token in _field_version_tokens(field):
+                best = max(best, score_release_against_hint(token, hint))
+            # Exact part-number style hint.
+            if field_key == hint.lower():
+                best = max(best, 100)
+    return best
+
+
+def lookup_os_router_switch(
+    os_string: str,
+    normalized_os_detailed_name: str,
+    normalized_os: str,
+    reference_date: str | None = None,
+    db_path: Path | None = None,
+) -> dict[str, str]:
+    today = reference_date or date.today().isoformat()
+    cleaned_name, query_field = pick_api_os_value_with_field(
+        os_string, normalized_os_detailed_name, normalized_os
+    )
+
+    empty = {
+        "eol_date": "",
+        "eol_status": "",
+        "eoas_date": "",
+        "eoas_status": "",
+        "normalized_os_detailed_name": "",
+        "normalized_os": "",
+        "api_note": "",
+        "query_used": cleaned_name,
+        "query_field": query_field,
+        "product_slug": "",
+        "release_name": "",
+        "release_label": "",
+        "source": "router-switch",
+    }
+
+    init_db(db_path)
+    with _connect(db_path) as connection:
+        release_count = connection.execute("SELECT COUNT(*) FROM releases").fetchone()[0]
+        if not release_count:
+            empty["api_note"] = (
+                "Local Router-Switch database is empty. "
+                "Run Update under Vendor Lookups first."
+            )
+            return empty
+
+        manufacturer_names = {
+            _clean(row["slug"]): _clean(row["name"])
+            for row in connection.execute("SELECT slug, name FROM products")
+        }
+        hints = extract_version_hints(cleaned_name)
+        if cleaned_name != _clean(os_string):
+            for hint in extract_version_hints(_clean(os_string)):
+                if hint not in hints:
+                    hints.append(hint)
+
+        best_row = None
+        best_score = 0
+        cursor = connection.execute(
+            """
+            SELECT product_slug, release_name, released_date,
+                   eol_date, eoas_date, latest_raw
+            FROM releases
+            """
+        )
+        for row in cursor:
+            part = _clean(row["release_name"])
+            product_name = _clean(row["latest_raw"]) or part
+            manufacturer = manufacturer_names.get(_clean(row["product_slug"]), "")
+            if manufacturer and _clean(os_string):
+                if not vendors_compatible(os_string, f"{manufacturer} {product_name}"):
+                    continue
+            score = _score_router_switch_row(part, product_name, cleaned_name, hints)
+            if cleaned_name != _clean(os_string):
+                score = max(
+                    score,
+                    _score_router_switch_row(part, product_name, _clean(os_string), hints),
+                )
+            if score > best_score:
+                best_score = score
+                best_row = row
+
+        if best_row is None or best_score < _MIN_RELEASE_SCORE:
+            empty["api_note"] = "No matching Router-Switch product/release"
+            return empty
+
+        eol_iso = _clean(best_row["eol_date"])
+        eoas_iso = _clean(best_row["eoas_date"])
+        part = _clean(best_row["release_name"])
+        product_name = _clean(best_row["latest_raw"]) or part
+        product_slug = _clean(best_row["product_slug"])
+        label = product_name if product_name == part else f"{product_name} ({part})"
+
+        return {
+            "eol_date": iso_date_to_epoch(eol_iso),
+            "eol_status": resolve_lifecycle_status(eol_iso, None, today),
+            "eoas_date": iso_date_to_epoch(eoas_iso),
+            "eoas_status": resolve_lifecycle_status(eoas_iso, None, today),
+            "normalized_os_detailed_name": "",
+            "normalized_os": "",
+            "api_note": "",
+            "query_used": cleaned_name,
+            "query_field": query_field,
+            "product_slug": product_slug,
+            "release_name": part,
+            "release_label": label,
+            "source": "router-switch",
+        }
+
+
+def lookup_os_router_switch_batch(
+    items: list[dict[str, str]],
+    reference_date: str | None = None,
+    db_path: Path | None = None,
+) -> list[dict[str, str]]:
+    return [
+        lookup_os_router_switch(
+            item.get("os_string", ""),
+            item.get("normalized_os_detailed_name", ""),
+            item.get("normalized_os", ""),
+            reference_date=reference_date,
+            db_path=db_path,
+        )
+        for item in items
+    ]

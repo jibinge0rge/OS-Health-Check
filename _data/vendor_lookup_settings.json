@@ -1,0 +1,30 @@
+{
+  "sources": {
+    "eosl": {
+      "enabled": true,
+      "keywords": []
+    },
+    "junos": {
+      "enabled": true,
+      "keywords": [
+        "junos",
+        "juniper"
+      ]
+    },
+    "suse": {
+      "enabled": true,
+      "keywords": [
+        "suse",
+        "sles",
+        "opensuse"
+      ]
+    },
+    "router-switch": {
+      "enabled": false,
+      "keywords": [
+        "cisco"
+      ]
+    }
+  },
+  "updated_at": "2026-07-21T07:06:22+00:00"
+}

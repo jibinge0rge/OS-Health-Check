@@ -40,10 +40,12 @@ from suse_service import (
     sync_suse_database,
 )
 from vendor_lookup_service import (
+    get_lookup_settings as vendor_get_lookup_settings,
     get_status as vendor_get_status,
     list_rows as vendor_list_rows,
     list_sources as vendor_list_sources,
     lookup_vendor_batch,
+    save_lookup_settings as vendor_save_lookup_settings,
     save_source_preferences as vendor_save_source_preferences,
     sync_source as vendor_sync_source,
 )
@@ -125,9 +127,20 @@ class EolLookupBatchRequest(BaseModel):
 
 
 class VendorSyncRequest(BaseModel):
-    """Optional sync options (currently Router-Switch manufacturer filter)."""
+    """Optional sync / preference options for vendor sources."""
 
     manufacturers: list[str] | None = None
+    enabled: bool | None = None
+    keywords: list[str] | None = None
+
+
+class VendorLookupSettingsSource(BaseModel):
+    enabled: bool | None = None
+    keywords: list[str] | None = None
+
+
+class VendorLookupSettingsRequest(BaseModel):
+    sources: dict[str, VendorLookupSettingsSource] = Field(default_factory=dict)
 
 
 class NormalizationPair(BaseModel):
@@ -848,6 +861,29 @@ async def vendor_lookup_rows(source_id: str) -> dict[str, object]:
     return {"rows": rows, "status": status, "source_id": source_id}
 
 
+@app.get("/api/vendor-lookups/settings")
+async def vendor_lookup_settings_get() -> dict[str, object]:
+    return await asyncio.to_thread(vendor_get_lookup_settings)
+
+
+@app.post("/api/vendor-lookups/settings")
+async def vendor_lookup_settings_save(
+    payload: VendorLookupSettingsRequest,
+) -> dict[str, object]:
+    try:
+        return await asyncio.to_thread(
+            vendor_save_lookup_settings,
+            {
+                "sources": {
+                    source_id: source.model_dump(exclude_none=True)
+                    for source_id, source in payload.sources.items()
+                }
+            },
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
 @app.post("/api/vendor-lookups/{source_id}/preferences")
 async def vendor_lookup_preferences(
     source_id: str,
@@ -855,11 +891,18 @@ async def vendor_lookup_preferences(
 ) -> dict[str, object]:
     if source_id not in VALID_VENDOR_SOURCES:
         raise HTTPException(status_code=404, detail=f"Unknown vendor source: {source_id}")
+    options: dict[str, object] = {}
+    if payload.enabled is not None:
+        options["enabled"] = payload.enabled
+    if payload.keywords is not None:
+        options["keywords"] = payload.keywords
+    if payload.manufacturers is not None:
+        options["manufacturers"] = payload.manufacturers
     try:
         result = await asyncio.to_thread(
             vendor_save_source_preferences,
             source_id,
-            {"manufacturers": payload.manufacturers or []},
+            options,
         )
     except KeyError as error:
         raise HTTPException(
@@ -907,7 +950,7 @@ async def vendor_lookup_sync(
 
 @app.post("/api/vendor-lookup")
 async def vendor_lookup(payload: EolLookupBatchRequest) -> dict[str, object]:
-    """Junos → junos then eosl; SUSE → suse then eosl; else eosl."""
+    """Local vendor fallback after endoflife.date (eosl → junos → suse → router-switch)."""
     results = await asyncio.to_thread(
         lookup_vendor_batch,
         [item.model_dump() for item in payload.items],

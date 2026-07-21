@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OS Health Check</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=51" />
+    <link rel="stylesheet" href="/static/styles.css?v=62" />
   </head>
   <body>
     <main class="app-shell">
@@ -84,22 +84,28 @@
           >
             View / Update Vendor Lookups
           </button>
-          <div class="menu-anchor data-only-control">
-            <button
-              id="azure-menu-button"
-              class="secondary-button compact-button"
-              type="button"
-              aria-haspopup="menu"
-              aria-expanded="false"
-              aria-controls="azure-menu"
-            >
-              Azure
-            </button>
-            <div id="azure-menu" class="action-menu hidden" role="menu" aria-label="Azure actions">
-              <button id="azure-upload-button" type="button" role="menuitem">Upload</button>
-              <button id="azure-settings-button" type="button" role="menuitem">Settings</button>
-            </div>
-          </div>
+          <button
+            id="deploy-button"
+            class="secondary-button compact-button data-only-control"
+            type="button"
+            title="Deploy Data to cloud storage"
+          >
+            Deploy
+          </button>
+          <button
+            id="settings-button"
+            class="secondary-button compact-button icon-only-button settings-button"
+            type="button"
+            aria-label="Settings"
+            title="Settings"
+          >
+            <svg class="settings-button-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path
+                fill="currentColor"
+                d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.52-.4-1.08-.73-1.69-.98l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.61.25-1.17.59-1.69.98l-2.39-.96a.488.488 0 0 0-.59.22L2.74 8.87a.49.49 0 0 0 .12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.52.4 1.08.73 1.69.98l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.61-.25 1.17-.59 1.69-.98l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61l-2.03-1.58zM12 15.6A3.6 3.6 0 1 1 15.6 12 3.6 3.6 0 0 1 12 15.6z"
+              />
+            </svg>
+          </button>
         </div>
       </section>
 
@@ -295,6 +301,7 @@
                       <option value="eosl">eosl.date</option>
                       <option value="junos">Juniper Junos</option>
                       <option value="suse">SUSE Lifecycle</option>
+                      <option value="router-switch">Router-Switch EOL</option>
                       <option value="lookup-fallback">Lookup copy</option>
                       <option value="ambiguous">Ambiguous</option>
                       <option value="null">NULL</option>
@@ -515,6 +522,157 @@
           <button id="bulk-progress-cancel" class="ghost-button" type="button">Cancel</button>
         </div>
       </div>
+    </dialog>
+
+    <dialog id="deploy-dialog" class="modal">
+      <div class="modal-card deploy-dialog-card">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">Cloud deploy</p>
+            <h2>Deploy</h2>
+          </div>
+          <button id="deploy-dialog-close" class="ghost-button" type="button">Close</button>
+        </div>
+
+        <p class="modal-note">
+          Publish validated Data to cloud storage. Choose a provider, then run upload or
+          configure connection settings.
+        </p>
+
+        <div
+          id="deploy-cloud-grid"
+          class="deploy-cloud-grid"
+          role="tablist"
+          aria-label="Cloud providers"
+        >
+          <button
+            id="deploy-cloud-azure"
+            class="deploy-cloud-option is-active"
+            type="button"
+            role="tab"
+            aria-selected="true"
+            aria-controls="deploy-azure-panel"
+            data-cloud="azure"
+          >
+            <span class="deploy-cloud-name">Azure</span>
+            <span class="deploy-cloud-desc">Blob Storage</span>
+          </button>
+          <button
+            id="deploy-cloud-aws"
+            class="deploy-cloud-option is-placeholder"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="deploy-aws-panel"
+            data-cloud="aws"
+          >
+            <span class="deploy-cloud-name">AWS</span>
+            <span class="deploy-cloud-badge">Coming soon</span>
+          </button>
+          <button
+            id="deploy-cloud-gcp"
+            class="deploy-cloud-option is-placeholder"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="deploy-gcp-panel"
+            data-cloud="gcp"
+          >
+            <span class="deploy-cloud-name">GCP</span>
+            <span class="deploy-cloud-badge">Coming soon</span>
+          </button>
+        </div>
+
+        <section
+          id="deploy-azure-panel"
+          class="deploy-provider-panel"
+          role="tabpanel"
+          aria-labelledby="deploy-cloud-azure"
+        >
+          <h3>Azure Blob Storage</h3>
+          <p class="deploy-provider-note">
+            Upload the Data CSV to Azure Blob Storage using your signed-in Azure CLI account.
+          </p>
+          <div class="deploy-provider-actions">
+            <button id="azure-upload-button" class="primary-button" type="button">
+              Upload to Azure
+            </button>
+            <button id="azure-settings-button" class="ghost-button" type="button">
+              Azure settings
+            </button>
+          </div>
+        </section>
+
+        <section
+          id="deploy-aws-panel"
+          class="deploy-provider-panel"
+          role="tabpanel"
+          aria-labelledby="deploy-cloud-aws"
+          hidden
+        >
+          <h3>Amazon Web Services</h3>
+          <p class="deploy-provider-note">
+            AWS deploy support is planned. You will be able to publish Data to S3 or other
+            AWS storage targets from here.
+          </p>
+          <span class="deploy-coming-soon-tag">Coming soon</span>
+        </section>
+
+        <section
+          id="deploy-gcp-panel"
+          class="deploy-provider-panel"
+          role="tabpanel"
+          aria-labelledby="deploy-cloud-gcp"
+          hidden
+        >
+          <h3>Google Cloud Platform</h3>
+          <p class="deploy-provider-note">
+            GCP deploy support is planned. You will be able to publish Data to Cloud Storage
+            from here.
+          </p>
+          <span class="deploy-coming-soon-tag">Coming soon</span>
+        </section>
+      </div>
+    </dialog>
+
+    <dialog id="settings-dialog" class="modal">
+      <form method="dialog" class="modal-card settings-dialog-card">
+        <div class="modal-header">
+          <div>
+            <h2>Settings</h2>
+          </div>
+          <button id="settings-close" class="ghost-button" value="cancel">Close</button>
+        </div>
+
+        <section class="settings-section vendor-settings-section" aria-labelledby="settings-vendor-heading">
+          <div class="settings-section-head">
+            <h3 id="settings-vendor-heading">Vendor lookups</h3>
+            <p class="settings-section-note">
+              Local sources used during Refresh EOL/EOAS after the API. Toggle each source and
+              set family keywords for specialist databases.
+            </p>
+          </div>
+
+          <div class="vendor-settings-flow" aria-label="Refresh fallback order">
+            <span class="vendor-flow-chip is-api is-active" data-flow-source="api">endoflife.date</span>
+            <span class="vendor-flow-arrow" aria-hidden="true">→</span>
+            <span class="vendor-flow-chip" data-flow-source="eosl">eosl</span>
+            <span class="vendor-flow-arrow" aria-hidden="true">→</span>
+            <span class="vendor-flow-chip" data-flow-source="junos">junos</span>
+            <span class="vendor-flow-arrow" aria-hidden="true">→</span>
+            <span class="vendor-flow-chip" data-flow-source="suse">suse</span>
+            <span class="vendor-flow-arrow" aria-hidden="true">→</span>
+            <span class="vendor-flow-chip" data-flow-source="router-switch">router-switch</span>
+          </div>
+
+          <div id="settings-vendor-list" class="vendor-settings-list"></div>
+        </section>
+
+        <div class="modal-actions">
+          <button id="settings-cancel" class="ghost-button" value="cancel">Cancel</button>
+          <button id="settings-save" class="primary-button" type="button">Save</button>
+        </div>
+      </form>
     </dialog>
 
     <dialog id="azure-settings-dialog" class="modal">
@@ -881,8 +1039,27 @@
       const downloadButton = document.getElementById("download-button");
       const downloadDeltaButton = document.getElementById("download-delta-button");
       const showDeltaButton = document.getElementById("show-delta-button");
-      const azureMenuButton = document.getElementById("azure-menu-button");
-      const azureMenu = document.getElementById("azure-menu");
+      const deployButton = document.getElementById("deploy-button");
+      const deployDialog = document.getElementById("deploy-dialog");
+      const deployDialogClose = document.getElementById("deploy-dialog-close");
+      const deployCloudGrid = document.getElementById("deploy-cloud-grid");
+      const deployCloudAzure = document.getElementById("deploy-cloud-azure");
+      const deployCloudAws = document.getElementById("deploy-cloud-aws");
+      const deployCloudGcp = document.getElementById("deploy-cloud-gcp");
+      const deployAzurePanel = document.getElementById("deploy-azure-panel");
+      const deployAwsPanel = document.getElementById("deploy-aws-panel");
+      const deployGcpPanel = document.getElementById("deploy-gcp-panel");
+      let activeDeployCloud = "azure";
+      const DEPLOY_CLOUD_PANELS = {
+        azure: deployAzurePanel,
+        aws: deployAwsPanel,
+        gcp: deployGcpPanel,
+      };
+      const DEPLOY_CLOUD_TABS = {
+        azure: deployCloudAzure,
+        aws: deployCloudAws,
+        gcp: deployCloudGcp,
+      };
       const azureUploadButton = document.getElementById("azure-upload-button");
       const azureSettingsButton = document.getElementById("azure-settings-button");
       const deleteDraftButton = document.getElementById("delete-draft-button");
@@ -890,6 +1067,12 @@
       const bulkUploadButton = document.getElementById("bulk-upload-button");
       const refreshEolButton = document.getElementById("refresh-eol-button");
       const eoslViewButton = document.getElementById("eosl-view-button");
+      const settingsButton = document.getElementById("settings-button");
+      const settingsDialog = document.getElementById("settings-dialog");
+      const settingsClose = document.getElementById("settings-close");
+      const settingsCancel = document.getElementById("settings-cancel");
+      const settingsSave = document.getElementById("settings-save");
+      const settingsVendorList = document.getElementById("settings-vendor-list");
       const eoslDialog = document.getElementById("eosl-dialog");
       const eoslDialogClose = document.getElementById("eosl-dialog-close");
       const eoslFilterInput = document.getElementById("eosl-filter-input");
@@ -919,6 +1102,25 @@
       const eoslRsSelectNone = document.getElementById("eosl-rs-select-none");
       let eoslActiveSource = "eosl";
       let eoslRsManufacturersReady = false;
+      const VENDOR_SETTINGS_ORDER = ["eosl", "junos", "suse", "router-switch"];
+      const VENDOR_SETTINGS_UI = {
+        eosl: {
+          accent: "#06b6d4",
+          desc: "Broad OS lifecycle fallback from eosl.date",
+        },
+        junos: {
+          accent: "#f97316",
+          desc: "Juniper Junos release milestones",
+        },
+        suse: {
+          accent: "#22c55e",
+          desc: "SUSE product lifecycle dates",
+        },
+        "router-switch": {
+          accent: "#a855f7",
+          desc: "Network hardware EOL checker",
+        },
+      };
       const vendorSourceMeta = {
         eosl: {
           label: "eosl.date",
@@ -1446,6 +1648,8 @@
             return "Juniper Junos";
           case "suse":
             return "SUSE Lifecycle";
+          case "router-switch":
+            return "Router-Switch EOL";
           case "ambiguous":
             return "Ambiguous";
           case "manual":
@@ -1482,6 +1686,8 @@
             return "junos";
           case "suse":
             return "suse";
+          case "router-switch":
+            return "eosl";
           case "lookup-fallback":
             return "fallback";
           case "ambiguous":
@@ -1762,14 +1968,21 @@
               ["EOAS status", got.eoas_status || row.eoas_status],
             ]
           )}</div>`;
-        } else if (rawMethod === "eosl" || rawMethod === "junos" || rawMethod === "suse") {
+        } else if (
+          rawMethod === "eosl" ||
+          rawMethod === "junos" ||
+          rawMethod === "suse" ||
+          rawMethod === "router-switch"
+        ) {
           method = rawMethod;
           const sourceLabel =
             rawMethod === "junos"
               ? "Juniper Junos Vendor Lookup"
               : rawMethod === "suse"
                 ? "SUSE Lifecycle Vendor Lookup"
-                : "eosl.date Vendor Lookup";
+                : rawMethod === "router-switch"
+                  ? "Router-Switch EOL Vendor Lookup"
+                  : "eosl.date Vendor Lookup";
           summary =
             `EOL API had no match, so dates and statuses were taken from the local ${sourceLabel} (product + release).`;
           const got = eolProof.got || {};
@@ -2116,12 +2329,12 @@
           syncShowDeltaButton();
         }
 
-        const azureAvailable = onData && !busy;
-        azureMenuButton.disabled = !azureAvailable;
-        azureUploadButton.disabled = !azureAvailable;
-        azureSettingsButton.disabled = !azureAvailable;
-        if (!azureAvailable) {
-          closeAzureMenu();
+        const deployAvailable = onData && !busy;
+        deployButton.disabled = !deployAvailable;
+        azureUploadButton.disabled = !deployAvailable;
+        azureSettingsButton.disabled = !deployAvailable;
+        if (!deployAvailable && deployDialog.open) {
+          closeDeployDialog();
         }
 
         revertButton.disabled =
@@ -3318,7 +3531,9 @@
             ? "Juniper Junos"
             : source === "suse"
               ? "SUSE Lifecycle"
-              : "eosl.date";
+              : source === "router-switch"
+                ? "Router-Switch EOL"
+                : "eosl.date";
         const eolNote = String(eolApiResult?.api_note ?? "").trim();
         const product = String(vendorResult.product_slug ?? "").trim();
         const release = String(
@@ -3330,8 +3545,9 @@
         const vendorNote = matchBits
           ? `Matched via ${sourceLabel} (${matchBits}).`
           : `Matched via ${sourceLabel} (product + release).`;
+        const allowed = new Set(["eosl", "junos", "suse", "router-switch"]);
         return {
-          method: source === "junos" || source === "suse" || source === "eosl" ? source : "eosl",
+          method: allowed.has(source) ? source : "eosl",
           queryUsed: String(vendorResult.query_used ?? "").trim(),
           queryField: String(vendorResult.query_field ?? "").trim(),
           productSlug: product,
@@ -4466,6 +4682,8 @@
             kinds.add("junos");
           } else if (method === "suse") {
             kinds.add("suse");
+          } else if (method === "router-switch") {
+            kinds.add("router-switch");
           } else if (method === "lookup-fallback") {
             kinds.add("lookup-fallback");
           } else if (method === "ambiguous") {
@@ -4482,6 +4700,7 @@
           !kinds.has("eosl") &&
           !kinds.has("junos") &&
           !kinds.has("suse") &&
+          !kinds.has("router-switch") &&
           !kinds.has("lookup-fallback") &&
           !kinds.has("ambiguous")
         ) {
@@ -5660,22 +5879,35 @@
         };
       }
 
-      function closeAzureMenu() {
-        azureMenu.classList.add("hidden");
-        azureMenuButton.setAttribute("aria-expanded", "false");
+      function selectDeployCloud(cloudId) {
+        activeDeployCloud = cloudId;
+        Object.entries(DEPLOY_CLOUD_TABS).forEach(([id, tab]) => {
+          if (!tab) {
+            return;
+          }
+          const isActive = id === cloudId;
+          tab.classList.toggle("is-active", isActive);
+          tab.setAttribute("aria-selected", isActive ? "true" : "false");
+        });
+        Object.entries(DEPLOY_CLOUD_PANELS).forEach(([id, panel]) => {
+          if (!panel) {
+            return;
+          }
+          panel.hidden = id !== cloudId;
+        });
       }
 
-      function toggleAzureMenu() {
-        if (azureMenuButton.disabled || currentSource !== "data") {
+      function openDeployDialog() {
+        if (currentSource !== "data" || deployButton.disabled) {
           return;
         }
+        selectDeployCloud(activeDeployCloud || "azure");
+        deployDialog.showModal();
+      }
 
-        const willOpen = azureMenu.classList.contains("hidden");
-        if (willOpen) {
-          azureMenu.classList.remove("hidden");
-          azureMenuButton.setAttribute("aria-expanded", "true");
-        } else {
-          closeAzureMenu();
+      function closeDeployDialog() {
+        if (deployDialog.open) {
+          deployDialog.close();
         }
       }
 
@@ -5707,6 +5939,377 @@
           return cleaned;
         }
         return parsed.toLocaleString();
+      }
+
+      function parseKeywordsInput(value) {
+        return String(value || "")
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean);
+      }
+
+      function syncVendorFlowIllumination() {
+        const flow = document.querySelector(".vendor-settings-flow");
+        if (!flow) {
+          return;
+        }
+        flow.querySelectorAll("[data-flow-source]").forEach((chip) => {
+          const sourceId = chip.dataset.flowSource;
+          if (sourceId === "api") {
+            chip.classList.add("is-active");
+            return;
+          }
+          const enabledInput = settingsVendorList?.querySelector(
+            `[data-vendor-enabled="${sourceId}"]`
+          );
+          const isEnabled = Boolean(enabledInput?.checked);
+          chip.classList.toggle("is-active", isEnabled);
+          const accent = VENDOR_SETTINGS_UI[sourceId]?.accent;
+          if (isEnabled && accent) {
+            chip.style.setProperty("--flow-accent", accent);
+          } else {
+            chip.style.removeProperty("--flow-accent");
+          }
+        });
+      }
+
+      function normalizeKeywordList(keywords) {
+        const seen = new Set();
+        const normalized = [];
+        keywords.forEach((keyword) => {
+          const cleaned = String(keyword || "").trim();
+          if (!cleaned) {
+            return;
+          }
+          const key = cleaned.toLowerCase();
+          if (seen.has(key)) {
+            return;
+          }
+          seen.add(key);
+          normalized.push(cleaned);
+        });
+        return normalized;
+      }
+
+      function getKeywordEditorValues(editor) {
+        const store = editor?.querySelector("[data-vendor-keywords-value]");
+        return normalizeKeywordList(parseKeywordsInput(store?.value || ""));
+      }
+
+      function setKeywordEditorValues(editor, keywords) {
+        const store = editor?.querySelector("[data-vendor-keywords-value]");
+        if (!store) {
+          return;
+        }
+        store.value = normalizeKeywordList(keywords).join(", ");
+      }
+
+      function createKeywordRemoveIcon() {
+        const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        svg.setAttribute("viewBox", "0 0 12 12");
+        svg.setAttribute("aria-hidden", "true");
+        svg.setAttribute("focusable", "false");
+        svg.classList.add("vendor-keyword-remove-icon");
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.setAttribute("d", "M3 3l6 6M9 3L3 9");
+        path.setAttribute("stroke", "currentColor");
+        path.setAttribute("stroke-width", "1.6");
+        path.setAttribute("stroke-linecap", "round");
+        svg.appendChild(path);
+        return svg;
+      }
+
+      function startKeywordEditing(editor) {
+        if (!editor) {
+          return;
+        }
+        editor.classList.add("is-editing");
+        const draftInput = editor.querySelector(".vendor-keyword-draft");
+        if (draftInput) {
+          draftInput.hidden = false;
+          draftInput.value = "";
+          setTimeout(() => draftInput.focus(), 0);
+        }
+      }
+
+      function renderKeywordEditorView(editor) {
+        if (!editor) {
+          return;
+        }
+        editor.classList.remove("is-editing");
+        const pillsRow = editor.querySelector(".vendor-keyword-pills-row");
+        const draftInput = editor.querySelector(".vendor-keyword-draft");
+        if (!pillsRow || !draftInput) {
+          return;
+        }
+
+        draftInput.hidden = true;
+        draftInput.value = "";
+        pillsRow.innerHTML = "";
+
+        const keywords = getKeywordEditorValues(editor);
+        keywords.forEach((keyword) => {
+          const pill = document.createElement("span");
+          pill.className = "vendor-settings-keyword-pill";
+
+          const text = document.createElement("span");
+          text.className = "vendor-keyword-text";
+          text.textContent = keyword;
+
+          const removeButton = document.createElement("button");
+          removeButton.type = "button";
+          removeButton.className = "vendor-keyword-remove";
+          removeButton.setAttribute("aria-label", `Remove ${keyword}`);
+          removeButton.appendChild(createKeywordRemoveIcon());
+          removeButton.addEventListener("click", () => {
+            setKeywordEditorValues(
+              editor,
+              getKeywordEditorValues(editor).filter((item) => item !== keyword)
+            );
+            renderKeywordEditorView(editor);
+          });
+
+          pill.appendChild(text);
+          pill.appendChild(removeButton);
+          pillsRow.appendChild(pill);
+        });
+
+        const addButton = document.createElement("button");
+        addButton.type = "button";
+        addButton.className = "vendor-keyword-add";
+        addButton.textContent = keywords.length ? "+ Add keyword" : "Add keyword";
+        addButton.addEventListener("click", () => {
+          startKeywordEditing(editor);
+        });
+        pillsRow.appendChild(addButton);
+      }
+
+      function commitKeywordDraft(editor) {
+        if (!editor) {
+          return;
+        }
+        const draftInput = editor.querySelector(".vendor-keyword-draft");
+        const raw = String(draftInput?.value || "").trim();
+        if (raw) {
+          setKeywordEditorValues(editor, [
+            ...getKeywordEditorValues(editor),
+            ...parseKeywordsInput(raw),
+          ]);
+        }
+        renderKeywordEditorView(editor);
+      }
+
+      function mountVendorKeywordEditor(sourceId, keywords) {
+        const editor = document.createElement("div");
+        editor.className = "vendor-keyword-editor";
+        editor.dataset.vendorKeywordsEditor = sourceId;
+
+        const store = document.createElement("input");
+        store.type = "hidden";
+        store.dataset.vendorKeywordsValue = sourceId;
+        store.value = normalizeKeywordList(keywords).join(", ");
+
+        const pillsRow = document.createElement("div");
+        pillsRow.className = "vendor-keyword-pills-row";
+
+        const draftInput = document.createElement("input");
+        draftInput.type = "text";
+        draftInput.className = "vendor-keyword-draft";
+        draftInput.autocomplete = "off";
+        draftInput.placeholder = "Type keyword and press Enter";
+        draftInput.hidden = true;
+        draftInput.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            commitKeywordDraft(editor);
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            renderKeywordEditorView(editor);
+          }
+        });
+        draftInput.addEventListener("blur", () => {
+          window.setTimeout(() => {
+            if (editor.classList.contains("is-editing") && document.activeElement !== draftInput) {
+              commitKeywordDraft(editor);
+            }
+          }, 0);
+        });
+
+        editor.appendChild(store);
+        editor.appendChild(pillsRow);
+        editor.appendChild(draftInput);
+        renderKeywordEditorView(editor);
+        return editor;
+      }
+
+      function renderVendorSettingsForm(payload) {
+        if (!settingsVendorList) {
+          return;
+        }
+        const sources = payload?.sources && typeof payload.sources === "object" ? payload.sources : {};
+        const order = Array.isArray(payload?.fallback_order)
+          ? payload.fallback_order
+          : VENDOR_SETTINGS_ORDER;
+        settingsVendorList.innerHTML = "";
+        order.forEach((sourceId, index) => {
+          const source = sources[sourceId] || {};
+          const label = source.label || vendorSourceMeta[sourceId]?.label || sourceId;
+          const ui = VENDOR_SETTINGS_UI[sourceId] || {};
+          const usesKeywords = Boolean(source.uses_keywords);
+          const keywords = Array.isArray(source.keywords) ? source.keywords : [];
+          const enabled = source.enabled !== false;
+
+          const card = document.createElement("article");
+          card.className = `vendor-settings-source${enabled ? " is-enabled" : " is-disabled"}`;
+          card.dataset.sourceId = sourceId;
+          card.style.setProperty("--vendor-accent", ui.accent || "#60a5fa");
+
+          const accent = document.createElement("div");
+          accent.className = "vendor-settings-accent";
+          accent.setAttribute("aria-hidden", "true");
+          card.appendChild(accent);
+
+          const body = document.createElement("div");
+          body.className = "vendor-settings-body";
+
+          const top = document.createElement("div");
+          top.className = "vendor-settings-top";
+
+          const orderBadge = document.createElement("span");
+          orderBadge.className = "vendor-settings-order";
+          orderBadge.textContent = String(index + 1);
+          top.appendChild(orderBadge);
+
+          const titleBlock = document.createElement("div");
+          titleBlock.className = "vendor-settings-title-block";
+          const name = document.createElement("span");
+          name.className = "vendor-settings-name";
+          name.textContent = label;
+          const desc = document.createElement("span");
+          desc.className = "vendor-settings-desc";
+          desc.textContent = ui.desc || "Local vendor lifecycle source";
+          titleBlock.appendChild(name);
+          titleBlock.appendChild(desc);
+          top.appendChild(titleBlock);
+
+          const toggleLabel = document.createElement("label");
+          toggleLabel.className = "vendor-settings-toggle";
+          const enableInput = document.createElement("input");
+          enableInput.type = "checkbox";
+          enableInput.checked = enabled;
+          enableInput.dataset.vendorEnabled = sourceId;
+          enableInput.addEventListener("change", () => {
+            card.classList.toggle("is-enabled", enableInput.checked);
+            card.classList.toggle("is-disabled", !enableInput.checked);
+            syncVendorFlowIllumination();
+          });
+          const toggleTrack = document.createElement("span");
+          toggleTrack.className = "vendor-settings-toggle-track";
+          toggleLabel.appendChild(enableInput);
+          toggleLabel.appendChild(toggleTrack);
+          top.appendChild(toggleLabel);
+          body.appendChild(top);
+
+          const meta = document.createElement("div");
+          meta.className = "vendor-settings-meta";
+          const gate = document.createElement("span");
+          gate.className = usesKeywords
+            ? "vendor-settings-gate vendor-settings-gate-keywords"
+            : "vendor-settings-gate vendor-settings-gate-open";
+          gate.textContent = usesKeywords ? "Keyword-gated" : "No keyword gate";
+          meta.appendChild(gate);
+          body.appendChild(meta);
+
+          if (usesKeywords) {
+            const keywordsBlock = document.createElement("div");
+            keywordsBlock.className = "vendor-settings-keywords-block";
+
+            const keywordsLabel = document.createElement("span");
+            keywordsLabel.className = "vendor-settings-keywords-label";
+            keywordsLabel.textContent = "Family keywords";
+
+            keywordsBlock.appendChild(keywordsLabel);
+            keywordsBlock.appendChild(mountVendorKeywordEditor(sourceId, keywords));
+            body.appendChild(keywordsBlock);
+          }
+
+          card.appendChild(body);
+          settingsVendorList.appendChild(card);
+        });
+        syncVendorFlowIllumination();
+      }
+
+      async function loadVendorSettingsSection() {
+        const response = await fetch("/api/vendor-lookups/settings");
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(payload.detail || "Unable to load vendor lookup settings.");
+        }
+        renderVendorSettingsForm(payload);
+      }
+
+      async function openSettingsDialog() {
+        try {
+          await loadVendorSettingsSection();
+        } catch (error) {
+          renderVendorSettingsForm({
+            fallback_order: VENDOR_SETTINGS_ORDER,
+            sources: {},
+          });
+          showStatus(error.message, "error");
+        }
+        settingsDialog.showModal();
+      }
+
+      function closeSettingsDialog() {
+        if (settingsDialog.open) {
+          settingsDialog.close();
+        }
+      }
+
+      async function saveSettings() {
+        settingsVendorList
+          ?.querySelectorAll(".vendor-keyword-editor.is-editing")
+          .forEach((editor) => {
+            commitKeywordDraft(editor);
+          });
+
+        const sources = {};
+        VENDOR_SETTINGS_ORDER.forEach((sourceId) => {
+          const enabledInput = settingsVendorList?.querySelector(
+            `[data-vendor-enabled="${sourceId}"]`
+          );
+          const keywordEditor = settingsVendorList?.querySelector(
+            `[data-vendor-keywords-editor="${sourceId}"]`
+          );
+          const keywordStore = keywordEditor?.querySelector("[data-vendor-keywords-value]");
+          const entry = {};
+          if (enabledInput) {
+            entry.enabled = Boolean(enabledInput.checked);
+          }
+          if (keywordStore) {
+            entry.keywords = getKeywordEditorValues(keywordEditor);
+          }
+          if (Object.keys(entry).length) {
+            sources[sourceId] = entry;
+          }
+        });
+        try {
+          const response = await fetch("/api/vendor-lookups/settings", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sources }),
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(payload.detail || "Unable to save settings.");
+          }
+          renderVendorSettingsForm(payload);
+          closeSettingsDialog();
+          showStatus("Settings saved.", "success");
+        } catch (error) {
+          showStatus(error.message, "error");
+        }
       }
 
       function ensureRouterSwitchManufacturerChecks(manufacturers, selectedSlugs) {
@@ -6275,7 +6878,7 @@
         if (currentSource !== "data") {
           return;
         }
-        closeAzureMenu();
+        closeDeployDialog();
         try {
           populateAzureConfigForm(await loadAzureConfig());
         } catch (error) {
@@ -6313,7 +6916,7 @@
         if (currentSource !== "data") {
           return;
         }
-        closeAzureMenu();
+        closeDeployDialog();
 
         try {
           const config = await loadAzureConfig();
@@ -6663,14 +7266,17 @@
         }
         setShowDeltaOnly(!showDeltaOnly);
       });
-      azureMenuButton.addEventListener("click", (event) => {
-        event.stopPropagation();
-        toggleAzureMenu();
-      });
-      azureMenu.addEventListener("click", (event) => {
-        event.stopPropagation();
-      });
-      document.addEventListener("click", closeAzureMenu);
+      deployButton.addEventListener("click", openDeployDialog);
+      deployDialogClose.addEventListener("click", closeDeployDialog);
+      if (deployCloudGrid) {
+        deployCloudGrid.addEventListener("click", (event) => {
+          const tab = event.target.closest("[data-cloud]");
+          if (!tab || !deployCloudGrid.contains(tab)) {
+            return;
+          }
+          selectDeployCloud(tab.dataset.cloud || "azure");
+        });
+      }
       eoslViewButton.addEventListener("click", openEoslDialog);
       eoslDialogClose.addEventListener("click", closeEoslDialog);
       eoslUpdateButton.addEventListener("click", handleEoslUpdate);
@@ -6693,6 +7299,18 @@
         eoslRsSelectNone.addEventListener("click", () => {
           setRouterSwitchManufacturersChecked(false);
         });
+      }
+      if (settingsButton) {
+        settingsButton.addEventListener("click", openSettingsDialog);
+      }
+      if (settingsSave) {
+        settingsSave.addEventListener("click", saveSettings);
+      }
+      if (settingsCancel) {
+        settingsCancel.addEventListener("click", closeSettingsDialog);
+      }
+      if (settingsClose) {
+        settingsClose.addEventListener("click", closeSettingsDialog);
       }
       if (eoslFilterInput) {
         eoslFilterInput.addEventListener("input", () => {

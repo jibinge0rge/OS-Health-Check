@@ -19,6 +19,7 @@ from eol_service import (
 )
 from normalization_service import vendors_compatible
 from version_match import score_release_against_hint
+from vendor_settings import query_matches_keywords, source_keywords
 
 
 SOURCE_URL = "https://support.juniper.net/support/eol/software/junos/"
@@ -29,9 +30,6 @@ HEADERS = {
 }
 PRODUCT_SLUG = "junos"
 PRODUCT_NAME = "Junos OS"
-
-# Match junos / juniper as whole tokens (letter/digit boundaries only).
-_JUNOS_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])(?:junos|juniper)(?![A-Za-z0-9])", re.I)
 _PRODUCT_RELEASE_RE = re.compile(
     r"Junos\s+OS\s+(\d+(?:\.\d+)*(?:[Xx]\d+(?:\.\d+)*)?)",
     re.I,
@@ -126,11 +124,8 @@ def get_status(db_path: Path | None = None) -> dict[str, object]:
 
 
 def query_matches_junos(*values: object) -> bool:
-    """True when any value contains junos/juniper with proper token boundaries."""
-    for value in values:
-        if _JUNOS_TOKEN_RE.search(_clean(value)):
-            return True
-    return False
+    """True when the query matches configured Junos family keywords."""
+    return query_matches_keywords(source_keywords("junos"), *values)
 
 
 def _parse_us_date(value: str) -> str:
