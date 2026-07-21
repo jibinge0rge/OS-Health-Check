@@ -34,6 +34,7 @@ body {
   min-height: 100vh;
   min-height: 100dvh;
   overflow-x: clip;
+  overflow-y: auto;
   font-family: Inter, "Segoe UI", sans-serif;
   color: var(--text);
   background:
@@ -270,6 +271,7 @@ td .theme-select-chevron {
   margin: clamp(12px, 2vw, 24px) auto;
   padding-inline: max(0px, env(safe-area-inset-left));
   padding-bottom: max(24px, env(safe-area-inset-bottom));
+  box-sizing: border-box;
 }
 
 .hero,
@@ -288,7 +290,7 @@ td .theme-select-chevron {
   justify-content: space-between;
   gap: 20px;
   padding: clamp(16px, 2vw, 24px) clamp(16px, 2.5vw, 28px);
-  margin-bottom: 20px;
+  margin-bottom: 12px;
 }
 
 .hero > div:first-child {
@@ -561,7 +563,7 @@ h1 {
   justify-content: space-between;
   gap: 16px;
   padding: clamp(14px, 2vw, 20px) clamp(14px, 2.5vw, 24px);
-  margin-bottom: 20px;
+  margin-bottom: 12px;
 }
 
 .toolbar-left {
@@ -861,7 +863,7 @@ body.lookup-readonly td .theme-select-trigger:disabled {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: clamp(10px, 1.5vw, 16px);
-  margin-bottom: 20px;
+  margin-bottom: 12px;
 }
 
 .summary-card {
@@ -1621,7 +1623,41 @@ body.lookup-readonly td .theme-select-trigger:disabled {
 }
 
 .deploy-dialog-card {
-  max-width: 560px;
+  max-width: 640px;
+}
+
+.azure-profile-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.azure-profile-select-field {
+  flex: 1 1 220px;
+  min-width: 180px;
+  margin: 0;
+}
+
+.azure-profile-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-bottom: 2px;
+}
+
+.azure-inline-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 10px;
+  background: rgba(2, 6, 23, 0.35);
+}
+
+.azure-inline-settings .modal-field {
+  margin: 0;
 }
 
 .deploy-cloud-grid {
@@ -1759,12 +1795,24 @@ body.lookup-readonly td .theme-select-trigger:disabled {
   max-height: min(92vh, 920px);
   display: flex;
   flex-direction: column;
-  overflow-y: auto;
+  overflow: hidden;
 }
 
 .settings-dialog-card > .modal-header,
-.settings-dialog-card > .modal-actions {
+.settings-dialog-card > .modal-actions,
+.settings-dialog-card .settings-section-head,
+.settings-dialog-card .vendor-settings-flow {
   flex-shrink: 0;
+}
+
+.settings-dialog-card > .modal-actions {
+  margin-top: 4px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.settings-dialog-card .settings-section {
+  margin-bottom: 0;
 }
 
 .settings-section {
@@ -1802,14 +1850,14 @@ body.lookup-readonly td .theme-select-trigger:disabled {
 
 .vendor-settings-section {
   gap: 12px;
-  flex: 0 0 auto;
-  min-height: auto;
-  overflow: visible;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .vendor-settings-flow {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px 8px;
   padding: 8px 12px;
@@ -1889,6 +1937,10 @@ body.lookup-readonly td .theme-select-trigger:disabled {
   gap: 10px;
   margin: 0;
   padding: 2px 4px 6px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 
 .vendor-settings-source {
@@ -1903,7 +1955,8 @@ body.lookup-readonly td .theme-select-trigger:disabled {
     background 160ms ease,
     opacity 160ms ease,
     transform 160ms ease;
-  min-height: 122px;
+  min-height: 176px;
+  flex-shrink: 0;
 }
 
 .vendor-settings-source:hover {
@@ -1938,6 +1991,7 @@ body.lookup-readonly td .theme-select-trigger:disabled {
   gap: 8px;
   min-width: 0;
   padding: 10px 12px 12px;
+  justify-content: flex-start;
 }
 
 .vendor-settings-top {
@@ -2080,6 +2134,7 @@ body.lookup-readonly td .theme-select-trigger:disabled {
   flex-direction: column;
   gap: 6px;
   margin-left: 0;
+  margin-top: auto;
   padding: 8px 10px 10px;
   border-radius: 10px;
   background: rgba(2, 6, 23, 0.42);
@@ -2581,7 +2636,91 @@ body.lookup-readonly td .theme-select-trigger:disabled {
 }
 
 .table-card {
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
+}
+
+.lookup-table-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: min(68vh, 760px);
+  overflow: hidden;
+  background: #0b1220;
+}
+
+.lookup-table-head {
+  flex: 0 0 auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  padding-right: var(--lookup-scrollbar-size, 0px);
+  background: #0b1220;
+  scrollbar-width: none;
+}
+
+.lookup-table-head::-webkit-scrollbar {
+  display: none;
+}
+
+.lookup-table-body-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  background: #0b1220;
+}
+
+.lookup-table {
+  width: 100%;
+  min-width: 1500px;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.lookup-table-head-table thead th {
+  position: static;
+  top: auto;
+  z-index: auto;
+  background: #0b1220;
+  box-shadow: none;
+}
+
+.lookup-col-os_string {
+  width: 14%;
+  min-width: 160px;
+}
+
+.lookup-col-normalized_os_detailed_name {
+  width: 18%;
+  min-width: 200px;
+}
+
+.lookup-col-normalized_os {
+  width: 14%;
+  min-width: 160px;
+}
+
+.lookup-col-eol_date,
+.lookup-col-eoas_date {
+  width: 14%;
+  min-width: 180px;
+}
+
+.lookup-col-eol_status,
+.lookup-col-eoas_status {
+  width: 8%;
+  min-width: 100px;
+}
+
+.lookup-col-actions {
+  width: clamp(128px, 10vw, 156px);
+  min-width: 128px;
+  max-width: 156px;
 }
 
 .pagination-bar {
@@ -2590,6 +2729,7 @@ body.lookup-readonly td .theme-select-trigger:disabled {
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
+  flex-shrink: 0;
   padding: 16px 20px 20px;
   border-top: 1px solid rgba(148, 163, 184, 0.1);
 }
@@ -2629,6 +2769,7 @@ body.lookup-readonly td .theme-select-trigger:disabled {
   padding: 12px 14px;
   border-radius: 14px;
   font-weight: 600;
+  flex-shrink: 0;
 }
 
 .status-banner.hidden {
@@ -2650,14 +2791,6 @@ body.lookup-readonly td .theme-select-trigger:disabled {
   color: var(--error-text);
 }
 
-.table-scroll {
-  overflow-x: auto;
-  overflow-y: visible;
-  -webkit-overflow-scrolling: touch;
-  overscroll-behavior-x: contain;
-  border-radius: 20px;
-}
-
 table {
   width: 100%;
   min-width: 1500px;
@@ -2666,17 +2799,27 @@ table {
   border-spacing: 0;
 }
 
-thead th {
-  position: sticky;
-  top: 0;
-  z-index: 2;
+.lookup-table-head-table thead th,
+#header-row th,
+.filter-row th {
+  position: static;
+  top: auto;
+  z-index: auto;
   padding: 10px 8px;
   text-align: center;
   font-size: 13px;
   font-weight: 700;
   color: var(--muted);
-  background: rgba(15, 23, 42, 0.98);
+  background: #0b1220;
   border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+  box-shadow: none;
+}
+
+.filter-row th {
+  padding: 8px 10px;
+  font-weight: 500;
+  vertical-align: top;
+  background: #0b1220;
 }
 
 .sort-header-button {
@@ -2720,15 +2863,6 @@ thead th {
   color: #93c5fd;
   font-size: 12px;
   font-weight: 700;
-}
-
-.filter-row th {
-  top: 46px;
-  z-index: 1;
-  padding: 8px 10px;
-  font-weight: 500;
-  vertical-align: top;
-  background: rgba(15, 23, 42, 0.98);
 }
 
 .column-filter-controls {
@@ -2956,24 +3090,24 @@ td input:focus,
   max-width: 156px;
   padding-left: 8px;
   padding-right: 8px;
-  overflow: hidden;
-  background: rgba(15, 23, 42, 0.98);
+  background: #0b1220;
+  box-shadow: -8px 0 12px -10px rgba(2, 6, 23, 0.9);
 }
 
 tbody td.actions-column {
-  background: rgba(15, 23, 42, 0.96);
+  background: #0b1220;
   padding-top: 6px;
   padding-bottom: 6px;
-  overflow: hidden;
 }
 
-thead th.actions-column,
+.lookup-table-head-table th.actions-column,
 .filter-row .actions-column {
-  overflow: hidden;
+  z-index: 4;
+  background: #0b1220;
 }
 
 tbody tr:hover td.actions-column {
-  background: rgba(30, 41, 59, 0.98);
+  background: #121a2b;
 }
 
 .cell-os_string,
@@ -3013,6 +3147,10 @@ thead th[data-header="eoas_status"] {
 thead th,
 tbody td {
   overflow: hidden;
+}
+
+.actions-column {
+  overflow: visible;
 }
 
 td input,
@@ -3150,6 +3288,10 @@ input[type="date"] {
   .app-shell {
     width: calc(100% - 16px);
     margin: 12px auto;
+  }
+
+  .lookup-table-shell {
+    max-height: min(58vh, 560px);
   }
 
   .hero,

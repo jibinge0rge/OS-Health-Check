@@ -92,7 +92,7 @@ OS-Health-Check/
 ├── _draft/                     # Working editable copy (+ evidence)
 ├── _config/                    # Local settings (gitignored)
 │   ├── app_settings.json       # ai_enabled, ai_provider (openai|gemini)
-│   └── azure.json
+│   └── azure.json              # Named Azure Blob profiles + active selection
 └── _backup/                    # Timestamped backups on Validate
 ```
 
@@ -435,7 +435,7 @@ The Actions column filter can narrow rows by: Fuzzy, AI, Fuzzy + AI, Manual, EOL
 | **Show Delta / Download Delta** | Draft-only change view |
 | **Settings** | Vendor lookup enable/keywords for Refresh (saved to `_data/vendor_lookup_settings.json`); extensible for future options |
 | **View / Update Vendor Lookups** | Read-only viewer for eosl.date / Juniper Junos / SUSE Lifecycle / Router-Switch EOL DBs; update/re-scrape per source |
-| **Deploy** | Data mode: opens cloud deploy dialog (Azure upload/settings today; AWS/GCP placeholders) |
+| **Deploy** | Data mode: cloud deploy dialog with named Azure profiles (inline settings + upload); AWS/GCP placeholders |
 
 ---
 
