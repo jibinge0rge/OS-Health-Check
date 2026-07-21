@@ -540,17 +540,219 @@ def list_all_rows(db_path: Path | None = None) -> list[dict[str, object]]:
 
 
 _MIN_RELEASE_SCORE = 80
-_VERSION_IN_TEXT_RE = re.compile(r"\d+(?:\.\d+)+(?:[a-zA-Z]+\d*)?")
+_MIN_PRODUCT_TOKEN_LEN = 3
+_PRODUCT_COMPOUND_RES: tuple[tuple[str, str], ...] = (
+    ("nxos", r"\bnx[\s\-]?os\b"),
+    ("iosxe", r"\bios[\s\-]?xe\b"),
+    ("iosxr", r"\bios[\s\-]?xr\b"),
+    ("panos", r"\bpan[\s\-]?os\b"),
+    ("fortios", r"\bfortios\b"),
+    ("junos", r"\bjunos\b"),
+)
+_CLASSIC_IOS_RE = re.compile(r"\bios\b", re.I)
+_IOS_XE_RE = re.compile(r"\bios[\s\-]?xe\b", re.I)
+_IOS_XR_RE = re.compile(r"\bios[\s\-]?xr\b", re.I)
+# Strip dotted trains and Cisco-style suffixes such as 12.2(50)SE5 before tokenizing.
+_VERSION_BLOB_RE = re.compile(
+    r"\d+(?:\.\d+)*(?:\([^)]+\))?(?:[a-z]+\d*)?",
+    re.I,
+)
+_GENERIC_PRODUCT_TOKENS = frozenset(
+    {
+        "os",
+        "sw",
+        "software",
+        "system",
+        "release",
+        "version",
+        "edition",
+    }
+)
+
+
+def _normalize_router_switch_blob(value: str) -> str:
+    return re.sub(r"\s+", " ", _clean(value).lower()).strip()
+
+
+def _field_blob(part_number: str, product_name: str) -> str:
+    return _normalize_router_switch_blob(f"{part_number} {product_name}")
+
+
+def _query_is_classic_ios(query: str) -> bool:
+    text = _normalize_router_switch_blob(query)
+    if not text:
+        return False
+    return (
+        bool(_CLASSIC_IOS_RE.search(text))
+        and not _IOS_XE_RE.search(text)
+        and not _IOS_XR_RE.search(text)
+    )
+
+
+def _field_has_classic_ios(field_blob: str) -> bool:
+    if not field_blob:
+        return False
+    return (
+        bool(_CLASSIC_IOS_RE.search(field_blob))
+        and not _IOS_XE_RE.search(field_blob)
+        and not _IOS_XR_RE.search(field_blob)
+    )
+
+
+def _compound_pattern(compound: str) -> re.Pattern[str] | None:
+    for key, pattern in _PRODUCT_COMPOUND_RES:
+        if key == compound:
+            return re.compile(pattern, re.I)
+    return None
+
+
+def _field_has_compound(compound: str, field_blob: str) -> bool:
+    pattern = _compound_pattern(compound)
+    return bool(pattern and pattern.search(field_blob))
+
+
+def _strip_version_blob(text: str) -> str:
+    return _VERSION_BLOB_RE.sub(" ", text)
+
+
+def _query_product_tokens(query: str) -> list[str]:
+    """Non-vendor product-family tokens from the OS string."""
+    text = _normalize_router_switch_blob(query)
+    if not text:
+        return []
+
+    tokens: list[str] = []
+    seen: set[str] = set()
+
+    for compound, pattern in _PRODUCT_COMPOUND_RES:
+        if re.search(pattern, text, re.I) and compound not in seen:
+            seen.add(compound)
+            tokens.append(compound)
+
+    scratch = _strip_version_blob(text)
+    scratch = re.sub(r"\(\s*\)", " ", scratch)
+
+    for _slug, name in MANUFACTURERS:
+        scratch = re.sub(rf"\b{re.escape(name.lower())}\b", " ", scratch)
+    for slug, _name in MANUFACTURERS:
+        scratch = re.sub(rf"\b{re.escape(slug.lower())}\b", " ", scratch)
+
+    for raw in re.findall(r"[a-z0-9][a-z0-9\-]*", scratch):
+        normalized = re.sub(r"[\s\-]+", "", raw.lower())
+        if len(normalized) < _MIN_PRODUCT_TOKEN_LEN or normalized.isdigit():
+            continue
+        if normalized in _GENERIC_PRODUCT_TOKENS or normalized in seen:
+            continue
+        if any(normalized == slug for slug, _ in MANUFACTURERS):
+            continue
+        seen.add(normalized)
+        tokens.append(normalized)
+
+    return tokens
+
+
+def _token_matches_field_word(token: str, field_words: set[str]) -> bool:
+    if len(token) < _MIN_PRODUCT_TOKEN_LEN:
+        return False
+    return token in field_words
+
+
+def _router_switch_product_overlap(
+    query: str,
+    part_number: str,
+    product_name: str,
+) -> bool:
+    """True when the OS string meaningfully aligns with a catalog row."""
+    query_key = _normalize_router_switch_blob(query)
+    part_key = _normalize_router_switch_blob(part_number)
+    product_key = _normalize_router_switch_blob(product_name)
+    field_blob = _field_blob(part_number, product_name)
+
+    if query_key and query_key in {part_key, product_key}:
+        return True
+    if query_key and len(query_key) >= 10 and query_key in field_blob:
+        return True
+    if part_key and len(part_key) >= 6 and part_key in query_key:
+        return True
+
+    if _query_is_classic_ios(query):
+        return _field_has_classic_ios(field_blob)
+
+    product_tokens = _query_product_tokens(query)
+    if not product_tokens:
+        return False
+
+    field_words = set(re.findall(r"[a-z0-9]{2,}", field_blob))
+
+    for token in product_tokens:
+        pattern = _compound_pattern(token)
+        if pattern and pattern.search(field_blob):
+            return True
+        if _token_matches_field_word(token, field_words):
+            return True
+
+    if "iosxe" in product_tokens or ("ios" in product_tokens and "xe" in product_tokens):
+        if _field_has_compound("iosxe", field_blob):
+            return True
+        if "ios" in field_words and "xe" in field_words:
+            return True
+    if "iosxr" in product_tokens or ("ios" in product_tokens and "xr" in product_tokens):
+        if _field_has_compound("iosxr", field_blob):
+            return True
+        if "ios" in field_words and "xr" in field_words:
+            return True
+
+    return False
+
+
+def _row_version_score(
+    part_number: str,
+    product_name: str,
+    hints: list[str],
+) -> int:
+    best = 0
+    for field in (part_number, product_name):
+        for hint in hints:
+            for token in _field_version_tokens(field):
+                best = max(best, _router_switch_version_score(token, hint))
+            if _normalize_router_switch_blob(field) == hint.lower():
+                best = max(best, 100)
+    return best
+
+
+def _digit_is_capacity_suffix(text: str, end: int) -> bool:
+    return end < len(text) and text[end].lower() in "kmgtb"
 
 
 def _field_version_tokens(value: str) -> list[str]:
     text = _clean(value)
     if not text:
         return []
-    tokens = extract_version_hints(text)
-    if tokens:
-        return tokens
-    return [match.group(0) for match in _VERSION_IN_TEXT_RE.finditer(text)]
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"\d+(?:\.\d+)*", text):
+        if _digit_is_capacity_suffix(text, match.end()):
+            continue
+        token = match.group()
+        if token in seen:
+            continue
+        seen.add(token)
+        tokens.append(token)
+    return tokens
+
+
+def _router_switch_version_score(token: str, hint: str) -> int:
+    score = score_release_against_hint(token, hint)
+    if score < _MIN_RELEASE_SCORE:
+        return 0
+    if score >= 100:
+        return score
+    hint_parts = hint.split(".")
+    token_parts = token.split(".")
+    # Reject major-only prefix matches such as 10 (from 10K) vs 10.3.
+    if len(hint_parts) > 1 and len(token_parts) == 1:
+        return 0
+    return score
 
 
 def _score_router_switch_row(
@@ -559,22 +761,24 @@ def _score_router_switch_row(
     query: str,
     hints: list[str],
 ) -> int:
+    if not _router_switch_product_overlap(query, part_number, product_name):
+        return 0
+
     best = 0
-    query_key = re.sub(r"\s+", " ", query.lower()).strip()
+    query_key = _normalize_router_switch_blob(query)
     for field in (part_number, product_name):
-        field_key = re.sub(r"\s+", " ", field.lower()).strip()
+        field_key = _normalize_router_switch_blob(field)
         if not field_key:
             continue
         if field_key == query_key:
             return 100
         if query_key and (query_key in field_key or field_key in query_key):
-            # Require a shared multi-segment version when both sides expose one.
             query_versions = _field_version_tokens(query)
             field_versions = _field_version_tokens(field)
             if query_versions and field_versions:
                 version_hit = max(
                     (
-                        score_release_against_hint(field_ver, query_ver)
+                        _router_switch_version_score(field_ver, query_ver)
                         for field_ver in field_versions
                         for query_ver in query_versions
                     ),
@@ -582,14 +786,21 @@ def _score_router_switch_row(
                 )
                 if version_hit >= _MIN_RELEASE_SCORE:
                     best = max(best, 92)
-            elif not query_versions:
+            elif not query_versions and not hints:
                 best = max(best, 85)
+        if not hints:
+            continue
         for hint in hints:
             for token in _field_version_tokens(field):
-                best = max(best, score_release_against_hint(token, hint))
-            # Exact part-number style hint.
+                best = max(best, _router_switch_version_score(token, hint))
             if field_key == hint.lower():
                 best = max(best, 100)
+
+    if hints and best < 100:
+        version_best = _row_version_score(part_number, product_name, hints)
+        if version_best < _MIN_RELEASE_SCORE:
+            return 0
+
     return best
 
 

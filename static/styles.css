@@ -2006,8 +2006,8 @@ body.lookup-readonly td .theme-select-trigger:disabled {
 }
 
 .vendor-settings-toggle input:checked + .vendor-settings-toggle-track {
-  background: color-mix(in srgb, var(--vendor-accent, #60a5fa) 55%, #1e3a8a);
-  border-color: color-mix(in srgb, var(--vendor-accent, #60a5fa) 65%, transparent);
+  background: color-mix(in srgb, var(--primary) 55%, var(--primary-strong));
+  border-color: color-mix(in srgb, var(--primary) 65%, transparent);
 }
 
 .vendor-settings-toggle input:checked + .vendor-settings-toggle-track::after {
