@@ -7,14 +7,20 @@ import unittest
 from pathlib import Path
 
 from router_switch_service import (
+    _MIN_RELEASE_SCORE,
     _parse_page_count,
     _parse_table_rows,
     _parse_us_date,
+    _router_switch_product_overlap,
+    _score_router_switch_row,
     get_status,
+    init_db,
     list_all_rows,
     list_manufacturers,
+    lookup_os_router_switch,
     manufacturers_from_slugs,
     sync_router_switch_database,
+    _connect,
 )
 
 
@@ -81,6 +87,125 @@ class RouterSwitchParseTests(unittest.TestCase):
         finally:
             try:
                 prefs.unlink(missing_ok=True)
+            except OSError:
+                pass
+            try:
+                Path(tmp).rmdir()
+            except OSError:
+                pass
+
+
+class RouterSwitchMatchTests(unittest.TestCase):
+    def test_product_overlap_rejects_unrelated_cisco_hardware(self) -> None:
+        query = "Cisco NX-OS 10.3(7)"
+        part = "QVPCF-00-UL10TOP"
+        product = "Cisco Ultra Traffic Optimiz Solution, 10K Sess (Failover)"
+        self.assertFalse(_router_switch_product_overlap(query, part, product))
+
+    def test_score_rejects_nxos_false_positive(self) -> None:
+        query = "Cisco NX-OS 10.3(7)"
+        part = "QVPCF-00-UL10TOP"
+        product = "Cisco Ultra Traffic Optimiz Solution, 10K Sess (Failover)"
+        score = _score_router_switch_row(part, product, query, ["10.3", "7"])
+        self.assertEqual(score, 0)
+
+    def test_score_accepts_ios_xe_overlap(self) -> None:
+        query = "Cisco IOS XE 16.5.1"
+        part = "IOS XE 16.5.1"
+        product = "Cisco IOS XE 16.5.1"
+        score = _score_router_switch_row(part, product, query, ["16.5.1"])
+        self.assertGreaterEqual(score, _MIN_RELEASE_SCORE)
+
+    def test_product_overlap_rejects_classic_ios_vs_cloud_logging(self) -> None:
+        query = "Cisco IOS 12.2(50)SE5"
+        part = "SEC-LOG-CL-5Y"
+        product = "Cisco Cloud Logging Subscription, 5 Year"
+        self.assertFalse(_router_switch_product_overlap(query, part, product))
+
+    def test_score_rejects_classic_ios_cloud_logging_false_positive(self) -> None:
+        query = "Cisco IOS 12.2(50)SE5"
+        part = "SEC-LOG-CL-5Y"
+        product = "Cisco Cloud Logging Subscription, 5 Year"
+        score = _score_router_switch_row(part, product, query, ["12.2", "50", "5"])
+        self.assertEqual(score, 0)
+
+    def test_score_accepts_classic_ios_with_version(self) -> None:
+        query = "Cisco IOS 12.2(50)SE5"
+        part = "IOS 12.2(50)SE5"
+        product = "Cisco IOS 12.2(50)SE5"
+        score = _score_router_switch_row(part, product, query, ["12.2", "50", "5"])
+        self.assertGreaterEqual(score, _MIN_RELEASE_SCORE)
+
+    def test_lookup_rejects_nxos_false_positive_in_db(self) -> None:
+        tmp = tempfile.mkdtemp()
+        db_path = Path(tmp) / "rs_match.db"
+        try:
+            init_db(db_path)
+            scraped_at = "2026-01-01T00:00:00+00:00"
+            with _connect(db_path) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO products (slug, name, category, url, scraped_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    ("cisco", "Cisco", "hardware", "https://example.com/cisco", scraped_at),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO releases (
+                        product_slug, release_name, released_date,
+                        eol_date, eoas_date, latest_raw, is_supported
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "cisco",
+                        "QVPCF-00-UL10TOP",
+                        "2020-01-01",
+                        "2026-05-07",
+                        "2028-11-30",
+                        "Cisco Ultra Traffic Optimiz Solution, 10K Sess (Failover)",
+                        0,
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO releases (
+                        product_slug, release_name, released_date,
+                        eol_date, eoas_date, latest_raw, is_supported
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "cisco",
+                        "IOS XE 16.5.1",
+                        "2017-11-30",
+                        "2017-08-31",
+                        "2022-11-30",
+                        "Cisco IOS XE 16.5.1",
+                        0,
+                    ),
+                )
+                connection.commit()
+
+            miss = lookup_os_router_switch(
+                "Cisco NX-OS 10.3(7)",
+                "",
+                "",
+                db_path=db_path,
+            )
+            self.assertEqual(miss["eol_date"], "")
+            self.assertIn("No matching", miss["api_note"])
+
+            hit = lookup_os_router_switch(
+                "Cisco IOS XE 16.5.1",
+                "",
+                "",
+                db_path=db_path,
+            )
+            self.assertTrue(hit["eol_date"])
+            self.assertEqual(hit["release_name"], "IOS XE 16.5.1")
+        finally:
+            try:
+                db_path.unlink(missing_ok=True)
             except OSError:
                 pass
             try:
