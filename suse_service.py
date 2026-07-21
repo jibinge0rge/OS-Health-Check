@@ -19,6 +19,7 @@ from eol_service import (
 )
 from normalization_service import vendors_compatible
 from version_match import score_release_against_hint
+from vendor_settings import query_matches_keywords, source_keywords
 
 
 SOURCE_URL = "https://www.suse.com/lifecycle/"
@@ -28,11 +29,6 @@ HEADERS = {
     )
 }
 
-# Whole-token match for SUSE / SLES / openSUSE.
-_SUSE_TOKEN_RE = re.compile(
-    r"(?<![A-Za-z0-9])(?:suse|sles|opensuse)(?![A-Za-z0-9])",
-    re.I,
-)
 _SP_IN_TEXT_RE = re.compile(r"(?<!\d)(\d+)\s*SP\s*(\d+)\b", re.I)
 _PRODUCT_RELEASE_RE = re.compile(
     r"^(?P<product>.+?)\s+(?P<major>\d+)(?:\s*SP\s*(?P<sp>\d+))?$",
@@ -138,10 +134,8 @@ def get_status(db_path: Path | None = None) -> dict[str, object]:
 
 
 def query_matches_suse(*values: object) -> bool:
-    for value in values:
-        if _SUSE_TOKEN_RE.search(_clean(value)):
-            return True
-    return False
+    """True when the query matches configured SUSE family keywords."""
+    return query_matches_keywords(source_keywords("suse"), *values)
 
 
 def _slugify(name: str) -> str:

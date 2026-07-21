@@ -7,7 +7,7 @@ Use it to:
 - Search and browse existing OS lookup rows
 - Add one or many OS strings with fuzzy (and optional AI) matching
 - Refresh EOL / EOAS dates from [endoflife.date](https://endoflife.date)
-- Refresh EOL / EOAS from local **Vendor Lookups** ([eosl.date](https://eosl.date) OS scrape, [Juniper Junos](https://support.juniper.net/support/eol/software/junos/) scrape, [SUSE lifecycle](https://www.suse.com/lifecycle/))
+- Refresh EOL / EOAS from local **Vendor Lookups** ([eosl.date](https://eosl.date) OS scrape, [Juniper Junos](https://support.juniper.net/support/eol/software/junos/) scrape, [SUSE lifecycle](https://www.suse.com/lifecycle/)). [Router-Switch EOL](https://www.router-switch.com/eol-eosl-checker/) is available for browsing only.
 - Keep match/EOL **evidence** (proof) in a JSON sidecar
 - Promote Draft → Data via Validate, then optionally upload Data to Azure Blob
 
@@ -18,7 +18,7 @@ Use it to:
 - **Vanilla HTML / CSS / JS** — table UI and workflows
 - **OpenAI** (optional) — AI match + Ambiguous OS detection
 - **endoflife.date API** — lifecycle dates
-- **Vendor Lookups (SQLite)** — local scrapes: eosl.date (OS) + Juniper Junos Dates & Milestones
+- **Vendor Lookups (SQLite)** — local scrapes: eosl.date (OS), Juniper Junos, SUSE lifecycle, and Router-Switch EOL (viewer only)
 
 ## Run locally
 
@@ -71,16 +71,21 @@ OS-Health-Check/
 ├── eosl_service.py             # eosl.date scraper + SQLite cache (OS only)
 ├── junos_service.py            # Juniper Junos Dates & Milestones scraper
 ├── suse_service.py             # SUSE lifecycle scraper (suse.com/lifecycle)
+├── router_switch_service.py    # Router-Switch EOL/EOSL scraper + lookup
 ├── vendor_lookup_service.py    # Registry + routed vendor fallback lookup
+├── vendor_settings.py          # Persistent enable/keywords for vendor Refresh
 ├── os_import_service.py        # Bulk import from CSV/XLSX
 ├── templates/index.html        # UI + client workflows
 ├── static/                     # CSS, favicon
 ├── _data/
 │   ├── eol_lookup.csv          # Canonical published lookup
 │   ├── eol_lookup_evidence.json
+│   ├── vendor_lookup_settings.json  # Refresh enable/keywords (shared)
+│   ├── router_switch_sync.json # Router-Switch manufacturer selection
 │   ├── eosl_os.db              # SQLite cache of eosl.date OS data (gitignored)
 │   ├── junos_os.db             # SQLite cache of Junos EOL table (gitignored)
-│   └── suse_os.db              # SQLite cache of SUSE lifecycle (gitignored)
+│   ├── suse_os.db              # SQLite cache of SUSE lifecycle (gitignored)
+│   └── router_switch_os.db     # SQLite cache of Router-Switch EOL (gitignored)
 ├── _draft/                     # Working editable copy (+ evidence)
 ├── _config/                    # Local settings (gitignored)
 │   ├── app_settings.json       # ai_enabled, ai_provider (openai|gemini)
@@ -141,7 +146,7 @@ The **Source** dropdown switches between the published lookup and the editable w
 | Edit Data | Shown | Hidden |
 | Add OS / bulk / delta | Hidden | Shown |
 | Auto-save, AI match, Save, Validate, Revert, Delete draft | Hidden | Shown |
-| Azure Settings / Upload | Shown | Hidden |
+| Deploy / Settings | Shown | Hidden |
 | Refresh EOL/EOAS | Opens/uses Draft first | Refreshes in place |
 
 **Edit Data** loads an existing Draft if present, otherwise copies Data → Draft.
@@ -211,16 +216,17 @@ flowchart TD
 
 ## EOL / EOAS refresh flow
 
-**Refresh EOL/EOAS** fills dates per row in this order. Vendor DBs are **fallbacks after the API misses**, routed by OS tokens (Junos → junos then eosl; SUSE → suse then eosl; else eosl).
+**Refresh EOL/EOAS** fills dates per row in this order. **endoflife.date is always first** (not configurable). Local Vendor Lookups follow a fixed order: **eosl → junos → suse → router-switch**. Specialists (junos / suse / router-switch) only run when **enabled** and their **family keywords** match. eosl has no keyword gate. Enable flags and keywords are edited under **Settings** and stored in `_data/vendor_lookup_settings.json` (Router-Switch is **disabled by default**).
 
 ### Per-row decision order
 
 1. **endoflife.date API** — always tried first (same query preference as below). Release matching is **conservative**: no version (or only bitness / `SP3`-style pack digits used alone as a version) → **no match** (never guess the latest release); bare major like `11` does not pick `11.4`; only a strong version hit populates dates/names. Train matching compares **numeric** dotted segments (`17.09.08` → API release `17.9`; `11.4` → `11`). (SUSE Vendor Lookup still understands `11 SP3` as a full release identity.)
 2. **If the API returned dates/status** → write them (evidence `api` / `eol`). **Stop.** Vendor DBs are **not** consulted.
-3. **If the API missed (or failed)** → call **Vendor Lookups** (`POST /api/vendor-lookup`):
-   - **`junos` / `juniper` token** → `_data/junos_os.db` first (evidence `junos`); on miss → eosl.date
-   - **`suse` / `sles` / `opensuse` token** → `_data/suse_os.db` first (evidence `suse`); on miss → eosl.date
-   - **Otherwise** → `_data/eosl_os.db` only (evidence `eosl`)
+3. **If the API missed (or failed)** → call **Vendor Lookups** (`POST /api/vendor-lookup`) in fixed order:
+   - **eosl** (if enabled) → evidence `eosl`
+   - **junos** (if enabled **and** keywords match) → evidence `junos`
+   - **suse** (if enabled **and** keywords match) → evidence `suse`
+   - **router-switch** (if enabled **and** keywords match; off by default) → evidence `router-switch`
 4. **If vendor DBs also miss** → copy dates from another row with the same normalized pair when possible (evidence `lookup-fallback`).
 5. **Still nothing** → leave blank (evidence `none`).
 
@@ -241,45 +247,51 @@ flowchart TD
 
   API --> ApiOk{Dates or status returned?}
   ApiOk -->|Yes| ApplyApi[Write dates<br/>evidence: api]
-  ApiOk -->|No| Route{Vendor token?}
-
-  Route -->|junos/juniper| JunosDB[junos_os.db]
-  Route -->|suse/sles/opensuse| SuseDB[suse_os.db]
-  Route -->|else| EoslDB[eosl_os.db]
-
-  JunosDB --> JunosHit{Hit?}
-  JunosHit -->|Yes| ApplyJ[evidence: junos]
-  JunosHit -->|No| EoslDB
-
-  SuseDB --> SuseHit{Hit?}
-  SuseHit -->|Yes| ApplyS[evidence: suse]
-  SuseHit -->|No| EoslDB
+  ApiOk -->|No| EoslDB[eosl if enabled]
 
   EoslDB --> EoslHit{eosl hit?}
   EoslHit -->|Yes| ApplyE[evidence: eosl]
-  EoslHit -->|No| CopyFb{Same normalized pair<br/>has dates elsewhere?}
+  EoslHit -->|No| JunosGate{junos enabled<br/>+ keywords?}
+
+  JunosGate -->|Yes| JunosDB[junos_os.db]
+  JunosGate -->|No| SuseGate
+  JunosDB --> JunosHit{Hit?}
+  JunosHit -->|Yes| ApplyJ[evidence: junos]
+  JunosHit -->|No| SuseGate{suse enabled<br/>+ keywords?}
+
+  SuseGate -->|Yes| SuseDB[suse_os.db]
+  SuseGate -->|No| RsGate
+  SuseDB --> SuseHit{Hit?}
+  SuseHit -->|Yes| ApplyS[evidence: suse]
+  SuseHit -->|No| RsGate{router-switch enabled<br/>+ keywords?}
+
+  RsGate -->|Yes| RsDB[router_switch_os.db]
+  RsGate -->|No| CopyFb
+  RsDB --> RsHit{Hit?}
+  RsHit -->|Yes| ApplyR[evidence: router-switch]
+  RsHit -->|No| CopyFb{Same normalized pair<br/>has dates elsewhere?}
   CopyFb -->|Yes| ApplyCopy[evidence: lookup-fallback]
   CopyFb -->|No| Empty[evidence: none]
 
   ApplyApi --> Proof[Store EOL proof]
+  ApplyE --> Proof
   ApplyJ --> Proof
   ApplyS --> Proof
-  ApplyE --> Proof
+  ApplyR --> Proof
   ApplyCopy --> Proof
   Empty --> Proof
 ```
 
 ### When are vendor DBs checked?
 
-| Situation | Junos | SUSE | eosl |
-|-----------|-------|------|------|
-| API hit | No | No | No |
-| `Junos OS 24.2`, API miss | Yes (first) | No | If Junos misses |
-| `SUSE Linux 11 SP3`, API miss | No | Yes (first) | If SUSE misses |
-| Ubuntu / other, API miss | No | No | Yes |
-| Update scrape only | No CSV write | No CSV write | No CSV write |
+| Situation | eosl | Junos | SUSE | Router-Switch |
+|-----------|------|-------|------|---------------|
+| API hit | No | No | No | No |
+| API miss + source enabled | Yes (2nd) | If keywords match (3rd) | If keywords match (4th) | If enabled+keywords (5th; off by default) |
+| Source disabled in Settings | No | No | No | No |
+| Update scrape only | No CSV write | No CSV write | No CSV write | No CSV write |
 
-Example: `SUSE Linux 11 SP3` → API conservative miss → SUSE DB → General Ends → EOL, LTSS Ends → EOAS → evidence `suse`.
+Example: `SUSE Linux 11 SP3` → API miss → eosl miss → SUSE keywords match → SUSE DB → evidence `suse`.
 
 Dates are stored as Unix epoch. Status `true`/`false` is only used when a date is missing.
 
@@ -291,20 +303,21 @@ Umbrella for **offline** lifecycle scrapers used as the Refresh fallback above. 
 
 | Source | Origin | Local DB | Date mapping | Used on Refresh when… |
 |--------|--------|----------|--------------|------------------------|
-| **eosl.date** | [eosl.date](https://eosl.date) OS category | `_data/eosl_os.db` | EOAS = earliest support date, EOL = latest | API missed; also after Junos/SUSE miss |
-| **Juniper Junos** | [Junos Dates & Milestones](https://support.juniper.net/support/eol/software/junos/) (**that table only**) | `_data/junos_os.db` | **EOE → `eol_date`**, **EOS → `eoas_date`**, FRS → released | API missed **and** `junos`/`juniper` token |
-| **SUSE Lifecycle** | [suse.com/lifecycle](https://www.suse.com/lifecycle/) | `_data/suse_os.db` | **General Ends → `eol_date`**, **LTSS Ends → `eoas_date`**, FCS → released | API missed **and** `suse`/`sles`/`opensuse` token |
+| **eosl.date** | [eosl.date](https://eosl.date) OS category | `_data/eosl_os.db` | EOAS = earliest support date, EOL = latest | API missed **and** source enabled (2nd) |
+| **Juniper Junos** | [Junos Dates & Milestones](https://support.juniper.net/support/eol/software/junos/) | `_data/junos_os.db` | **EOE → `eol_date`**, **EOS → `eoas_date`**, FRS → released | API+eosl miss, enabled, keywords match (3rd) |
+| **SUSE Lifecycle** | [suse.com/lifecycle](https://www.suse.com/lifecycle/) | `_data/suse_os.db` | **General Ends → `eol_date`**, **LTSS Ends → `eoas_date`**, FCS → released | prior miss, enabled, keywords match (4th) |
+| **Router-Switch EOL** | [router-switch.com EOL checker](https://www.router-switch.com/eol-eosl-checker/) | `_data/router_switch_os.db` | **EOL Announcement → `eol_date`**, **EOSL → `eoas_date`**, EOS → released | prior miss, enabled, keywords match (5th; **off by default**) |
+
+Per-source **Use for Refresh** + **family keywords** are edited under **Settings → Vendor lookups** and saved to `_data/vendor_lookup_settings.json`.
 
 ```mermaid
 flowchart LR
   subgraph refresh [Refresh EOL/EOAS]
-    A[endoflife.date] -->|miss| B{token?}
-    B -->|junos| C[junos_os.db]
-    B -->|suse| S[suse_os.db]
-    B -->|else| D[eosl_os.db]
-    C -->|miss| D
-    S -->|miss| D
-    D -->|miss| E[lookup-copy]
+    A[endoflife.date] -->|miss| D[eosl]
+    D -->|miss| C[junos if keywords]
+    C -->|miss| S[suse if keywords]
+    S -->|miss| RS[router-switch if enabled]
+    RS -->|miss| E[lookup-copy]
   end
 
   subgraph viewer [View / Update Vendor Lookups]
@@ -312,6 +325,7 @@ flowchart LR
     U --> C
     U --> S
     U --> D
+    U --> RS2[router_switch_os.db]
   end
 ```
 
@@ -335,6 +349,14 @@ flowchart LR
 - Releases keep SP identity (`11 SP3`, `15 SP4`); generic `SUSE`/`SLES` prefers **SUSE Linux Enterprise Server** (not Desktop/SAP/HPC unless named).
 - Conservative: no SP/version → no match; bare `11` does not pick `11 SP3`.
 
+### Router-Switch notes
+
+- Scrapes paginated manufacturer lists under [router-switch.com/eol-eosl-checker](https://www.router-switch.com/eol-eosl-checker/) (Arista, Aruba, Cisco, Dell, Fortinet, H3C, HPE, Juniper, Mellanox, Palo Alto, Ruckus).
+- **EOL Announcement → `eol_date`**, **End of Service Life (EOSL) → `eoas_date`**, End of Sale (EOS) → released / viewer “End of Sale”.
+- Wired into Refresh as the **last** local fallback, but **disabled by default**. Enable + keywords under **Settings**.
+- **Update** shows a manufacturer checklist. Selection is stored in `_data/router_switch_sync.json`.
+- Site is behind Cloudflare; sync uses `curl_cffi` Chrome TLS impersonation. Full sync is large (Cisco alone is ~2k pages) and can take a long time.
+
 ```mermaid
 flowchart TD
   View[View / Update Vendor Lookups] --> Modal[Source select + filterable viewer]
@@ -343,9 +365,11 @@ flowchart TD
   Prog --> EoslPath[eosl.date: crawl OS products]
   Prog --> JunosPath[Juniper: fetch junos EOL table]
   Prog --> SusePath[SUSE: fetch lifecycle tables]
+  Prog --> RsPath[Router-Switch: paginated manufacturer lists]
   EoslPath --> Store[(SQLite per source)]
   JunosPath --> Store
   SusePath --> Store
+  RsPath --> Store
   Store --> RefreshUI[Viewer table refreshes]
 ```
 
@@ -396,8 +420,9 @@ The Actions column filter can narrow rows by: Fuzzy, AI, Fuzzy + AI, Manual, EOL
 | **Revert** | Reset Draft rows (+ evidence) to the Data baseline and **save `_draft/`** immediately |
 | **Delete draft** | Remove Draft (+ evidence), return to Data |
 | **Show Delta / Download Delta** | Draft-only change view |
-| **View / Update Vendor Lookups** | Read-only viewer for eosl.date / Juniper Junos / SUSE Lifecycle DBs; update/re-scrape per source |
-| **Azure** | Data mode: settings + upload via `az storage blob upload` |
+| **Settings** | Vendor lookup enable/keywords for Refresh (saved to `_data/vendor_lookup_settings.json`); extensible for future options |
+| **View / Update Vendor Lookups** | Read-only viewer for eosl.date / Juniper Junos / SUSE Lifecycle / Router-Switch EOL DBs; update/re-scrape per source |
+| **Deploy** | Data mode: opens cloud deploy dialog (Azure upload/settings today; AWS/GCP placeholders) |
 
 ---
 
@@ -412,6 +437,8 @@ The Actions column filter can narrow rows by: Fuzzy, AI, Fuzzy + AI, Manual, EOL
 | `POST` | `/api/eol-lookup` | Batch EOL/EOAS from endoflife.date |
 | `POST` | `/api/vendor-lookup` | Routed vendor fallback (Junos or eosl.date) |
 | `GET` | `/api/vendor-lookups/sources` | List vendor lookup sources |
+| `GET` | `/api/vendor-lookups/settings` | Enable flags + family keywords for Refresh |
+| `POST` | `/api/vendor-lookups/settings` | Save enable flags + family keywords |
 | `GET` | `/api/vendor-lookups/{source}/rows` | Viewer rows + status (`eosl` \| `junos`) |
 | `GET` | `/api/vendor-lookups/{source}/status` | DB status for a source |
 | `POST` | `/api/vendor-lookups/{source}/sync` | Re-scrape and rebuild that source’s DB |

@@ -40,10 +40,13 @@ from suse_service import (
     sync_suse_database,
 )
 from vendor_lookup_service import (
+    get_lookup_settings as vendor_get_lookup_settings,
     get_status as vendor_get_status,
     list_rows as vendor_list_rows,
     list_sources as vendor_list_sources,
     lookup_vendor_batch,
+    save_lookup_settings as vendor_save_lookup_settings,
+    save_source_preferences as vendor_save_source_preferences,
     sync_source as vendor_sync_source,
 )
 from normalization_service import (
@@ -86,7 +89,7 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 VENDOR_SYNC_LOCK = asyncio.Lock()
 # Back-compat alias used by older EOSL-only call sites.
 EOSL_SYNC_LOCK = VENDOR_SYNC_LOCK
-VALID_VENDOR_SOURCES = {"eosl", "junos", "suse"}
+VALID_VENDOR_SOURCES = {"eosl", "junos", "suse", "router-switch"}
 
 
 class LookupRow(BaseModel):
@@ -121,6 +124,23 @@ class EolLookupItem(BaseModel):
 
 class EolLookupBatchRequest(BaseModel):
     items: list[EolLookupItem] = Field(default_factory=list)
+
+
+class VendorSyncRequest(BaseModel):
+    """Optional sync / preference options for vendor sources."""
+
+    manufacturers: list[str] | None = None
+    enabled: bool | None = None
+    keywords: list[str] | None = None
+
+
+class VendorLookupSettingsSource(BaseModel):
+    enabled: bool | None = None
+    keywords: list[str] | None = None
+
+
+class VendorLookupSettingsRequest(BaseModel):
+    sources: dict[str, VendorLookupSettingsSource] = Field(default_factory=dict)
 
 
 class NormalizationPair(BaseModel):
@@ -841,8 +861,65 @@ async def vendor_lookup_rows(source_id: str) -> dict[str, object]:
     return {"rows": rows, "status": status, "source_id": source_id}
 
 
+@app.get("/api/vendor-lookups/settings")
+async def vendor_lookup_settings_get() -> dict[str, object]:
+    return await asyncio.to_thread(vendor_get_lookup_settings)
+
+
+@app.post("/api/vendor-lookups/settings")
+async def vendor_lookup_settings_save(
+    payload: VendorLookupSettingsRequest,
+) -> dict[str, object]:
+    try:
+        return await asyncio.to_thread(
+            vendor_save_lookup_settings,
+            {
+                "sources": {
+                    source_id: source.model_dump(exclude_none=True)
+                    for source_id, source in payload.sources.items()
+                }
+            },
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/api/vendor-lookups/{source_id}/preferences")
+async def vendor_lookup_preferences(
+    source_id: str,
+    payload: VendorSyncRequest,
+) -> dict[str, object]:
+    if source_id not in VALID_VENDOR_SOURCES:
+        raise HTTPException(status_code=404, detail=f"Unknown vendor source: {source_id}")
+    options: dict[str, object] = {}
+    if payload.enabled is not None:
+        options["enabled"] = payload.enabled
+    if payload.keywords is not None:
+        options["keywords"] = payload.keywords
+    if payload.manufacturers is not None:
+        options["manufacturers"] = payload.manufacturers
+    try:
+        result = await asyncio.to_thread(
+            vendor_save_source_preferences,
+            source_id,
+            options,
+        )
+    except KeyError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Preferences are not supported for {source_id}",
+        ) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    status = await asyncio.to_thread(vendor_get_status, source_id)
+    return {"result": result, "status": status, "source_id": source_id}
+
+
 @app.post("/api/vendor-lookups/{source_id}/sync")
-async def vendor_lookup_sync(source_id: str) -> dict[str, object]:
+async def vendor_lookup_sync(
+    source_id: str,
+    payload: VendorSyncRequest | None = None,
+) -> dict[str, object]:
     if source_id not in VALID_VENDOR_SOURCES:
         raise HTTPException(status_code=404, detail=f"Unknown vendor source: {source_id}")
     if VENDOR_SYNC_LOCK.locked():
@@ -850,9 +927,18 @@ async def vendor_lookup_sync(source_id: str) -> dict[str, object]:
             status_code=409,
             detail="A vendor lookup update is already running. Please wait for it to finish.",
         )
+    options: dict[str, object] = {}
+    if payload and payload.manufacturers is not None:
+        options["manufacturers"] = payload.manufacturers
     async with VENDOR_SYNC_LOCK:
         try:
-            result = await asyncio.to_thread(vendor_sync_source, source_id)
+            result = await asyncio.to_thread(
+                vendor_sync_source,
+                source_id,
+                options=options or None,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
         except Exception as error:  # noqa: BLE001 - surface scrape failures to UI
             raise HTTPException(
                 status_code=502,
@@ -864,7 +950,7 @@ async def vendor_lookup_sync(source_id: str) -> dict[str, object]:
 
 @app.post("/api/vendor-lookup")
 async def vendor_lookup(payload: EolLookupBatchRequest) -> dict[str, object]:
-    """Junos → junos then eosl; SUSE → suse then eosl; else eosl."""
+    """Local vendor fallback after endoflife.date (eosl → junos → suse → router-switch)."""
     results = await asyncio.to_thread(
         lookup_vendor_batch,
         [item.model_dump() for item in payload.items],
