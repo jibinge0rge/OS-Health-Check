@@ -1,7 +1,7 @@
 """Persistent Vendor Lookup Refresh settings (enable flags + family keywords).
 
 endoflife.date is always first and is not configured here.
-Local fallback order is fixed: eosl → junos → suse → router-switch.
+Local fallback order is fixed: eosl → junos → suse → layer23-switch → router-switch.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ VENDOR_FALLBACK_ORDER: tuple[str, ...] = (
     "eosl",
     "junos",
     "suse",
+    "layer23-switch",
     "router-switch",
 )
 
@@ -35,6 +36,32 @@ _DEFAULT_SOURCES: dict[str, dict[str, Any]] = {
     "suse": {
         "enabled": True,
         "keywords": ["suse", "sles", "opensuse"],
+    },
+    "layer23-switch": {
+        # Wired into Refresh but off by default (large hardware catalog).
+        "enabled": False,
+        "keywords": [
+            "cisco",
+            "arista",
+            "aruba",
+            "dell",
+            "fortinet",
+            "h3c",
+            "hpe",
+            "juniper",
+            "mellanox",
+            "palo alto",
+            "palo-alto",
+            "pan-os",
+            "panos",
+            "ruckus",
+            "ios-xe",
+            "ios xe",
+            "ios-xr",
+            "ios xr",
+            "nx-os",
+            "nxos",
+        ],
     },
     "router-switch": {
         # Wired into Refresh but off by default (hardware-heavy catalog).

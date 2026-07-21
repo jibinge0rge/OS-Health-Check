@@ -1,7 +1,7 @@
 """Registry for local vendor lifecycle lookup sources + Refresh fallback routing.
 
 Fixed order after endoflife.date (not configurable):
-  eosl → junos → suse → router-switch
+  eosl → junos → suse → layer23-switch → router-switch
 
 Per-source enable flags and family keywords are persisted in
 ``_data/vendor_lookup_settings.json`` (see ``vendor_settings``).
@@ -24,6 +24,16 @@ from junos_service import (
     lookup_os_junos,
     lookup_os_junos_batch,
     sync_junos_database,
+)
+from layer23_switch_service import (
+    get_status as layer23_switch_get_status,
+    list_all_rows as layer23_switch_list_all_rows,
+    list_manufacturers as layer23_switch_list_manufacturers,
+    lookup_os_layer23_switch,
+    lookup_os_layer23_switch_batch,
+    manufacturers_from_slugs as layer23_switch_manufacturers_from_slugs,
+    save_selected_manufacturers as layer23_switch_save_selected_manufacturers,
+    sync_layer23_switch_database,
 )
 from router_switch_service import (
     get_status as router_switch_get_status,
@@ -112,6 +122,30 @@ VENDOR_SOURCES: dict[str, VendorSource] = {
             "released": "FCS",
             "eol_date": "General Ends (EOL)",
             "eoas_date": "LTSS Ends (EOAS)",
+            "supported": "Supported",
+        },
+        "supported_as_type": False,
+    },
+    "layer23-switch": {
+        "id": "layer23-switch",
+        "label": "Layer23-Switch EOL",
+        "description": (
+            "Hardware/OS EOL/EOSL from layer23-switch.com "
+            "(disabled for Refresh by default)"
+        ),
+        "get_status": layer23_switch_get_status,
+        "list_rows": layer23_switch_list_all_rows,
+        "sync": sync_layer23_switch_database,
+        "lookup_batch": lookup_os_layer23_switch_batch,
+        "lookup_one": lookup_os_layer23_switch,
+        "uses_keywords": True,
+        "manufacturers": layer23_switch_list_manufacturers(),
+        "viewer_headers": {
+            "product": "Product Name",
+            "release": "Part Number",
+            "released": "End of Sale (EOS)",
+            "eol_date": "EOL Announcement",
+            "eoas_date": "End of Service Life (EOSL)",
             "supported": "Supported",
         },
         "supported_as_type": False,
@@ -239,7 +273,7 @@ def save_source_preferences(
     source_id: str,
     options: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    """Persist source-specific preferences (enable/keywords and Router-Switch manufacturers)."""
+    """Persist source-specific preferences including manufacturer selection."""
     options = options or {}
     get_source(source_id)
     result: dict[str, object] = {"source_id": source_id}
@@ -255,11 +289,16 @@ def save_source_preferences(
         result["enabled"] = source_is_enabled(source_id, settings)
         result["keywords"] = source_keywords(source_id, settings)
 
-    if source_id == "router-switch" and "manufacturers" in options:
+    if source_id in {"layer23-switch", "router-switch"} and "manufacturers" in options:
         slugs = options.get("manufacturers")
         if not isinstance(slugs, list) or not slugs:
             raise ValueError("Select at least one manufacturer.")
-        saved = router_switch_save_selected_manufacturers([str(s) for s in slugs])
+        save_selected = (
+            layer23_switch_save_selected_manufacturers
+            if source_id == "layer23-switch"
+            else router_switch_save_selected_manufacturers
+        )
+        saved = save_selected([str(s) for s in slugs])
         result["manufacturers"] = saved
         result["selected_manufacturers"] = saved
 
@@ -282,10 +321,15 @@ def sync_source(
     kwargs: dict[str, object] = {}
     if progress_callback is not None:
         kwargs["progress_callback"] = progress_callback
-    if source_id == "router-switch":
+    if source_id in {"layer23-switch", "router-switch"}:
         slugs = options.get("manufacturers")
         if slugs is not None:
-            kwargs["manufacturers"] = router_switch_manufacturers_from_slugs(
+            manufacturers_from_slugs = (
+                layer23_switch_manufacturers_from_slugs
+                if source_id == "layer23-switch"
+                else router_switch_manufacturers_from_slugs
+            )
+            kwargs["manufacturers"] = manufacturers_from_slugs(
                 [str(s) for s in slugs]  # type: ignore[arg-type]
             )
     if kwargs:
@@ -342,8 +386,8 @@ def _empty_vendor_result(
 def lookup_vendor_batch(items: list[dict[str, str]]) -> list[dict[str, str]]:
     """Vendor fallback after endoflife.date.
 
-    Fixed order: eosl → junos → suse → router-switch.
-    Specialists (junos/suse/router-switch) only run when enabled and keywords match.
+    Fixed order: eosl → junos → suse → layer23-switch → router-switch.
+    Specialists (junos/suse/layer23-switch/router-switch) only run when enabled and keywords match.
     eosl runs when enabled (no keyword gate).
     """
     settings = load_settings()

@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import threading
+import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime
 from pathlib import Path
@@ -89,7 +90,13 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 VENDOR_SYNC_LOCK = asyncio.Lock()
 # Back-compat alias used by older EOSL-only call sites.
 EOSL_SYNC_LOCK = VENDOR_SYNC_LOCK
-VALID_VENDOR_SOURCES = {"eosl", "junos", "suse", "router-switch"}
+VALID_VENDOR_SOURCES = {
+    "eosl",
+    "junos",
+    "suse",
+    "layer23-switch",
+    "router-switch",
+}
 
 
 class LookupRow(BaseModel):
@@ -192,11 +199,45 @@ class AzureUploadRequest(BaseModel):
         return value
 
 
-class AzureSettings(BaseModel):
+class AzureProfile(BaseModel):
+    id: str = ""
+    name: str = ""
     account_name: str = ""
     container_name: str = ""
     blob_name: str = ""
 
+    @field_validator("id", "name", "account_name", "container_name", "blob_name", mode="before")
+    @classmethod
+    def strip_optional_fields(cls, value: object) -> str:
+        return str(value or "").strip()
+
+
+class AzureSettingsStore(BaseModel):
+    active_profile_id: str = ""
+    profiles: list[AzureProfile] = Field(default_factory=list)
+
+    @field_validator("active_profile_id", mode="before")
+    @classmethod
+    def strip_active_profile_id(cls, value: object) -> str:
+        return str(value or "").strip()
+
+
+class AzureSettings(BaseModel):
+    """Legacy single-target shape kept for older clients/tests."""
+
+    account_name: str = ""
+    container_name: str = ""
+    blob_name: str = ""
+
+
+class AzureSettingsSaveRequest(BaseModel):
+    active_profile_id: str = ""
+    profiles: list[AzureProfile] = Field(default_factory=list)
+
+    @field_validator("active_profile_id", mode="before")
+    @classmethod
+    def strip_active_profile_id(cls, value: object) -> str:
+        return str(value or "").strip()
 
 class AppSettings(BaseModel):
     ai_enabled: bool = False
@@ -393,31 +434,164 @@ def backup_data_evidence() -> Path | None:
     return backup_path
 
 
-def load_azure_settings() -> AzureSettings:
-    if not AZURE_CONFIG_PATH.exists():
-        return AzureSettings()
+def _new_azure_profile_id() -> str:
+    return uuid.uuid4().hex
 
-    with AZURE_CONFIG_PATH.open("r", encoding="utf-8") as handle:
-        payload = json.load(handle)
+
+def _legacy_azure_payload_to_store(payload: dict[str, object]) -> AzureSettingsStore:
+    account_name = str(payload.get("account_name") or "").strip()
+    container_name = str(payload.get("container_name") or "").strip()
+    blob_name = str(payload.get("blob_name") or "").strip()
+    if not account_name and not container_name and not blob_name:
+        return AzureSettingsStore()
+    profile_id = _new_azure_profile_id()
+    return AzureSettingsStore(
+        active_profile_id=profile_id,
+        profiles=[
+            AzureProfile(
+                id=profile_id,
+                name="Default",
+                account_name=account_name,
+                container_name=container_name,
+                blob_name=blob_name,
+            )
+        ],
+    )
+
+
+def _normalize_azure_store(payload: dict[str, object] | None) -> AzureSettingsStore:
+    if not isinstance(payload, dict):
+        return AzureSettingsStore()
+
+    # Legacy single-target file.
+    if "profiles" not in payload and (
+        "account_name" in payload or "container_name" in payload or "blob_name" in payload
+    ):
+        return _legacy_azure_payload_to_store(payload)
+
+    raw_profiles = payload.get("profiles")
+    profiles: list[AzureProfile] = []
+    seen_ids: set[str] = set()
+    if isinstance(raw_profiles, list):
+        for item in raw_profiles:
+            if not isinstance(item, dict):
+                continue
+            profile_id = str(item.get("id") or "").strip() or _new_azure_profile_id()
+            if profile_id in seen_ids:
+                profile_id = _new_azure_profile_id()
+            seen_ids.add(profile_id)
+            name = str(item.get("name") or "").strip() or "Untitled"
+            profiles.append(
+                AzureProfile(
+                    id=profile_id,
+                    name=name,
+                    account_name=str(item.get("account_name") or "").strip(),
+                    container_name=str(item.get("container_name") or "").strip(),
+                    blob_name=str(item.get("blob_name") or "").strip(),
+                )
+            )
+
+    active_profile_id = str(payload.get("active_profile_id") or "").strip()
+    if profiles:
+        valid_ids = {profile.id for profile in profiles}
+        if active_profile_id not in valid_ids:
+            active_profile_id = profiles[0].id
+    else:
+        active_profile_id = ""
+
+    return AzureSettingsStore(active_profile_id=active_profile_id, profiles=profiles)
+
+
+def load_azure_settings_store() -> AzureSettingsStore:
+    if not AZURE_CONFIG_PATH.exists():
+        return AzureSettingsStore()
+
+    try:
+        with AZURE_CONFIG_PATH.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError) as error:
+        raise HTTPException(
+            status_code=500,
+            detail="Azure settings file is invalid.",
+        ) from error
 
     if not isinstance(payload, dict):
         raise HTTPException(status_code=500, detail="Azure settings file is invalid.")
 
+    return _normalize_azure_store(payload)
+
+
+def save_azure_settings_store(store: AzureSettingsStore) -> AzureSettingsStore:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    normalized = _normalize_azure_store(store.model_dump())
+    with AZURE_CONFIG_PATH.open("w", encoding="utf-8") as handle:
+        json.dump(normalized.model_dump(), handle, indent=2)
+        handle.write("\n")
+    return normalized
+
+
+def load_azure_settings() -> AzureSettings:
+    """Compatibility helper: active profile flattened to legacy fields."""
+    store = load_azure_settings_store()
+    active = next(
+        (profile for profile in store.profiles if profile.id == store.active_profile_id),
+        None,
+    )
+    if active is None and store.profiles:
+        active = store.profiles[0]
+    if active is None:
+        return AzureSettings()
     return AzureSettings(
-        account_name=str(payload.get("account_name") or "").strip(),
-        container_name=str(payload.get("container_name") or "").strip(),
-        blob_name=str(payload.get("blob_name") or "").strip(),
+        account_name=active.account_name,
+        container_name=active.container_name,
+        blob_name=active.blob_name,
     )
 
 
 def save_azure_settings(payload: AzureUploadRequest) -> AzureSettings:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    settings = AzureSettings(**payload.model_dump())
-    with AZURE_CONFIG_PATH.open("w", encoding="utf-8") as handle:
-        json.dump(settings.model_dump(), handle, indent=2)
-        handle.write("\n")
-    return settings
+    """Compatibility helper for legacy single-target saves."""
+    store = load_azure_settings_store()
+    active = next(
+        (profile for profile in store.profiles if profile.id == store.active_profile_id),
+        None,
+    )
+    if active is None:
+        profile_id = _new_azure_profile_id()
+        store.profiles.append(
+            AzureProfile(
+                id=profile_id,
+                name="Default",
+                account_name=payload.account_name,
+                container_name=payload.container_name,
+                blob_name=payload.blob_name,
+            )
+        )
+        store.active_profile_id = profile_id
+    else:
+        active.account_name = payload.account_name
+        active.container_name = payload.container_name
+        active.blob_name = payload.blob_name
+    save_azure_settings_store(store)
+    return AzureSettings(
+        account_name=payload.account_name,
+        container_name=payload.container_name,
+        blob_name=payload.blob_name,
+    )
 
+
+def require_azure_settings() -> AzureUploadRequest:
+    settings = load_azure_settings()
+    if not settings.account_name or not settings.container_name or not settings.blob_name:
+        raise HTTPException(
+            status_code=400,
+            detail="Azure settings are not configured. Save a profile first.",
+        )
+
+    return AzureUploadRequest(
+        account_name=settings.account_name,
+        container_name=settings.container_name,
+        blob_name=settings.blob_name,
+    )
 
 def load_app_settings() -> AppSettings:
     if not APP_SETTINGS_PATH.exists():
@@ -456,21 +630,6 @@ def app_settings_response() -> AppSettingsResponse:
         ai_available=selected_ai_provider_available(settings),
         openai_available=openai_available,
         gemini_available=gemini_available,
-    )
-
-
-def require_azure_settings() -> AzureUploadRequest:
-    settings = load_azure_settings()
-    if not settings.account_name or not settings.container_name or not settings.blob_name:
-        raise HTTPException(
-            status_code=400,
-            detail="Azure settings are not configured. Save settings first.",
-        )
-
-    return AzureUploadRequest(
-        account_name=settings.account_name,
-        container_name=settings.container_name,
-        blob_name=settings.blob_name,
     )
 
 
@@ -723,14 +882,36 @@ async def update_app_settings(payload: AppSettings) -> AppSettingsResponse:
 
 
 @app.get("/api/azure/settings")
-async def get_azure_settings() -> AzureSettings:
-    return load_azure_settings()
+async def get_azure_settings() -> AzureSettingsStore:
+    return load_azure_settings_store()
 
 
 @app.put("/api/azure/settings")
-async def update_azure_settings(payload: AzureUploadRequest) -> AzureSettings:
-    return save_azure_settings(payload)
-
+async def update_azure_settings(payload: AzureSettingsSaveRequest) -> AzureSettingsStore:
+    if not payload.profiles:
+        raise HTTPException(
+            status_code=400,
+            detail="Add at least one Azure profile before saving.",
+        )
+    for profile in payload.profiles:
+        if not profile.name:
+            raise HTTPException(status_code=400, detail="Each Azure profile needs a name.")
+        if not profile.account_name or not profile.container_name or not profile.blob_name:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Profile '{profile.name}' is incomplete. Fill account, container, and blob path.",
+            )
+        if profile.blob_name.startswith("/"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Profile '{profile.name}': blob path must not start with /.",
+            )
+    return save_azure_settings_store(
+        AzureSettingsStore(
+            active_profile_id=payload.active_profile_id,
+            profiles=payload.profiles,
+        )
+    )
 
 @app.post("/api/azure/upload")
 async def upload_lookup_to_azure() -> StreamingResponse:
@@ -950,7 +1131,7 @@ async def vendor_lookup_sync(
 
 @app.post("/api/vendor-lookup")
 async def vendor_lookup(payload: EolLookupBatchRequest) -> dict[str, object]:
-    """Local vendor fallback after endoflife.date (eosl → junos → suse → router-switch)."""
+    """Local vendor fallback after endoflife.date (eosl → junos → suse → layer23-switch → router-switch)."""
     results = await asyncio.to_thread(
         lookup_vendor_batch,
         [item.model_dump() for item in payload.items],

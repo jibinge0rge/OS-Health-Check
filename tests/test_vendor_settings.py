@@ -23,16 +23,17 @@ class VendorSettingsTests(unittest.TestCase):
     def test_fallback_order_fixed(self) -> None:
         self.assertEqual(
             list(VENDOR_FALLBACK_ORDER),
-            ["eosl", "junos", "suse", "router-switch"],
+            ["eosl", "junos", "suse", "layer23-switch", "router-switch"],
         )
 
-    def test_defaults_router_switch_disabled(self) -> None:
+    def test_defaults_hardware_sources_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "vendor_lookup_settings.json"
             settings = load_settings(path)
             self.assertTrue(source_is_enabled("eosl", settings))
             self.assertTrue(source_is_enabled("junos", settings))
             self.assertTrue(source_is_enabled("suse", settings))
+            self.assertFalse(source_is_enabled("layer23-switch", settings))
             self.assertFalse(source_is_enabled("router-switch", settings))
 
     def test_keyword_matching(self) -> None:
@@ -125,6 +126,7 @@ class VendorLookupBatchOrderTests(unittest.TestCase):
                         "eosl": {"enabled": True, "keywords": []},
                         "junos": {"enabled": True, "keywords": ["junos", "juniper"]},
                         "suse": {"enabled": True, "keywords": ["suse"]},
+                        "layer23-switch": {"enabled": False, "keywords": ["cisco"]},
                         "router-switch": {"enabled": False, "keywords": ["cisco"]},
                     }
                 },
@@ -140,6 +142,14 @@ class VendorLookupBatchOrderTests(unittest.TestCase):
                 patch.dict(
                     vls.VENDOR_SOURCES["suse"],
                     {"lookup_one": lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("suse"))},
+                ),
+                patch.dict(
+                    vls.VENDOR_SOURCES["layer23-switch"],
+                    {
+                        "lookup_one": lambda *_a, **_k: (
+                            _ for _ in ()
+                        ).throw(AssertionError("layer23"))
+                    },
                 ),
                 patch.dict(
                     vls.VENDOR_SOURCES["router-switch"],
@@ -188,6 +198,7 @@ class VendorLookupBatchOrderTests(unittest.TestCase):
                         "eosl": {"enabled": True, "keywords": []},
                         "junos": {"enabled": True, "keywords": ["junos"]},
                         "suse": {"enabled": True, "keywords": ["suse"]},
+                        "layer23-switch": {"enabled": False, "keywords": ["cisco", "ios xe"]},
                         "router-switch": {"enabled": False, "keywords": ["cisco", "ios xe"]},
                     }
                 },
@@ -206,6 +217,10 @@ class VendorLookupBatchOrderTests(unittest.TestCase):
                     vls.VENDOR_SOURCES["suse"],
                     {"lookup_one": lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("suse"))},
                 ),
+                patch.dict(
+                    vls.VENDOR_SOURCES["layer23-switch"],
+                    {"lookup_one": lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("layer23"))},
+                ),
                 patch.dict(vls.VENDOR_SOURCES["router-switch"], {"lookup_one": rs_lookup}),
             ):
                 lookup_vendor_batch(
@@ -218,6 +233,88 @@ class VendorLookupBatchOrderTests(unittest.TestCase):
                     ]
                 )
                 self.assertEqual(rs_calls["n"], 0)
+
+    def test_layer23_runs_before_router_switch(self) -> None:
+        empty = {
+            "eol_date": "",
+            "eol_status": "",
+            "eoas_date": "",
+            "eoas_status": "",
+            "source": "eosl",
+            "api_note": "miss",
+            "query_used": "Cisco Catalyst 9300",
+            "query_field": "os_string",
+            "product_slug": "",
+            "release_name": "",
+            "release_label": "",
+            "normalized_os_detailed_name": "",
+            "normalized_os": "",
+        }
+        layer23_hit = dict(
+            empty,
+            eol_date="1",
+            eol_status="false",
+            eoas_date="2",
+            eoas_status="false",
+            source="layer23-switch",
+            api_note="",
+            product_slug="cisco",
+            release_name="C9300-24P-A",
+            release_label="Cisco Catalyst 9300 (C9300-24P-A)",
+        )
+        layer23_calls = {"n": 0}
+        router_calls = {"n": 0}
+
+        def layer23_lookup(*_args, **_kwargs):
+            layer23_calls["n"] += 1
+            return layer23_hit
+
+        def router_lookup(*_args, **_kwargs):
+            router_calls["n"] += 1
+            return empty
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "vendor_lookup_settings.json"
+            save_settings(
+                {
+                    "sources": {
+                        "eosl": {"enabled": True, "keywords": []},
+                        "junos": {"enabled": True, "keywords": ["junos"]},
+                        "suse": {"enabled": True, "keywords": ["suse"]},
+                        "layer23-switch": {"enabled": True, "keywords": ["cisco"]},
+                        "router-switch": {"enabled": True, "keywords": ["cisco"]},
+                    }
+                },
+                prefs_path=path,
+            )
+            import vendor_lookup_service as vls
+
+            with (
+                patch.object(vls, "load_settings", return_value=load_settings(path)),
+                patch.dict(vls.VENDOR_SOURCES["eosl"], {"lookup_one": lambda *_a, **_k: empty}),
+                patch.dict(
+                    vls.VENDOR_SOURCES["junos"],
+                    {"lookup_one": lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("junos"))},
+                ),
+                patch.dict(
+                    vls.VENDOR_SOURCES["suse"],
+                    {"lookup_one": lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("suse"))},
+                ),
+                patch.dict(vls.VENDOR_SOURCES["layer23-switch"], {"lookup_one": layer23_lookup}),
+                patch.dict(vls.VENDOR_SOURCES["router-switch"], {"lookup_one": router_lookup}),
+            ):
+                results = lookup_vendor_batch(
+                    [
+                        {
+                            "os_string": "Cisco Catalyst 9300",
+                            "normalized_os_detailed_name": "",
+                            "normalized_os": "",
+                        }
+                    ]
+                )
+                self.assertEqual(results[0]["source"], "layer23-switch")
+                self.assertEqual(layer23_calls["n"], 1)
+                self.assertEqual(router_calls["n"], 0)
 
 
 if __name__ == "__main__":

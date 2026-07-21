@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OS Health Check</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=63" />
+    <link rel="stylesheet" href="/static/styles.css?v=70" />
   </head>
   <body>
     <main class="app-shell">
@@ -216,109 +216,128 @@
 
       <section class="table-card">
         <div id="status-banner" class="status-banner hidden"></div>
-        <div class="table-scroll">
-          <table>
-            <thead>
-              <tr id="header-row">
+        <div class="lookup-table-shell">
+          <div class="lookup-table-head" id="lookup-table-head">
+            <table class="lookup-table lookup-table-head-table">
+              <colgroup>
                 {% for header in headers %}
-                <th data-header="{{ header }}">
-                  <button
-                    type="button"
-                    class="sort-header-button"
-                    data-sort-header="{{ header }}"
-                    title="Sort by {{ header }}"
-                  >
-                    <span class="sort-header-label">{{ header }}</span>
-                    <span class="sort-indicator" aria-hidden="true"></span>
-                  </button>
-                </th>
+                <col class="lookup-col-{{ header }}" />
                 {% endfor %}
-                <th class="actions-column">Actions</th>
-              </tr>
-              <tr id="filter-row" class="filter-row">
-                {% for header in headers %}
-                <th data-filter-header="{{ header }}">
-                  <div class="column-filter-controls">
-                    <select
-                      class="column-filter-mode"
-                      data-column-filter="{{ header }}"
-                      aria-label="Filter {{ header }}"
-                    >
-                      <option value="" selected>All</option>
-                      <option value="empty">Empty</option>
-                      <option value="not_empty">Not empty</option>
-                      {% if header not in ['eol_date', 'eoas_date', 'eol_status', 'eoas_status'] %}
-                      <option value="contains">Contains</option>
-                      <option value="not_contains">Does not contain</option>
-                      <option value="equals">Equals</option>
-                      <option value="not_equals">Does not equal</option>
-                      {% endif %}
-                    </select>
-                    {% if header in ['eol_date', 'eoas_date'] %}
-                    <div class="column-date-range">
-                      <input
-                        class="column-filter-date"
-                        data-column-date-from="{{ header }}"
-                        type="date"
-                        title="From"
-                        aria-label="{{ header }} from date"
-                      />
-                      <span class="column-date-sep" aria-hidden="true">–</span>
-                      <input
-                        class="column-filter-date"
-                        data-column-date-to="{{ header }}"
-                        type="date"
-                        title="To"
-                        aria-label="{{ header }} to date"
-                      />
-                    </div>
-                    {% elif header not in ['eol_status', 'eoas_status'] %}
-                    <input
-                      class="column-filter-text"
-                      data-column-text-filter="{{ header }}"
-                      type="search"
-                      placeholder="Contains"
-                      autocomplete="off"
-                    />
-                    {% endif %}
-                  </div>
-                </th>
-                {% endfor %}
-                <th class="actions-column">
-                  <div class="column-filter-controls actions-filter-controls">
-                    <select
-                      id="evidence-filter"
-                      class="column-filter-mode"
-                      aria-label="Filter by evidence type"
-                      title="Filter rows by how values were matched"
-                    >
-                      <option value="" selected>All</option>
-                      <option value="fuzzy">Fuzzy</option>
-                      <option value="ai">AI</option>
-                      <option value="fuzzy+ai">Fuzzy + AI</option>
-                      <option value="manual">Manual</option>
-                      <option value="eol">EOL API</option>
-                      <option value="eosl">eosl.date</option>
-                      <option value="junos">Juniper Junos</option>
-                      <option value="suse">SUSE Lifecycle</option>
-                      <option value="router-switch">Router-Switch EOL</option>
-                      <option value="lookup-fallback">Lookup copy</option>
-                      <option value="ambiguous">Ambiguous</option>
-                      <option value="null">NULL</option>
-                    </select>
+                <col class="lookup-col-actions" />
+              </colgroup>
+              <thead>
+                <tr id="header-row">
+                  {% for header in headers %}
+                  <th data-header="{{ header }}">
                     <button
-                      id="clear-column-filters-button"
-                      class="ghost-button compact-button"
                       type="button"
+                      class="sort-header-button"
+                      data-sort-header="{{ header }}"
+                      title="Sort by {{ header }}"
                     >
-                      Clear
+                      <span class="sort-header-label">{{ header }}</span>
+                      <span class="sort-indicator" aria-hidden="true"></span>
                     </button>
-                  </div>
-                </th>
-              </tr>
-            </thead>
-            <tbody id="table-body"></tbody>
-          </table>
+                  </th>
+                  {% endfor %}
+                  <th class="actions-column">Actions</th>
+                </tr>
+                <tr id="filter-row" class="filter-row">
+                  {% for header in headers %}
+                  <th data-filter-header="{{ header }}">
+                    <div class="column-filter-controls">
+                      <select
+                        class="column-filter-mode"
+                        data-column-filter="{{ header }}"
+                        aria-label="Filter {{ header }}"
+                      >
+                        <option value="" selected>All</option>
+                        <option value="empty">Empty</option>
+                        <option value="not_empty">Not empty</option>
+                        {% if header not in ['eol_date', 'eoas_date', 'eol_status', 'eoas_status'] %}
+                        <option value="contains">Contains</option>
+                        <option value="not_contains">Does not contain</option>
+                        <option value="equals">Equals</option>
+                        <option value="not_equals">Does not equal</option>
+                        {% endif %}
+                      </select>
+                      {% if header in ['eol_date', 'eoas_date'] %}
+                      <div class="column-date-range">
+                        <input
+                          class="column-filter-date"
+                          data-column-date-from="{{ header }}"
+                          type="date"
+                          title="From"
+                          aria-label="{{ header }} from date"
+                        />
+                        <span class="column-date-sep" aria-hidden="true">–</span>
+                        <input
+                          class="column-filter-date"
+                          data-column-date-to="{{ header }}"
+                          type="date"
+                          title="To"
+                          aria-label="{{ header }} to date"
+                        />
+                      </div>
+                      {% elif header not in ['eol_status', 'eoas_status'] %}
+                      <input
+                        class="column-filter-text"
+                        data-column-text-filter="{{ header }}"
+                        type="search"
+                        placeholder="Contains"
+                        autocomplete="off"
+                      />
+                      {% endif %}
+                    </div>
+                  </th>
+                  {% endfor %}
+                  <th class="actions-column">
+                    <div class="column-filter-controls actions-filter-controls">
+                      <select
+                        id="evidence-filter"
+                        class="column-filter-mode"
+                        aria-label="Filter by evidence type"
+                        title="Filter rows by how values were matched"
+                      >
+                        <option value="" selected>All</option>
+                        <option value="fuzzy">Fuzzy</option>
+                        <option value="ai">AI</option>
+                        <option value="fuzzy+ai">Fuzzy + AI</option>
+                        <option value="manual">Manual</option>
+                        <option value="eol">EOL API</option>
+                        <option value="eosl">eosl.date</option>
+                        <option value="junos">Juniper Junos</option>
+                        <option value="suse">SUSE Lifecycle</option>
+                        <option value="layer23-switch">Layer23-Switch EOL</option>
+                        <option value="router-switch">Router-Switch EOL</option>
+                        <option value="lookup-fallback">Lookup copy</option>
+                        <option value="ambiguous">Ambiguous</option>
+                        <option value="null">NULL</option>
+                      </select>
+                      <button
+                        id="clear-column-filters-button"
+                        class="ghost-button compact-button"
+                        type="button"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  </th>
+                </tr>
+              </thead>
+            </table>
+          </div>
+          <div class="lookup-table-body-wrap" id="lookup-table-body-wrap">
+            <table class="lookup-table lookup-table-body-table">
+              <colgroup>
+                {% for header in headers %}
+                <col class="lookup-col-{{ header }}" />
+                {% endfor %}
+                <col class="lookup-col-actions" />
+              </colgroup>
+              <tbody id="table-body"></tbody>
+            </table>
+          </div>
         </div>
         <div class="pagination-bar">
           <div class="pagination-left">
@@ -591,14 +610,55 @@
         >
           <h3>Azure Blob Storage</h3>
           <p class="deploy-provider-note">
-            Upload the Data CSV to Azure Blob Storage using your signed-in Azure CLI account.
+            Choose a named connection profile, edit its settings here, then upload with your
+            signed-in Azure CLI account.
           </p>
+
+          <div class="azure-profile-bar">
+            <label class="modal-field azure-profile-select-field">
+              <span>Active profile</span>
+              <select id="azure-profile-select" aria-label="Azure profile"></select>
+            </label>
+            <div class="azure-profile-actions">
+              <button id="azure-profile-new" class="ghost-button compact-button" type="button">
+                New
+              </button>
+              <button id="azure-profile-delete" class="ghost-button compact-button" type="button">
+                Delete
+              </button>
+            </div>
+          </div>
+
+          <div id="azure-inline-settings" class="azure-inline-settings">
+            <label class="modal-field">
+              <span>Profile name</span>
+              <input
+                id="azure-profile-name-input"
+                type="text"
+                autocomplete="off"
+                placeholder="e.g. CyberLens Non-Prod"
+              />
+            </label>
+            <label class="modal-field">
+              <span>Storage account name</span>
+              <input id="azure-account-name-input" type="text" autocomplete="off" />
+            </label>
+            <label class="modal-field">
+              <span>Container name</span>
+              <input id="azure-container-name-input" type="text" autocomplete="off" />
+            </label>
+            <label class="modal-field">
+              <span>Blob path in container</span>
+              <input id="azure-blob-name-input" type="text" autocomplete="off" />
+            </label>
+          </div>
+
           <div class="deploy-provider-actions">
             <button id="azure-upload-button" class="primary-button" type="button">
               Upload to Azure
             </button>
-            <button id="azure-settings-button" class="ghost-button" type="button">
-              Azure settings
+            <button id="azure-save-settings-button" class="secondary-button" type="button">
+              Save profile
             </button>
           </div>
         </section>
@@ -662,6 +722,8 @@
             <span class="vendor-flow-arrow" aria-hidden="true">→</span>
             <span class="vendor-flow-chip" data-flow-source="suse">suse</span>
             <span class="vendor-flow-arrow" aria-hidden="true">→</span>
+            <span class="vendor-flow-chip" data-flow-source="layer23-switch">layer23-switch</span>
+            <span class="vendor-flow-arrow" aria-hidden="true">→</span>
             <span class="vendor-flow-chip" data-flow-source="router-switch">router-switch</span>
           </div>
 
@@ -671,55 +733,6 @@
         <div class="modal-actions">
           <button id="settings-cancel" class="ghost-button" value="cancel">Cancel</button>
           <button id="settings-save" class="primary-button" type="button">Save</button>
-        </div>
-      </form>
-    </dialog>
-
-    <dialog id="azure-settings-dialog" class="modal">
-      <form method="dialog" class="modal-card">
-        <div class="modal-header">
-          <div>
-            <p class="eyebrow">Azure Storage</p>
-            <h2>Azure Settings</h2>
-          </div>
-          <button id="azure-close-button" class="ghost-button" value="cancel">Close</button>
-        </div>
-
-        <p class="modal-note">
-          Your Azure connection details are saved locally and reused for future uploads.
-          Upload uses your signed-in Azure account.
-        </p>
-
-        <label class="modal-field">
-          <span>Storage account name</span>
-          <input
-            id="azure-account-name-input"
-            type="text"
-            autocomplete="off"
-          />
-        </label>
-
-        <label class="modal-field">
-          <span>Container name</span>
-          <input
-            id="azure-container-name-input"
-            type="text"
-            autocomplete="off"
-          />
-        </label>
-
-        <label class="modal-field">
-          <span>Blob path in container</span>
-          <input
-            id="azure-blob-name-input"
-            type="text"
-            autocomplete="off"
-          />
-        </label>
-
-        <div class="modal-actions">
-          <button id="azure-cancel-button" class="ghost-button" value="cancel">Cancel</button>
-          <button id="azure-save-settings-button" class="primary-button" type="button">Save settings</button>
         </div>
       </form>
     </dialog>
@@ -764,6 +777,7 @@
               <option value="eosl">eosl.date</option>
               <option value="junos">Juniper Junos</option>
               <option value="suse">SUSE Lifecycle</option>
+              <option value="layer23-switch">Layer23-Switch EOL</option>
               <option value="router-switch">Router-Switch EOL</option>
             </select>
           </label>
@@ -1024,6 +1038,52 @@
       let sortDirection = "asc";
 
       const tableBody = document.getElementById("table-body");
+      const lookupTableHead = document.getElementById("lookup-table-head");
+      const lookupTableBodyWrap = document.getElementById("lookup-table-body-wrap");
+      const lookupTableShell = document.querySelector(".lookup-table-shell");
+      let lookupScrollSyncLock = false;
+
+      function syncLookupTableLayout() {
+        if (!lookupTableBodyWrap || !lookupTableHead) {
+          return;
+        }
+        const gutter = lookupTableBodyWrap.offsetWidth - lookupTableBodyWrap.clientWidth;
+        lookupTableHead.style.setProperty("--lookup-scrollbar-size", `${gutter}px`);
+        if (lookupTableShell) {
+          lookupTableShell.style.setProperty("--lookup-scrollbar-size", `${gutter}px`);
+        }
+      }
+
+      function syncLookupTableHorizontalScroll(source) {
+        if (!lookupTableHead || !lookupTableBodyWrap || lookupScrollSyncLock) {
+          return;
+        }
+        lookupScrollSyncLock = true;
+        if (source === "body") {
+          lookupTableHead.scrollLeft = lookupTableBodyWrap.scrollLeft;
+        } else {
+          lookupTableBodyWrap.scrollLeft = lookupTableHead.scrollLeft;
+        }
+        lookupScrollSyncLock = false;
+      }
+
+      if (lookupTableBodyWrap) {
+        lookupTableBodyWrap.addEventListener("scroll", () => {
+          syncLookupTableHorizontalScroll("body");
+        });
+      }
+      if (lookupTableHead) {
+        lookupTableHead.addEventListener("scroll", () => {
+          syncLookupTableHorizontalScroll("head");
+        });
+      }
+      if (lookupTableBodyWrap && typeof ResizeObserver !== "undefined") {
+        const lookupLayoutObserver = new ResizeObserver(() => {
+          syncLookupTableLayout();
+        });
+        lookupLayoutObserver.observe(lookupTableBodyWrap);
+      }
+      window.addEventListener("resize", syncLookupTableLayout);
       const rowCount = document.getElementById("row-count");
       const dirtyIndicator = document.getElementById("dirty-indicator");
       const sourceIndicator = document.getElementById("source-indicator");
@@ -1061,7 +1121,14 @@
         gcp: deployCloudGcp,
       };
       const azureUploadButton = document.getElementById("azure-upload-button");
-      const azureSettingsButton = document.getElementById("azure-settings-button");
+      const azureSaveSettingsButton = document.getElementById("azure-save-settings-button");
+      const azureProfileSelect = document.getElementById("azure-profile-select");
+      const azureProfileNew = document.getElementById("azure-profile-new");
+      const azureProfileDelete = document.getElementById("azure-profile-delete");
+      const azureProfileNameInput = document.getElementById("azure-profile-name-input");
+      const azureAccountNameInput = document.getElementById("azure-account-name-input");
+      const azureContainerNameInput = document.getElementById("azure-container-name-input");
+      const azureBlobNameInput = document.getElementById("azure-blob-name-input");
       const deleteDraftButton = document.getElementById("delete-draft-button");
       const addRowButton = document.getElementById("add-row-button");
       const bulkUploadButton = document.getElementById("bulk-upload-button");
@@ -1102,7 +1169,13 @@
       const eoslRsSelectNone = document.getElementById("eosl-rs-select-none");
       let eoslActiveSource = "eosl";
       let eoslRsManufacturersReady = false;
-      const VENDOR_SETTINGS_ORDER = ["eosl", "junos", "suse", "router-switch"];
+      const VENDOR_SETTINGS_ORDER = [
+        "eosl",
+        "junos",
+        "suse",
+        "layer23-switch",
+        "router-switch",
+      ];
       const VENDOR_SETTINGS_UI = {
         eosl: {
           accent: "#06b6d4",
@@ -1115,6 +1188,10 @@
         suse: {
           accent: "#22c55e",
           desc: "SUSE product lifecycle dates",
+        },
+        "layer23-switch": {
+          accent: "#818cf8",
+          desc: "Network hardware EOL checker",
         },
         "router-switch": {
           accent: "#a855f7",
@@ -1159,6 +1236,32 @@
             eoas_date: "LTSS Ends (EOAS)",
             supported: "Supported",
           },
+        },
+        "layer23-switch": {
+          label: "Layer23-Switch EOL",
+          emptyHint:
+            "The local Layer23-Switch database is empty. Click Update to scrape layer23-switch.com (full sync can take a long time).",
+          headers: {
+            product: "Product Name",
+            release: "Part Number",
+            released: "End of Sale (EOS)",
+            eol_date: "EOL Announcement",
+            eoas_date: "End of Service Life (EOSL)",
+            supported: "Supported",
+          },
+          manufacturers: [
+            { slug: "arista", label: "Arista" },
+            { slug: "aruba", label: "Aruba" },
+            { slug: "cisco", label: "Cisco" },
+            { slug: "dell", label: "Dell" },
+            { slug: "fortinet", label: "Fortinet" },
+            { slug: "h3c", label: "H3C" },
+            { slug: "hpe", label: "HPE" },
+            { slug: "juniper", label: "Juniper" },
+            { slug: "mellanox", label: "Mellanox" },
+            { slug: "palo-alto-networks", label: "Palo Alto Networks" },
+            { slug: "ruckus", label: "Ruckus" },
+          ],
         },
         "router-switch": {
           label: "Router-Switch EOL",
@@ -1535,13 +1638,6 @@
       const bulkProgressText = document.getElementById("bulk-progress-text");
       const bulkProgressBar = document.getElementById("bulk-progress-bar");
       const bulkProgressStage = document.getElementById("bulk-progress-stage");
-      const azureSettingsDialog = document.getElementById("azure-settings-dialog");
-      const azureCloseButton = document.getElementById("azure-close-button");
-      const azureCancelButton = document.getElementById("azure-cancel-button");
-      const azureSaveSettingsButton = document.getElementById("azure-save-settings-button");
-      const azureAccountNameInput = document.getElementById("azure-account-name-input");
-      const azureContainerNameInput = document.getElementById("azure-container-name-input");
-      const azureBlobNameInput = document.getElementById("azure-blob-name-input");
       const azureProgressDialog = document.getElementById("azure-progress-dialog");
       const azureProgressText = document.getElementById("azure-progress-text");
       const azureProgressBar = document.getElementById("azure-progress-bar");
@@ -1556,6 +1652,12 @@
       const prevPageButton = document.getElementById("prev-page-button");
       const nextPageButton = document.getElementById("next-page-button");
 
+      let azureProfilesState = {
+        active_profile_id: "",
+        profiles: [],
+      };
+      let azureSelectedProfileId = "";
+      let azureProfilesDirty = false;
       function showStatus(message, tone = "info") {
         if (statusTimer) {
           window.clearTimeout(statusTimer);
@@ -1648,6 +1750,8 @@
             return "Juniper Junos";
           case "suse":
             return "SUSE Lifecycle";
+          case "layer23-switch":
+            return "Layer23-Switch EOL";
           case "router-switch":
             return "Router-Switch EOL";
           case "ambiguous":
@@ -1686,6 +1790,8 @@
             return "junos";
           case "suse":
             return "suse";
+          case "layer23-switch":
+            return "eosl";
           case "router-switch":
             return "eosl";
           case "lookup-fallback":
@@ -1972,6 +2078,7 @@
           rawMethod === "eosl" ||
           rawMethod === "junos" ||
           rawMethod === "suse" ||
+          rawMethod === "layer23-switch" ||
           rawMethod === "router-switch"
         ) {
           method = rawMethod;
@@ -1980,6 +2087,8 @@
               ? "Juniper Junos Vendor Lookup"
               : rawMethod === "suse"
                 ? "SUSE Lifecycle Vendor Lookup"
+                : rawMethod === "layer23-switch"
+                  ? "Layer23-Switch EOL Vendor Lookup"
                 : rawMethod === "router-switch"
                   ? "Router-Switch EOL Vendor Lookup"
                   : "eosl.date Vendor Lookup";
@@ -2332,7 +2441,28 @@
         const deployAvailable = onData && !busy;
         deployButton.disabled = !deployAvailable;
         azureUploadButton.disabled = !deployAvailable;
-        azureSettingsButton.disabled = !deployAvailable;
+        if (azureSaveSettingsButton) {
+          azureSaveSettingsButton.disabled = !deployAvailable;
+        }
+        if (azureProfileSelect) {
+          azureProfileSelect.disabled = !deployAvailable;
+        }
+        if (azureProfileNew) {
+          azureProfileNew.disabled = !deployAvailable;
+        }
+        if (azureProfileDelete) {
+          azureProfileDelete.disabled = !deployAvailable;
+        }
+        [
+          azureProfileNameInput,
+          azureAccountNameInput,
+          azureContainerNameInput,
+          azureBlobNameInput,
+        ].forEach((input) => {
+          if (input) {
+            input.disabled = !deployAvailable;
+          }
+        });
         if (!deployAvailable && deployDialog.open) {
           closeDeployDialog();
         }
@@ -3531,6 +3661,8 @@
             ? "Juniper Junos"
             : source === "suse"
               ? "SUSE Lifecycle"
+              : source === "layer23-switch"
+                ? "Layer23-Switch EOL"
               : source === "router-switch"
                 ? "Router-Switch EOL"
                 : "eosl.date";
@@ -3545,7 +3677,13 @@
         const vendorNote = matchBits
           ? `Matched via ${sourceLabel} (${matchBits}).`
           : `Matched via ${sourceLabel} (product + release).`;
-        const allowed = new Set(["eosl", "junos", "suse", "router-switch"]);
+        const allowed = new Set([
+          "eosl",
+          "junos",
+          "suse",
+          "layer23-switch",
+          "router-switch",
+        ]);
         return {
           method: allowed.has(source) ? source : "eosl",
           queryUsed: String(vendorResult.query_used ?? "").trim(),
@@ -4682,6 +4820,8 @@
             kinds.add("junos");
           } else if (method === "suse") {
             kinds.add("suse");
+          } else if (method === "layer23-switch") {
+            kinds.add("layer23-switch");
           } else if (method === "router-switch") {
             kinds.add("router-switch");
           } else if (method === "lookup-fallback") {
@@ -4700,6 +4840,7 @@
           !kinds.has("eosl") &&
           !kinds.has("junos") &&
           !kinds.has("suse") &&
+          !kinds.has("layer23-switch") &&
           !kinds.has("router-switch") &&
           !kinds.has("lookup-fallback") &&
           !kinds.has("ambiguous")
@@ -5254,6 +5395,10 @@
 
         enhanceAllSelects(tableBody);
         updateCount();
+        requestAnimationFrame(() => {
+          syncLookupTableLayout();
+          syncLookupTableHorizontalScroll("body");
+        });
       }
 
       function hydrateRows(rows, evidenceByOs = currentEvidenceByOs) {
@@ -5823,19 +5968,162 @@
       }
 
       function validateAzureConfig(config) {
+        if (!String(config?.name ?? "").trim()) {
+          return "Enter a profile name.";
+        }
         if (!isAzureConfigComplete(config)) {
           return "Enter storage account, container, and blob path.";
         }
-        if (config.blob_name.startsWith("/")) {
+        if (String(config.blob_name || "").startsWith("/")) {
           return "Blob path must not start with /.";
         }
         return null;
       }
 
-      function populateAzureConfigForm(config) {
-        azureAccountNameInput.value = config.account_name || "";
-        azureContainerNameInput.value = config.container_name || "";
-        azureBlobNameInput.value = config.blob_name || "";
+      function createLocalAzureProfileId() {
+        return (
+          globalThis.crypto?.randomUUID?.() ||
+          `azure-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+        );
+      }
+
+      function blankAzureProfile(name = "New profile") {
+        return {
+          id: createLocalAzureProfileId(),
+          name,
+          account_name: "",
+          container_name: "",
+          blob_name: "",
+        };
+      }
+
+      function normalizeAzureProfilesPayload(payload) {
+        const profiles = Array.isArray(payload?.profiles)
+          ? payload.profiles
+              .map((item) => ({
+                id: String(item?.id || "").trim() || createLocalAzureProfileId(),
+                name: String(item?.name || "").trim() || "Untitled",
+                account_name: String(item?.account_name || "").trim(),
+                container_name: String(item?.container_name || "").trim(),
+                blob_name: String(item?.blob_name || "").trim(),
+              }))
+              .filter((item) => item.id)
+          : [];
+        // Legacy single-target response fallback.
+        if (
+          !profiles.length &&
+          (payload?.account_name || payload?.container_name || payload?.blob_name)
+        ) {
+          const legacy = blankAzureProfile("Default");
+          legacy.account_name = String(payload.account_name || "").trim();
+          legacy.container_name = String(payload.container_name || "").trim();
+          legacy.blob_name = String(payload.blob_name || "").trim();
+          profiles.push(legacy);
+        }
+        let activeId = String(payload?.active_profile_id || "").trim();
+        if (profiles.length && !profiles.some((item) => item.id === activeId)) {
+          activeId = profiles[0].id;
+        }
+        if (!profiles.length) {
+          activeId = "";
+        }
+        return { active_profile_id: activeId, profiles };
+      }
+
+      function getSelectedAzureProfile() {
+        return (
+          azureProfilesState.profiles.find((item) => item.id === azureSelectedProfileId) || null
+        );
+      }
+
+      function populateAzureProfileForm(profile) {
+        if (!azureProfileNameInput) {
+          return;
+        }
+        azureProfileNameInput.value = profile?.name || "";
+        azureAccountNameInput.value = profile?.account_name || "";
+        azureContainerNameInput.value = profile?.container_name || "";
+        azureBlobNameInput.value = profile?.blob_name || "";
+      }
+
+      function readAzureProfileFromForm() {
+        return {
+          id: azureSelectedProfileId || createLocalAzureProfileId(),
+          name: azureProfileNameInput.value.trim(),
+          account_name: azureAccountNameInput.value.trim(),
+          container_name: azureContainerNameInput.value.trim(),
+          blob_name: azureBlobNameInput.value.trim(),
+        };
+      }
+
+      function commitAzureProfileFormToState() {
+        if (!azureSelectedProfileId) {
+          return;
+        }
+        const draft = readAzureProfileFromForm();
+        const index = azureProfilesState.profiles.findIndex(
+          (item) => item.id === azureSelectedProfileId
+        );
+        if (index < 0) {
+          azureProfilesState.profiles.push(draft);
+        } else {
+          azureProfilesState.profiles[index] = {
+            ...azureProfilesState.profiles[index],
+            ...draft,
+            id: azureSelectedProfileId,
+          };
+        }
+        azureProfilesDirty = true;
+        if (azureProfileSelect) {
+          const option = Array.from(azureProfileSelect.options).find(
+            (item) => item.value === azureSelectedProfileId
+          );
+          if (option) {
+            option.textContent = draft.name || "Untitled";
+          }
+        }
+      }
+
+      function renderAzureProfileSelect() {
+        if (!azureProfileSelect) {
+          return;
+        }
+        const previous = azureSelectedProfileId;
+        azureProfileSelect.innerHTML = "";
+        if (!azureProfilesState.profiles.length) {
+          const option = document.createElement("option");
+          option.value = "";
+          option.textContent = "No profiles yet";
+          azureProfileSelect.appendChild(option);
+          azureSelectedProfileId = "";
+          populateAzureProfileForm(null);
+          refreshThemeSelect(azureProfileSelect);
+          return;
+        }
+        azureProfilesState.profiles.forEach((profile) => {
+          const option = document.createElement("option");
+          option.value = profile.id;
+          option.textContent = profile.name || "Untitled";
+          azureProfileSelect.appendChild(option);
+        });
+        if (!azureProfilesState.profiles.some((item) => item.id === previous)) {
+          azureSelectedProfileId =
+            azureProfilesState.active_profile_id || azureProfilesState.profiles[0].id;
+        } else {
+          azureSelectedProfileId = previous;
+        }
+        azureProfileSelect.value = azureSelectedProfileId;
+        refreshThemeSelect(azureProfileSelect);
+        populateAzureProfileForm(getSelectedAzureProfile());
+      }
+
+      function selectAzureProfile(profileId, { commitCurrent = true } = {}) {
+        if (commitCurrent) {
+          commitAzureProfileFormToState();
+        }
+        azureSelectedProfileId = String(profileId || "").trim();
+        azureProfilesState.active_profile_id = azureSelectedProfileId;
+        renderAzureProfileSelect();
       }
 
       async function loadAzureConfig() {
@@ -5843,14 +6131,14 @@
         if (!response.ok) {
           throw new Error("Unable to load Azure settings.");
         }
-        return await response.json();
+        return normalizeAzureProfilesPayload(await response.json());
       }
 
-      async function saveAzureConfig(config) {
+      async function saveAzureConfig(store) {
         const response = await fetch("/api/azure/settings", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(config),
+          body: JSON.stringify(store),
         });
 
         if (!response.ok) {
@@ -5868,15 +6156,22 @@
           throw new Error(detail);
         }
 
-        return await response.json();
+        return normalizeAzureProfilesPayload(await response.json());
       }
 
-      function readAzureConfigFromForm() {
-        return {
-          account_name: azureAccountNameInput.value.trim(),
-          container_name: azureContainerNameInput.value.trim(),
-          blob_name: azureBlobNameInput.value.trim(),
-        };
+      async function ensureAzureProfilesLoaded() {
+        azureProfilesState = await loadAzureConfig();
+        if (!azureProfilesState.profiles.length) {
+          const starter = blankAzureProfile("CyberLens Non-Prod");
+          azureProfilesState = {
+            active_profile_id: starter.id,
+            profiles: [starter],
+          };
+          azureProfilesDirty = true;
+        }
+        azureSelectedProfileId =
+          azureProfilesState.active_profile_id || azureProfilesState.profiles[0].id;
+        renderAzureProfileSelect();
       }
 
       function selectDeployCloud(cloudId) {
@@ -5897,12 +6192,26 @@
         });
       }
 
-      function openDeployDialog() {
+      async function openDeployDialog() {
         if (currentSource !== "data" || deployButton.disabled) {
           return;
         }
         selectDeployCloud(activeDeployCloud || "azure");
+        try {
+          await ensureAzureProfilesLoaded();
+        } catch (error) {
+          azureProfilesState = {
+            active_profile_id: "",
+            profiles: [blankAzureProfile("CyberLens Non-Prod")],
+          };
+          azureSelectedProfileId = azureProfilesState.profiles[0].id;
+          azureProfilesState.active_profile_id = azureSelectedProfileId;
+          azureProfilesDirty = true;
+          renderAzureProfileSelect();
+          showStatus(error.message, "error");
+        }
         deployDialog.showModal();
+        setTimeout(() => azureProfileNameInput?.focus(), 0);
       }
 
       function closeDeployDialog() {
@@ -6182,13 +6491,22 @@
 
           const titleBlock = document.createElement("div");
           titleBlock.className = "vendor-settings-title-block";
+          const titleRow = document.createElement("div");
+          titleRow.className = "vendor-settings-title-row";
           const name = document.createElement("span");
           name.className = "vendor-settings-name";
           name.textContent = label;
+          const gate = document.createElement("span");
+          gate.className = usesKeywords
+            ? "vendor-settings-gate vendor-settings-gate-keywords"
+            : "vendor-settings-gate vendor-settings-gate-open";
+          gate.textContent = usesKeywords ? "Keyword-gated" : "No keyword gate";
+          titleRow.appendChild(name);
+          titleRow.appendChild(gate);
+          titleBlock.appendChild(titleRow);
           const desc = document.createElement("span");
           desc.className = "vendor-settings-desc";
           desc.textContent = ui.desc || "Local vendor lifecycle source";
-          titleBlock.appendChild(name);
           titleBlock.appendChild(desc);
           top.appendChild(titleBlock);
 
@@ -6209,16 +6527,6 @@
           toggleLabel.appendChild(toggleTrack);
           top.appendChild(toggleLabel);
           body.appendChild(top);
-
-          const meta = document.createElement("div");
-          meta.className = "vendor-settings-meta";
-          const gate = document.createElement("span");
-          gate.className = usesKeywords
-            ? "vendor-settings-gate vendor-settings-gate-keywords"
-            : "vendor-settings-gate vendor-settings-gate-open";
-          gate.textContent = usesKeywords ? "Keyword-gated" : "No keyword gate";
-          meta.appendChild(gate);
-          body.appendChild(meta);
 
           if (usesKeywords) {
             const keywordsBlock = document.createElement("div");
@@ -6312,11 +6620,18 @@
         }
       }
 
+      function activeHardwareVendorSourceId() {
+        return ["layer23-switch", "router-switch"].includes(eoslActiveSource)
+          ? eoslActiveSource
+          : "";
+      }
+
       function ensureRouterSwitchManufacturerChecks(manufacturers, selectedSlugs) {
+        const sourceId = activeHardwareVendorSourceId() || "layer23-switch";
         const list =
           Array.isArray(manufacturers) && manufacturers.length
             ? manufacturers
-            : vendorSourceMeta["router-switch"]?.manufacturers || [];
+            : vendorSourceMeta[sourceId]?.manufacturers || [];
         const selected = new Set(
           Array.isArray(selectedSlugs)
             ? selectedSlugs.map((slug) => String(slug || "").trim().toLowerCase())
@@ -6357,13 +6672,14 @@
       }
 
       function updateRouterSwitchManufacturerPanel(selectedSlugs) {
-        const isRs = eoslActiveSource === "router-switch";
+        const sourceId = activeHardwareVendorSourceId();
+        const isHardwareSource = Boolean(sourceId);
         if (eoslRsManufacturers) {
-          eoslRsManufacturers.hidden = !isRs;
+          eoslRsManufacturers.hidden = !isHardwareSource;
         }
-        if (isRs) {
+        if (isHardwareSource) {
           ensureRouterSwitchManufacturerChecks(
-            vendorSourceMeta["router-switch"]?.manufacturers,
+            vendorSourceMeta[sourceId]?.manufacturers,
             selectedSlugs
           );
         }
@@ -6390,7 +6706,8 @@
 
       let eoslRsPersistTimer = null;
       async function persistRouterSwitchManufacturers() {
-        if (eoslActiveSource !== "router-switch") {
+        const sourceId = activeHardwareVendorSourceId();
+        if (!sourceId) {
           return;
         }
         const selected = getSelectedRouterSwitchManufacturers();
@@ -6403,7 +6720,7 @@
         eoslRsPersistTimer = setTimeout(async () => {
           try {
             const response = await fetch(
-              "/api/vendor-lookups/router-switch/preferences",
+              `/api/vendor-lookups/${sourceId}/preferences`,
               {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -6719,13 +7036,13 @@
             }
           }
           if (
-            eoslActiveSource === "router-switch" &&
+            ["layer23-switch", "router-switch"].includes(eoslActiveSource) &&
             Array.isArray(payload.status?.manufacturers)
           ) {
-            vendorSourceMeta["router-switch"].manufacturers = payload.status.manufacturers;
+            vendorSourceMeta[eoslActiveSource].manufacturers = payload.status.manufacturers;
           }
           updateRouterSwitchManufacturerPanel(
-            eoslActiveSource === "router-switch"
+            ["layer23-switch", "router-switch"].includes(eoslActiveSource)
               ? payload.status?.selected_manufacturers
               : undefined
           );
@@ -6790,7 +7107,7 @@
         const sourceId = eoslActiveSource || eoslSourceSelect?.value || "eosl";
         const sourceMeta = vendorSourceMeta[sourceId] || vendorSourceMeta.eosl;
         const syncBody = {};
-        if (sourceId === "router-switch") {
+        if (["layer23-switch", "router-switch"].includes(sourceId)) {
           const selected = getSelectedRouterSwitchManufacturers();
           if (!selected.length) {
             showStatus("Select at least one manufacturer to pull.", "error");
@@ -6804,7 +7121,7 @@
           eoslProgressEyebrow.textContent = sourceMeta.label;
         }
         const selectedLabels =
-          sourceId === "router-switch"
+          ["layer23-switch", "router-switch"].includes(sourceId)
             ? (syncBody.manufacturers || [])
                 .map((slug) => {
                   const item = (sourceMeta.manufacturers || []).find((m) => m.slug === slug);
@@ -6815,7 +7132,7 @@
         eoslProgressTitle.textContent = `Updating ${sourceMeta.label}`;
         setEoslProgressState({
           text:
-            sourceId === "router-switch"
+            ["layer23-switch", "router-switch"].includes(sourceId)
               ? `Scraping ${selectedLabels}…`
               : `Scraping ${sourceMeta.label}…`,
           stage:
@@ -6823,6 +7140,8 @@
               ? "Fetching the Juniper Dates & Milestones table…"
               : sourceId === "suse"
                 ? "Fetching suse.com/lifecycle tables…"
+                : sourceId === "layer23-switch"
+                  ? `Pulling ${selectedLabels}. Large vendors (e.g. Cisco) can take a long time…`
                 : sourceId === "router-switch"
                   ? `Pulling ${selectedLabels}. Large vendors (e.g. Cisco) can take a long time…`
                   : "This can take a minute or two. Please keep this dialog open.",
@@ -6874,77 +7193,158 @@
         }
       }
 
-      async function openAzureSettingsDialog() {
-        if (currentSource !== "data") {
+      async function saveAzureSettingsFromDeploy() {
+        if (!azureSaveSettingsButton || azureSaveSettingsButton.disabled) {
           return;
         }
-        closeDeployDialog();
+
+        commitAzureProfileFormToState();
+        if (!azureProfilesState.profiles.length) {
+          showStatus("Add at least one Azure profile.", "error");
+          return;
+        }
+
+        for (const profile of azureProfilesState.profiles) {
+          const validationError = validateAzureConfig(profile);
+          if (validationError) {
+            selectAzureProfile(profile.id, { commitCurrent: false });
+            showStatus(validationError, "error");
+            azureProfileNameInput?.focus();
+            return;
+          }
+        }
+
+        azureProfilesState.active_profile_id =
+          azureSelectedProfileId || azureProfilesState.profiles[0].id;
+
+        setControlsDisabled(true);
+        showStatus("Saving Azure profiles…", "info");
         try {
-          populateAzureConfigForm(await loadAzureConfig());
+          azureProfilesState = await saveAzureConfig({
+            active_profile_id: azureProfilesState.active_profile_id,
+            profiles: azureProfilesState.profiles,
+          });
+          azureSelectedProfileId =
+            azureProfilesState.active_profile_id || azureProfilesState.profiles[0]?.id || "";
+          azureProfilesDirty = false;
+          renderAzureProfileSelect();
+          const active = getSelectedAzureProfile();
+          showStatus(
+            active
+              ? `Azure profile "${active.name}" is ready for upload.`
+              : "Azure profiles saved.",
+            "success"
+          );
         } catch (error) {
-          populateAzureConfigForm({});
           showStatus(error.message, "error");
-        }
-        azureSettingsDialog.showModal();
-        setTimeout(() => azureAccountNameInput.focus(), 0);
-      }
-
-      function closeAzureSettingsDialog() {
-        if (azureSettingsDialog.open) {
-          azureSettingsDialog.close();
+        } finally {
+          setControlsDisabled(false);
         }
       }
 
-      async function saveAzureSettings() {
-        const config = readAzureConfigFromForm();
-        const validationError = validateAzureConfig(config);
+      async function persistActiveAzureProfileIfNeeded() {
+        commitAzureProfileFormToState();
+        const selected = getSelectedAzureProfile();
+        if (!selected) {
+          throw new Error("Select an Azure profile before uploading.");
+        }
+        const validationError = validateAzureConfig(selected);
         if (validationError) {
-          showStatus(validationError, isAzureConfigComplete(config) ? "error" : "info");
-          return;
+          throw new Error(validationError);
         }
 
-        try {
-          await saveAzureConfig(config);
-          closeAzureSettingsDialog();
-          showStatus("Azure settings saved.", "success");
-        } catch (error) {
-          showStatus(error.message, "error");
+        const needsSave =
+          azureProfilesDirty ||
+          azureProfilesState.active_profile_id !== azureSelectedProfileId;
+        if (!needsSave) {
+          return selected;
         }
+
+        azureProfilesState.active_profile_id = azureSelectedProfileId;
+        azureProfilesState = await saveAzureConfig({
+          active_profile_id: azureProfilesState.active_profile_id,
+          profiles: azureProfilesState.profiles,
+        });
+        azureSelectedProfileId =
+          azureProfilesState.active_profile_id || azureProfilesState.profiles[0]?.id || "";
+        azureProfilesDirty = false;
+        renderAzureProfileSelect();
+        return getSelectedAzureProfile();
       }
 
       async function handleAzureUploadClick() {
-        if (currentSource !== "data") {
+        if (!azureUploadButton || azureUploadButton.disabled) {
           return;
         }
-        closeDeployDialog();
+        if (currentSource !== "data") {
+          showStatus("Switch to Data and load the table before uploading.", "error");
+          return;
+        }
 
         try {
-          const config = await loadAzureConfig();
-          if (!isAzureConfigComplete(config)) {
-            const openSettings = await askConfirm({
-              eyebrow: "Azure upload",
-              title: "Configure Azure settings first",
-              message:
-                "Azure settings are not configured. Set the storage account, container, and blob path before uploading.",
-              confirmLabel: "Open settings",
-            });
-            if (openSettings) {
-              await openAzureSettingsDialog();
-            }
+          const active = await persistActiveAzureProfileIfNeeded();
+          if (!active || !isAzureConfigComplete(active)) {
+            showStatus(
+              "Complete the selected Azure profile, then save before uploading.",
+              "error"
+            );
+            azureAccountNameInput?.focus();
             return;
           }
-
-          const validationError = validateAzureConfig(config);
-          if (validationError) {
-            await openAzureSettingsDialog();
-            showStatus(validationError, "error");
-            return;
-          }
-
+          closeDeployDialog();
           await startAzureUpload();
         } catch (error) {
           showStatus(error.message, "error");
+          azureProfileNameInput?.focus();
         }
+      }
+
+      function handleAzureProfileNew() {
+        commitAzureProfileFormToState();
+        const profile = blankAzureProfile(`Profile ${azureProfilesState.profiles.length + 1}`);
+        azureProfilesState.profiles.push(profile);
+        azureSelectedProfileId = profile.id;
+        azureProfilesState.active_profile_id = profile.id;
+        azureProfilesDirty = true;
+        renderAzureProfileSelect();
+        azureProfileNameInput?.focus();
+        azureProfileNameInput?.select();
+      }
+
+      async function handleAzureProfileDelete() {
+        if (!azureSelectedProfileId || !azureProfilesState.profiles.length) {
+          return;
+        }
+        const current = getSelectedAzureProfile();
+        const label = current?.name || "this profile";
+        const confirmed = await askConfirm({
+          eyebrow: "Azure profile",
+          title: "Delete profile?",
+          message: `Delete Azure profile "${label}"? Save profiles afterward to keep this change.`,
+          confirmLabel: "Delete profile",
+          danger: true,
+        });
+        if (!confirmed) {
+          return;
+        }
+        azureProfilesState.profiles = azureProfilesState.profiles.filter(
+          (item) => item.id !== azureSelectedProfileId
+        );
+        azureProfilesDirty = true;
+        if (!azureProfilesState.profiles.length) {
+          const starter = blankAzureProfile("CyberLens Non-Prod");
+          azureProfilesState.profiles = [starter];
+          azureSelectedProfileId = starter.id;
+        } else {
+          azureSelectedProfileId = azureProfilesState.profiles[0].id;
+        }
+        azureProfilesState.active_profile_id = azureSelectedProfileId;
+        renderAzureProfileSelect();
+        showStatus("Profile removed. Save profiles to persist the change.", "info");
+      }
+
+      function markAzureProfileDirty() {
+        commitAzureProfileFormToState();
       }
 
       function resetAzureProgressDialog() {
@@ -7391,10 +7791,31 @@
         }
       });
       azureUploadButton.addEventListener("click", handleAzureUploadClick);
-      azureSettingsButton.addEventListener("click", openAzureSettingsDialog);
-      azureSaveSettingsButton.addEventListener("click", saveAzureSettings);
-      azureCancelButton.addEventListener("click", closeAzureSettingsDialog);
-      azureCloseButton.addEventListener("click", closeAzureSettingsDialog);
+      if (azureSaveSettingsButton) {
+        azureSaveSettingsButton.addEventListener("click", saveAzureSettingsFromDeploy);
+      }
+      if (azureProfileSelect) {
+        azureProfileSelect.addEventListener("change", () => {
+          selectAzureProfile(azureProfileSelect.value);
+        });
+      }
+      if (azureProfileNew) {
+        azureProfileNew.addEventListener("click", handleAzureProfileNew);
+      }
+      if (azureProfileDelete) {
+        azureProfileDelete.addEventListener("click", handleAzureProfileDelete);
+      }
+      [
+        azureProfileNameInput,
+        azureAccountNameInput,
+        azureContainerNameInput,
+        azureBlobNameInput,
+      ].forEach((input) => {
+        if (!input) {
+          return;
+        }
+        input.addEventListener("input", markAzureProfileDirty);
+      });
       azureProgressCancel.addEventListener("click", () => {
         if (azureAbortController) {
           azureAbortController.abort();

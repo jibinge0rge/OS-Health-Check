@@ -7,7 +7,7 @@ Use it to:
 - Search and browse existing OS lookup rows
 - Add one or many OS strings with fuzzy (and optional AI) matching
 - Refresh EOL / EOAS dates from [endoflife.date](https://endoflife.date)
-- Refresh EOL / EOAS from local **Vendor Lookups** ([eosl.date](https://eosl.date) OS scrape, [Juniper Junos](https://support.juniper.net/support/eol/software/junos/) scrape, [SUSE lifecycle](https://www.suse.com/lifecycle/)). [Router-Switch EOL](https://www.router-switch.com/eol-eosl-checker/) is available for browsing only.
+- Refresh EOL / EOAS from local **Vendor Lookups** ([eosl.date](https://eosl.date) OS scrape, [Juniper Junos](https://support.juniper.net/support/eol/software/junos/) scrape, [SUSE lifecycle](https://www.suse.com/lifecycle/), [Layer23-Switch EOL](https://www.layer23-switch.com/eol-eosl-tool/), [Router-Switch EOL](https://www.router-switch.com/eol-eosl-checker/))
 - Keep match/EOL **evidence** (proof) in a JSON sidecar
 - Promote Draft → Data via Validate, then optionally upload Data to Azure Blob
 
@@ -18,7 +18,7 @@ Use it to:
 - **Vanilla HTML / CSS / JS** — table UI and workflows
 - **OpenAI** (optional) — AI match + Ambiguous OS detection
 - **endoflife.date API** — lifecycle dates
-- **Vendor Lookups (SQLite)** — local scrapes: eosl.date (OS), Juniper Junos, SUSE lifecycle, and Router-Switch EOL (viewer only)
+- **Vendor Lookups (SQLite)** — local scrapes: eosl.date (OS), Juniper Junos, SUSE lifecycle, Layer23-Switch EOL, and Router-Switch EOL
 
 ## Run locally
 
@@ -71,6 +71,7 @@ OS-Health-Check/
 ├── eosl_service.py             # eosl.date scraper + SQLite cache (OS only)
 ├── junos_service.py            # Juniper Junos Dates & Milestones scraper
 ├── suse_service.py             # SUSE lifecycle scraper (suse.com/lifecycle)
+├── layer23_switch_service.py   # Layer23-Switch EOL/EOSL scraper + lookup
 ├── router_switch_service.py    # Router-Switch EOL/EOSL scraper + lookup
 ├── vendor_lookup_service.py    # Registry + routed vendor fallback lookup
 ├── vendor_settings.py          # Persistent enable/keywords for vendor Refresh
@@ -81,15 +82,17 @@ OS-Health-Check/
 │   ├── eol_lookup.csv          # Canonical published lookup
 │   ├── eol_lookup_evidence.json
 │   ├── vendor_lookup_settings.json  # Refresh enable/keywords (shared)
+│   ├── layer23_switch_sync.json # Layer23-Switch manufacturer selection
 │   ├── router_switch_sync.json # Router-Switch manufacturer selection
 │   ├── eosl_os.db              # SQLite cache of eosl.date OS data (gitignored)
 │   ├── junos_os.db             # SQLite cache of Junos EOL table (gitignored)
 │   ├── suse_os.db              # SQLite cache of SUSE lifecycle (gitignored)
+│   ├── layer23_switch_os.db    # SQLite cache of Layer23-Switch EOL (gitignored)
 │   └── router_switch_os.db     # SQLite cache of Router-Switch EOL (gitignored)
 ├── _draft/                     # Working editable copy (+ evidence)
 ├── _config/                    # Local settings (gitignored)
 │   ├── app_settings.json       # ai_enabled, ai_provider (openai|gemini)
-│   └── azure.json
+│   └── azure.json              # Named Azure Blob profiles + active selection
 └── _backup/                    # Timestamped backups on Validate
 ```
 
@@ -216,7 +219,7 @@ flowchart TD
 
 ## EOL / EOAS refresh flow
 
-**Refresh EOL/EOAS** fills dates per row in this order. **endoflife.date is always first** (not configurable). Local Vendor Lookups follow a fixed order: **eosl → junos → suse → router-switch**. Specialists (junos / suse / router-switch) only run when **enabled** and their **family keywords** match. eosl has no keyword gate. Enable flags and keywords are edited under **Settings** and stored in `_data/vendor_lookup_settings.json` (Router-Switch is **disabled by default**).
+**Refresh EOL/EOAS** fills dates per row in this order. **endoflife.date is always first** (not configurable). Local Vendor Lookups follow a fixed order: **eosl → junos → suse → layer23-switch → router-switch**. Specialists (junos / suse / layer23-switch / router-switch) only run when **enabled** and their **family keywords** match. eosl has no keyword gate. Enable flags and keywords are edited under **Settings** and stored in `_data/vendor_lookup_settings.json` (Layer23-Switch and Router-Switch are **disabled by default**).
 
 ### Per-row decision order
 
@@ -226,6 +229,7 @@ flowchart TD
    - **eosl** (if enabled) → evidence `eosl`
    - **junos** (if enabled **and** keywords match) → evidence `junos`
    - **suse** (if enabled **and** keywords match) → evidence `suse`
+   - **layer23-switch** (if enabled **and** keywords match; off by default) → evidence `layer23-switch`
    - **router-switch** (if enabled **and** keywords match; off by default) → evidence `router-switch`
 4. **If vendor DBs also miss** → copy dates from another row with the same normalized pair when possible (evidence `lookup-fallback`).
 5. **Still nothing** → leave blank (evidence `none`).
@@ -284,12 +288,12 @@ flowchart TD
 
 ### When are vendor DBs checked?
 
-| Situation | eosl | Junos | SUSE | Router-Switch |
-|-----------|------|-------|------|---------------|
-| API hit | No | No | No | No |
-| API miss + source enabled | Yes (2nd) | If keywords match (3rd) | If keywords match (4th) | If enabled+keywords (5th; off by default) |
-| Source disabled in Settings | No | No | No | No |
-| Update scrape only | No CSV write | No CSV write | No CSV write | No CSV write |
+| Situation | eosl | Junos | SUSE | Layer23-Switch | Router-Switch |
+|-----------|------|-------|------|----------------|---------------|
+| API hit | No | No | No | No | No |
+| API miss + source enabled | Yes (2nd) | If keywords match (3rd) | If keywords match (4th) | If enabled+keywords (5th; off by default) | If enabled+keywords (6th; off by default) |
+| Source disabled in Settings | No | No | No | No | No |
+| Update scrape only | No CSV write | No CSV write | No CSV write | No CSV write | No CSV write |
 
 Example: `SUSE Linux 11 SP3` → API miss → eosl miss → SUSE keywords match → SUSE DB → evidence `suse`.
 
@@ -306,7 +310,8 @@ Umbrella for **offline** lifecycle scrapers used as the Refresh fallback above. 
 | **eosl.date** | [eosl.date](https://eosl.date) OS category | `_data/eosl_os.db` | EOAS = earliest support date, EOL = latest | API missed **and** source enabled (2nd) |
 | **Juniper Junos** | [Junos Dates & Milestones](https://support.juniper.net/support/eol/software/junos/) | `_data/junos_os.db` | **EOE → `eol_date`**, **EOS → `eoas_date`**, FRS → released | API+eosl miss, enabled, keywords match (3rd) |
 | **SUSE Lifecycle** | [suse.com/lifecycle](https://www.suse.com/lifecycle/) | `_data/suse_os.db` | **General Ends → `eol_date`**, **LTSS Ends → `eoas_date`**, FCS → released | prior miss, enabled, keywords match (4th) |
-| **Router-Switch EOL** | [router-switch.com EOL checker](https://www.router-switch.com/eol-eosl-checker/) | `_data/router_switch_os.db` | **EOL Announcement → `eol_date`**, **EOSL → `eoas_date`**, EOS → released | prior miss, enabled, keywords match (5th; **off by default**) |
+| **Layer23-Switch EOL** | [layer23-switch.com EOL tool](https://www.layer23-switch.com/eol-eosl-tool/) | `_data/layer23_switch_os.db` | **EOL Announcement → `eol_date`**, **EOSL → `eoas_date`**, EOS → released | prior miss, enabled, keywords match (5th; **off by default**) |
+| **Router-Switch EOL** | [router-switch.com EOL checker](https://www.router-switch.com/eol-eosl-checker/) | `_data/router_switch_os.db` | **EOL Announcement → `eol_date`**, **EOSL → `eoas_date`**, EOS → released | prior miss, enabled, keywords match (6th; **off by default**) |
 
 Per-source **Use for Refresh** + **family keywords** are edited under **Settings → Vendor lookups** and saved to `_data/vendor_lookup_settings.json`.
 
@@ -356,6 +361,14 @@ flowchart LR
 - Wired into Refresh as the **last** local fallback, but **disabled by default**. Enable + keywords under **Settings**.
 - **Update** shows a manufacturer checklist. Selection is stored in `_data/router_switch_sync.json`.
 - Site is behind Cloudflare; sync uses `curl_cffi` Chrome TLS impersonation. Full sync is large (Cisco alone is ~2k pages) and can take a long time.
+
+### Layer23-Switch notes
+
+- Scrapes paginated manufacturer lists under [layer23-switch.com/eol-eosl-tool](https://www.layer23-switch.com/eol-eosl-tool/) (Arista, Aruba, Cisco, Dell, Fortinet, H3C, HPE, Juniper, Mellanox, Palo Alto, Ruckus).
+- **EOL Announcement → `eol_date`**, **End of Service Life (EOSL) → `eoas_date`**, End of Sale (EOS) → released / viewer “End of Sale”.
+- Wired into Refresh **before Router-Switch**, but **disabled by default**. Enable + keywords under **Settings**.
+- **Update** shows a manufacturer checklist. Selection is stored in `_data/layer23_switch_sync.json`.
+- Site is behind Cloudflare; sync uses `curl_cffi` Chrome TLS impersonation. Full sync is large and can take a long time.
 
 ```mermaid
 flowchart TD
@@ -422,7 +435,7 @@ The Actions column filter can narrow rows by: Fuzzy, AI, Fuzzy + AI, Manual, EOL
 | **Show Delta / Download Delta** | Draft-only change view |
 | **Settings** | Vendor lookup enable/keywords for Refresh (saved to `_data/vendor_lookup_settings.json`); extensible for future options |
 | **View / Update Vendor Lookups** | Read-only viewer for eosl.date / Juniper Junos / SUSE Lifecycle / Router-Switch EOL DBs; update/re-scrape per source |
-| **Deploy** | Data mode: opens cloud deploy dialog (Azure upload/settings today; AWS/GCP placeholders) |
+| **Deploy** | Data mode: cloud deploy dialog with named Azure profiles (inline settings + upload); AWS/GCP placeholders |
 
 ---
 
