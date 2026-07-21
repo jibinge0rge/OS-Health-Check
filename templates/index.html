@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OS Health Check</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=63" />
+    <link rel="stylesheet" href="/static/styles.css?v=65" />
   </head>
   <body>
     <main class="app-shell">
@@ -301,6 +301,7 @@
                       <option value="eosl">eosl.date</option>
                       <option value="junos">Juniper Junos</option>
                       <option value="suse">SUSE Lifecycle</option>
+                      <option value="layer23-switch">Layer23-Switch EOL</option>
                       <option value="router-switch">Router-Switch EOL</option>
                       <option value="lookup-fallback">Lookup copy</option>
                       <option value="ambiguous">Ambiguous</option>
@@ -662,6 +663,8 @@
             <span class="vendor-flow-arrow" aria-hidden="true">→</span>
             <span class="vendor-flow-chip" data-flow-source="suse">suse</span>
             <span class="vendor-flow-arrow" aria-hidden="true">→</span>
+            <span class="vendor-flow-chip" data-flow-source="layer23-switch">layer23-switch</span>
+            <span class="vendor-flow-arrow" aria-hidden="true">→</span>
             <span class="vendor-flow-chip" data-flow-source="router-switch">router-switch</span>
           </div>
 
@@ -764,6 +767,7 @@
               <option value="eosl">eosl.date</option>
               <option value="junos">Juniper Junos</option>
               <option value="suse">SUSE Lifecycle</option>
+              <option value="layer23-switch">Layer23-Switch EOL</option>
               <option value="router-switch">Router-Switch EOL</option>
             </select>
           </label>
@@ -1102,7 +1106,13 @@
       const eoslRsSelectNone = document.getElementById("eosl-rs-select-none");
       let eoslActiveSource = "eosl";
       let eoslRsManufacturersReady = false;
-      const VENDOR_SETTINGS_ORDER = ["eosl", "junos", "suse", "router-switch"];
+      const VENDOR_SETTINGS_ORDER = [
+        "eosl",
+        "junos",
+        "suse",
+        "layer23-switch",
+        "router-switch",
+      ];
       const VENDOR_SETTINGS_UI = {
         eosl: {
           accent: "#06b6d4",
@@ -1115,6 +1125,10 @@
         suse: {
           accent: "#22c55e",
           desc: "SUSE product lifecycle dates",
+        },
+        "layer23-switch": {
+          accent: "#818cf8",
+          desc: "Network hardware EOL checker",
         },
         "router-switch": {
           accent: "#a855f7",
@@ -1159,6 +1173,32 @@
             eoas_date: "LTSS Ends (EOAS)",
             supported: "Supported",
           },
+        },
+        "layer23-switch": {
+          label: "Layer23-Switch EOL",
+          emptyHint:
+            "The local Layer23-Switch database is empty. Click Update to scrape layer23-switch.com (full sync can take a long time).",
+          headers: {
+            product: "Product Name",
+            release: "Part Number",
+            released: "End of Sale (EOS)",
+            eol_date: "EOL Announcement",
+            eoas_date: "End of Service Life (EOSL)",
+            supported: "Supported",
+          },
+          manufacturers: [
+            { slug: "arista", label: "Arista" },
+            { slug: "aruba", label: "Aruba" },
+            { slug: "cisco", label: "Cisco" },
+            { slug: "dell", label: "Dell" },
+            { slug: "fortinet", label: "Fortinet" },
+            { slug: "h3c", label: "H3C" },
+            { slug: "hpe", label: "HPE" },
+            { slug: "juniper", label: "Juniper" },
+            { slug: "mellanox", label: "Mellanox" },
+            { slug: "palo-alto-networks", label: "Palo Alto Networks" },
+            { slug: "ruckus", label: "Ruckus" },
+          ],
         },
         "router-switch": {
           label: "Router-Switch EOL",
@@ -1648,6 +1688,8 @@
             return "Juniper Junos";
           case "suse":
             return "SUSE Lifecycle";
+          case "layer23-switch":
+            return "Layer23-Switch EOL";
           case "router-switch":
             return "Router-Switch EOL";
           case "ambiguous":
@@ -1686,6 +1728,8 @@
             return "junos";
           case "suse":
             return "suse";
+          case "layer23-switch":
+            return "eosl";
           case "router-switch":
             return "eosl";
           case "lookup-fallback":
@@ -1972,6 +2016,7 @@
           rawMethod === "eosl" ||
           rawMethod === "junos" ||
           rawMethod === "suse" ||
+          rawMethod === "layer23-switch" ||
           rawMethod === "router-switch"
         ) {
           method = rawMethod;
@@ -1980,6 +2025,8 @@
               ? "Juniper Junos Vendor Lookup"
               : rawMethod === "suse"
                 ? "SUSE Lifecycle Vendor Lookup"
+                : rawMethod === "layer23-switch"
+                  ? "Layer23-Switch EOL Vendor Lookup"
                 : rawMethod === "router-switch"
                   ? "Router-Switch EOL Vendor Lookup"
                   : "eosl.date Vendor Lookup";
@@ -3531,6 +3578,8 @@
             ? "Juniper Junos"
             : source === "suse"
               ? "SUSE Lifecycle"
+              : source === "layer23-switch"
+                ? "Layer23-Switch EOL"
               : source === "router-switch"
                 ? "Router-Switch EOL"
                 : "eosl.date";
@@ -3545,7 +3594,13 @@
         const vendorNote = matchBits
           ? `Matched via ${sourceLabel} (${matchBits}).`
           : `Matched via ${sourceLabel} (product + release).`;
-        const allowed = new Set(["eosl", "junos", "suse", "router-switch"]);
+        const allowed = new Set([
+          "eosl",
+          "junos",
+          "suse",
+          "layer23-switch",
+          "router-switch",
+        ]);
         return {
           method: allowed.has(source) ? source : "eosl",
           queryUsed: String(vendorResult.query_used ?? "").trim(),
@@ -4682,6 +4737,8 @@
             kinds.add("junos");
           } else if (method === "suse") {
             kinds.add("suse");
+          } else if (method === "layer23-switch") {
+            kinds.add("layer23-switch");
           } else if (method === "router-switch") {
             kinds.add("router-switch");
           } else if (method === "lookup-fallback") {
@@ -4700,6 +4757,7 @@
           !kinds.has("eosl") &&
           !kinds.has("junos") &&
           !kinds.has("suse") &&
+          !kinds.has("layer23-switch") &&
           !kinds.has("router-switch") &&
           !kinds.has("lookup-fallback") &&
           !kinds.has("ambiguous")
@@ -6182,13 +6240,22 @@
 
           const titleBlock = document.createElement("div");
           titleBlock.className = "vendor-settings-title-block";
+          const titleRow = document.createElement("div");
+          titleRow.className = "vendor-settings-title-row";
           const name = document.createElement("span");
           name.className = "vendor-settings-name";
           name.textContent = label;
+          const gate = document.createElement("span");
+          gate.className = usesKeywords
+            ? "vendor-settings-gate vendor-settings-gate-keywords"
+            : "vendor-settings-gate vendor-settings-gate-open";
+          gate.textContent = usesKeywords ? "Keyword-gated" : "No keyword gate";
+          titleRow.appendChild(name);
+          titleRow.appendChild(gate);
+          titleBlock.appendChild(titleRow);
           const desc = document.createElement("span");
           desc.className = "vendor-settings-desc";
           desc.textContent = ui.desc || "Local vendor lifecycle source";
-          titleBlock.appendChild(name);
           titleBlock.appendChild(desc);
           top.appendChild(titleBlock);
 
@@ -6209,16 +6276,6 @@
           toggleLabel.appendChild(toggleTrack);
           top.appendChild(toggleLabel);
           body.appendChild(top);
-
-          const meta = document.createElement("div");
-          meta.className = "vendor-settings-meta";
-          const gate = document.createElement("span");
-          gate.className = usesKeywords
-            ? "vendor-settings-gate vendor-settings-gate-keywords"
-            : "vendor-settings-gate vendor-settings-gate-open";
-          gate.textContent = usesKeywords ? "Keyword-gated" : "No keyword gate";
-          meta.appendChild(gate);
-          body.appendChild(meta);
 
           if (usesKeywords) {
             const keywordsBlock = document.createElement("div");
@@ -6312,11 +6369,18 @@
         }
       }
 
+      function activeHardwareVendorSourceId() {
+        return ["layer23-switch", "router-switch"].includes(eoslActiveSource)
+          ? eoslActiveSource
+          : "";
+      }
+
       function ensureRouterSwitchManufacturerChecks(manufacturers, selectedSlugs) {
+        const sourceId = activeHardwareVendorSourceId() || "layer23-switch";
         const list =
           Array.isArray(manufacturers) && manufacturers.length
             ? manufacturers
-            : vendorSourceMeta["router-switch"]?.manufacturers || [];
+            : vendorSourceMeta[sourceId]?.manufacturers || [];
         const selected = new Set(
           Array.isArray(selectedSlugs)
             ? selectedSlugs.map((slug) => String(slug || "").trim().toLowerCase())
@@ -6357,13 +6421,14 @@
       }
 
       function updateRouterSwitchManufacturerPanel(selectedSlugs) {
-        const isRs = eoslActiveSource === "router-switch";
+        const sourceId = activeHardwareVendorSourceId();
+        const isHardwareSource = Boolean(sourceId);
         if (eoslRsManufacturers) {
-          eoslRsManufacturers.hidden = !isRs;
+          eoslRsManufacturers.hidden = !isHardwareSource;
         }
-        if (isRs) {
+        if (isHardwareSource) {
           ensureRouterSwitchManufacturerChecks(
-            vendorSourceMeta["router-switch"]?.manufacturers,
+            vendorSourceMeta[sourceId]?.manufacturers,
             selectedSlugs
           );
         }
@@ -6390,7 +6455,8 @@
 
       let eoslRsPersistTimer = null;
       async function persistRouterSwitchManufacturers() {
-        if (eoslActiveSource !== "router-switch") {
+        const sourceId = activeHardwareVendorSourceId();
+        if (!sourceId) {
           return;
         }
         const selected = getSelectedRouterSwitchManufacturers();
@@ -6403,7 +6469,7 @@
         eoslRsPersistTimer = setTimeout(async () => {
           try {
             const response = await fetch(
-              "/api/vendor-lookups/router-switch/preferences",
+              `/api/vendor-lookups/${sourceId}/preferences`,
               {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -6719,13 +6785,13 @@
             }
           }
           if (
-            eoslActiveSource === "router-switch" &&
+            ["layer23-switch", "router-switch"].includes(eoslActiveSource) &&
             Array.isArray(payload.status?.manufacturers)
           ) {
-            vendorSourceMeta["router-switch"].manufacturers = payload.status.manufacturers;
+            vendorSourceMeta[eoslActiveSource].manufacturers = payload.status.manufacturers;
           }
           updateRouterSwitchManufacturerPanel(
-            eoslActiveSource === "router-switch"
+            ["layer23-switch", "router-switch"].includes(eoslActiveSource)
               ? payload.status?.selected_manufacturers
               : undefined
           );
@@ -6790,7 +6856,7 @@
         const sourceId = eoslActiveSource || eoslSourceSelect?.value || "eosl";
         const sourceMeta = vendorSourceMeta[sourceId] || vendorSourceMeta.eosl;
         const syncBody = {};
-        if (sourceId === "router-switch") {
+        if (["layer23-switch", "router-switch"].includes(sourceId)) {
           const selected = getSelectedRouterSwitchManufacturers();
           if (!selected.length) {
             showStatus("Select at least one manufacturer to pull.", "error");
@@ -6804,7 +6870,7 @@
           eoslProgressEyebrow.textContent = sourceMeta.label;
         }
         const selectedLabels =
-          sourceId === "router-switch"
+          ["layer23-switch", "router-switch"].includes(sourceId)
             ? (syncBody.manufacturers || [])
                 .map((slug) => {
                   const item = (sourceMeta.manufacturers || []).find((m) => m.slug === slug);
@@ -6815,7 +6881,7 @@
         eoslProgressTitle.textContent = `Updating ${sourceMeta.label}`;
         setEoslProgressState({
           text:
-            sourceId === "router-switch"
+            ["layer23-switch", "router-switch"].includes(sourceId)
               ? `Scraping ${selectedLabels}…`
               : `Scraping ${sourceMeta.label}…`,
           stage:
@@ -6823,6 +6889,8 @@
               ? "Fetching the Juniper Dates & Milestones table…"
               : sourceId === "suse"
                 ? "Fetching suse.com/lifecycle tables…"
+                : sourceId === "layer23-switch"
+                  ? `Pulling ${selectedLabels}. Large vendors (e.g. Cisco) can take a long time…`
                 : sourceId === "router-switch"
                   ? `Pulling ${selectedLabels}. Large vendors (e.g. Cisco) can take a long time…`
                   : "This can take a minute or two. Please keep this dialog open.",

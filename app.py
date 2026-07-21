@@ -89,7 +89,13 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 VENDOR_SYNC_LOCK = asyncio.Lock()
 # Back-compat alias used by older EOSL-only call sites.
 EOSL_SYNC_LOCK = VENDOR_SYNC_LOCK
-VALID_VENDOR_SOURCES = {"eosl", "junos", "suse", "router-switch"}
+VALID_VENDOR_SOURCES = {
+    "eosl",
+    "junos",
+    "suse",
+    "layer23-switch",
+    "router-switch",
+}
 
 
 class LookupRow(BaseModel):
@@ -950,7 +956,7 @@ async def vendor_lookup_sync(
 
 @app.post("/api/vendor-lookup")
 async def vendor_lookup(payload: EolLookupBatchRequest) -> dict[str, object]:
-    """Local vendor fallback after endoflife.date (eosl → junos → suse → router-switch)."""
+    """Local vendor fallback after endoflife.date (eosl → junos → suse → layer23-switch → router-switch)."""
     results = await asyncio.to_thread(
         lookup_vendor_batch,
         [item.model_dump() for item in payload.items],
