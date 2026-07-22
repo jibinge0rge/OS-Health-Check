@@ -55,6 +55,15 @@
           <button id="save-button" class="primary-button compact-button edit-only-control hidden" disabled>
             Save Draft
           </button>
+          <button
+            id="exit-draft-button"
+            class="secondary-button compact-button edit-only-control hidden"
+            type="button"
+            title="Leave the Draft and view Data. The draft is kept, not deleted."
+            disabled
+          >
+            Exit Draft
+          </button>
           <button id="validate-button" class="secondary-button compact-button edit-only-control hidden" disabled>
             Validate
           </button>
@@ -1090,6 +1099,7 @@
       const sourceIndicator = document.getElementById("source-indicator");
       const searchInput = document.getElementById("search-input");
       const saveButton = document.getElementById("save-button");
+      const exitDraftButton = document.getElementById("exit-draft-button");
       const editDataButton = document.getElementById("edit-data-button");
       const autoSaveToggle = document.getElementById("auto-save-toggle");
       const aiMatchToggle = document.getElementById("ai-match-toggle");
@@ -2420,6 +2430,7 @@
 
         editDataButton.disabled = busy || editable;
         saveButton.disabled = busy || !editable || saveInFlight;
+        exitDraftButton.disabled = busy || !editable;
         validateButton.disabled = busy || !editable;
         if (autoSaveToggle) {
           autoSaveToggle.disabled = busy || !editable;
@@ -7749,6 +7760,25 @@
 
       saveButton.addEventListener("click", () => {
         void saveRows({ mode: "manual" });
+      });
+      exitDraftButton.addEventListener("click", async () => {
+        if (exitDraftButton.disabled) {
+          return;
+        }
+        if (isDirty) {
+          const confirmed = await askConfirm({
+            eyebrow: "Exit draft",
+            title: "Discard unsaved changes?",
+            message:
+              "Exit the draft and view Data? Unsaved changes will be discarded, but the saved draft itself is kept.",
+            confirmLabel: "Discard and exit",
+            danger: true,
+          });
+          if (!confirmed) {
+            return;
+          }
+        }
+        await loadRows("data");
       });
       editDataButton.addEventListener("click", startEditData);
       autoSaveToggle.addEventListener("change", () => {
