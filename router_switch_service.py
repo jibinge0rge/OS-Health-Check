@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -31,6 +33,10 @@ SOURCE_URL = "https://www.router-switch.com/eol-eosl-checker/"
 BASE_URL = "https://www.router-switch.com"
 REQUEST_DELAY_SECONDS = 0.2
 IMPERSONATE = "chrome"
+# Large catalogs (e.g. Cisco, ~2k pages) are fetched with a bounded worker pool
+# instead of one request at a time; each worker still paces itself with
+# REQUEST_DELAY_SECONDS so we stay polite to the origin.
+MAX_SYNC_WORKERS = 6
 
 # Manufacturer path slug → display name (from the checker dropdown / list links).
 MANUFACTURERS: tuple[tuple[str, str], ...] = (
@@ -341,15 +347,38 @@ def _parse_table_rows(html: str, manufacturer_slug: str) -> list[dict[str, str]]
     return rows
 
 
+def _fetch_page_worker(slug: str, page: int) -> tuple[int, list[dict[str, str]], str]:
+    """Runs in a worker thread: fetch + parse one listing page.
+
+    Each worker opens its own session (curl_cffi sessions are not shared safely
+    across threads) and paces itself so N workers together still look like a
+    handful of polite, roughly-serial clients rather than a burst.
+    """
+    session = curl_requests.Session()
+    try:
+        html = _fetch_html(session, _manufacturer_list_url(slug, page))
+        time.sleep(REQUEST_DELAY_SECONDS)
+        return page, _parse_table_rows(html, slug), ""
+    except (curl_requests.RequestsError, OSError, RuntimeError) as exc:
+        return page, [], str(exc)
+    finally:
+        session.close()
+
+
 def sync_router_switch_database(
     db_path: Path | None = None,
     progress_callback: Callable[[str, int, int], None] | None = None,
     manufacturers: tuple[tuple[str, str], ...] | None = None,
     max_pages_per_manufacturer: int | None = None,
+    cancel_event: threading.Event | None = None,
+    max_workers: int = MAX_SYNC_WORKERS,
 ) -> dict[str, object]:
     """Scrape manufacturer EOL list pages into SQLite.
 
     ``max_pages_per_manufacturer`` is for tests / smoke runs; leave ``None`` for full sync.
+    Remaining pages within a manufacturer (after page 1) are fetched concurrently
+    (bounded by ``max_workers``) since large catalogs like Cisco can span
+    thousands of pages.
     """
     init_db(db_path)
     started = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -363,9 +392,13 @@ def sync_router_switch_database(
     release_total = 0
     page_total_estimate = len(vendors)  # refined as we learn page counts
     pages_done = 0
+    cancelled = False
 
     session = curl_requests.Session()
     product_count = 0
+
+    def is_cancelled() -> bool:
+        return cancel_event is not None and cancel_event.is_set()
 
     try:
         with _connect(db_path) as connection:
@@ -381,6 +414,10 @@ def sync_router_switch_database(
             )
 
             for vendor_index, (slug, name) in enumerate(vendors, start=1):
+                if is_cancelled():
+                    cancelled = True
+                    break
+
                 list_url = _manufacturer_list_url(slug, 1)
                 stage = f"{name} ({vendor_index}/{len(vendors)})"
                 if progress_callback:
@@ -408,19 +445,10 @@ def sync_router_switch_database(
                     (slug, name, "hardware", list_url, scraped_at),
                 )
 
-                for page in range(1, total_pages + 1):
-                    if page > 1:
-                        page_url = _manufacturer_list_url(slug, page)
-                        try:
-                            html = _fetch_html(session, page_url)
-                            time.sleep(REQUEST_DELAY_SECONDS)
-                        except (curl_requests.RequestsError, OSError, RuntimeError) as exc:
-                            errors.append(
-                                {"slug": f"{slug}?page={page}", "error": str(exc)}
-                            )
-                            break
-
-                    rows = _parse_table_rows(html, slug)
+                def _store_page(page: int, rows: list[dict[str, str]], error: str) -> None:
+                    nonlocal release_total
+                    if error:
+                        errors.append({"slug": f"{slug}?page={page}", "error": error})
                     for row in rows:
                         connection.execute(
                             """
@@ -447,15 +475,45 @@ def sync_router_switch_database(
                         )
                         release_total += 1
 
-                    pages_done += 1
-                    if progress_callback:
-                        progress_callback(
-                            f"{name} page {page}/{total_pages}",
-                            pages_done,
-                            max(page_total_estimate, pages_done),
-                        )
+                # Page 1 was already fetched above (needed to learn total_pages).
+                _store_page(1, _parse_table_rows(html, slug), "")
+                pages_done += 1
+                if progress_callback:
+                    progress_callback(
+                        f"{name} page 1/{total_pages}",
+                        pages_done,
+                        max(page_total_estimate, pages_done),
+                    )
+
+                if total_pages > 1 and not is_cancelled():
+                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                        future_to_page = {
+                            executor.submit(_fetch_page_worker, slug, page): page
+                            for page in range(2, total_pages + 1)
+                        }
+                        cancel_requested = False
+                        for future in as_completed(future_to_page):
+                            if not cancel_requested and is_cancelled():
+                                cancel_requested = True
+                                for pending in future_to_page:
+                                    pending.cancel()
+                            if future.cancelled():
+                                continue
+                            page, rows, error = future.result()
+                            _store_page(page, rows, error)
+                            pages_done += 1
+                            if progress_callback:
+                                progress_callback(
+                                    f"{name} page {page}/{total_pages}",
+                                    pages_done,
+                                    max(page_total_estimate, pages_done),
+                                )
+                    if is_cancelled():
+                        cancelled = True
 
                 connection.commit()
+                if cancelled:
+                    break
 
             finished = datetime.now(timezone.utc).isoformat(timespec="seconds")
             product_count = int(
@@ -469,7 +527,8 @@ def sync_router_switch_database(
                 "error" if errors and release_total == 0 else "ok",
             )
             message = (
-                f"Synced {', '.join(name for _, name in vendors)}: "
+                f"{'Cancelled after syncing' if cancelled else 'Synced'} "
+                f"{', '.join(name for _, name in vendors)}: "
                 f"{release_total} products ({pages_done} pages). "
                 f"DB now has {product_count} manufacturers."
             )
@@ -491,6 +550,7 @@ def sync_router_switch_database(
         "finished": finished,
         "source_url": SOURCE_URL,
         "errors": errors[:20],
+        "cancelled": cancelled,
     }
 
 

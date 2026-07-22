@@ -9,6 +9,7 @@ Per-source enable flags and family keywords are persisted in
 
 from __future__ import annotations
 
+import threading
 from typing import Any, Callable
 
 from eosl_service import (
@@ -315,12 +316,15 @@ def sync_source(
     source_id: str,
     progress_callback: Callable[[str, int, int], None] | None = None,
     options: dict[str, object] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, object]:
     sync_fn = get_source(source_id)["sync"]
     options = options or {}
     kwargs: dict[str, object] = {}
     if progress_callback is not None:
         kwargs["progress_callback"] = progress_callback
+    if cancel_event is not None:
+        kwargs["cancel_event"] = cancel_event
     if source_id in {"layer23-switch", "router-switch"}:
         slugs = options.get("manufacturers")
         if slugs is not None:

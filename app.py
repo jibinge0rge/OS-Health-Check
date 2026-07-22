@@ -97,6 +97,9 @@ VALID_VENDOR_SOURCES = {
     "layer23-switch",
     "router-switch",
 }
+# In-flight vendor sync jobs (job_id -> cancel event) so the Stop button can
+# reach a background scrape that's already streaming to a client.
+ACTIVE_VENDOR_SYNC_JOBS: dict[str, threading.Event] = {}
 
 
 class LookupRow(BaseModel):
@@ -796,6 +799,10 @@ async def vendor_lookup_sync_events(
     options: dict[str, object] | None,
 ) -> AsyncIterator[str]:
     """Stream scrape progress so the UI can show N of M processed, not just a spinner."""
+    job_id = uuid.uuid4().hex
+    cancel_event = threading.Event()
+    ACTIVE_VENDOR_SYNC_JOBS[job_id] = cancel_event
+
     output_queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue()
     loop = asyncio.get_running_loop()
     result_holder: dict[str, object] = {}
@@ -813,37 +820,43 @@ async def vendor_lookup_sync_events(
                 source_id,
                 progress_callback=progress_callback,
                 options=options,
+                cancel_event=cancel_event,
             )
         except Exception as exc:  # noqa: BLE001 - surface scrape failures to UI
             error_holder.append(str(exc))
         finally:
             loop.call_soon_threadsafe(output_queue.put_nowait, None)
 
-    async with VENDOR_SYNC_LOCK:
-        worker = threading.Thread(target=run_sync, daemon=True)
-        worker.start()
-        try:
-            while True:
-                item = await output_queue.get()
-                if item is None:
-                    break
-                yield sse_event(item)
-        finally:
-            worker.join(timeout=1)
+    try:
+        yield sse_event({"type": "started", "job_id": job_id})
 
-    if error_holder:
-        yield sse_event(
-            {
-                "type": "error",
-                "message": f"Failed to update {source_id} database: {error_holder[0]}",
-            }
-        )
-        return
+        async with VENDOR_SYNC_LOCK:
+            worker = threading.Thread(target=run_sync, daemon=True)
+            worker.start()
+            try:
+                while True:
+                    item = await output_queue.get()
+                    if item is None:
+                        break
+                    yield sse_event(item)
+            finally:
+                worker.join(timeout=1)
 
-    status = await asyncio.to_thread(vendor_get_status, source_id)
-    yield sse_event(
-        {"type": "complete", "result": result_holder.get("result", {}), "status": status}
-    )
+        if error_holder:
+            yield sse_event(
+                {
+                    "type": "error",
+                    "message": f"Failed to update {source_id} database: {error_holder[0]}",
+                }
+            )
+            return
+
+        status = await asyncio.to_thread(vendor_get_status, source_id)
+        result = result_holder.get("result", {})
+        event_type = "cancelled" if isinstance(result, dict) and result.get("cancelled") else "complete"
+        yield sse_event({"type": event_type, "result": result, "status": status})
+    finally:
+        ACTIVE_VENDOR_SYNC_JOBS.pop(job_id, None)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1208,6 +1221,18 @@ async def vendor_lookup_sync_stream(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.post("/api/vendor-lookups/sync/{job_id}/cancel")
+async def vendor_lookup_sync_cancel(job_id: str) -> dict[str, object]:
+    cancel_event = ACTIVE_VENDOR_SYNC_JOBS.get(job_id)
+    if cancel_event is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Update job not found. It may have already finished.",
+        )
+    cancel_event.set()
+    return {"cancelling": True, "job_id": job_id}
 
 
 @app.post("/api/vendor-lookup")

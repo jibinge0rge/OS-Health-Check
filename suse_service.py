@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import threading
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -390,9 +391,20 @@ def parse_suse_lifecycle_tables(html: str) -> list[dict[str, str]]:
 def sync_suse_database(
     db_path: Path | None = None,
     progress_callback: Callable[[str, int, int], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, object]:
     init_db(db_path)
     started = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if cancel_event is not None and cancel_event.is_set():
+        return {
+            "ok": False,
+            "product_count": 0,
+            "release_count": 0,
+            "started": started,
+            "finished": started,
+            "source_url": SOURCE_URL,
+            "cancelled": True,
+        }
     if progress_callback:
         progress_callback("fetch", 1, 2)
 
@@ -456,6 +468,7 @@ def sync_suse_database(
         "started": started,
         "finished": scraped_at,
         "source_url": SOURCE_URL,
+        "cancelled": False,
     }
 
 

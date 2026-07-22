@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import threading
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -305,6 +306,7 @@ def collect_os_products() -> list[tuple[str, str]]:
 def sync_os_database(
     db_path: Path | None = None,
     progress_callback: Callable[[str, int, int], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, object]:
     init_db(db_path)
     started = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -312,12 +314,16 @@ def sync_os_database(
     products = collect_os_products()
     total = len(products)
     release_total = 0
+    cancelled = False
 
     with _connect(db_path) as connection:
         connection.execute("DELETE FROM releases")
         connection.execute("DELETE FROM products")
 
         for index, (slug, list_name) in enumerate(products, start=1):
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                break
             if progress_callback:
                 progress_callback(slug, index, total)
             product_url = urljoin(BASE_URL, f"/eol/product/{slug}/")
@@ -364,8 +370,11 @@ def sync_os_database(
         _set_metadata(
             connection,
             "last_sync_message",
-            f"Synced {total - len(errors)} of {total} OS products "
-            f"({release_total} releases).",
+            (f"Cancelled after {index if cancelled else total} of {total} OS products "
+             f"({release_total} releases)."
+             if cancelled else
+             f"Synced {total - len(errors)} of {total} OS products "
+             f"({release_total} releases)."),
         )
         connection.commit()
 
@@ -375,6 +384,7 @@ def sync_os_database(
         "release_count": release_total,
         "errors": errors,
         "status": "error" if errors else "ok",
+        "cancelled": cancelled,
     }
 
 

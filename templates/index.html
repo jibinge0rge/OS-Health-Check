@@ -975,6 +975,7 @@
         </p>
 
         <div class="modal-actions">
+          <button id="eosl-progress-stop" class="ghost-button" type="button">Stop</button>
           <button id="eosl-progress-close" class="primary-button" type="button" hidden>Close</button>
         </div>
       </div>
@@ -1157,6 +1158,7 @@
       const eoslNextPageButton = document.getElementById("eosl-next-page");
       const eoslProgressDialog = document.getElementById("eosl-progress-dialog");
       const eoslProgressClose = document.getElementById("eosl-progress-close");
+      const eoslProgressStop = document.getElementById("eosl-progress-stop");
       const eoslProgressText = document.getElementById("eosl-progress-text");
       const eoslProgressStage = document.getElementById("eosl-progress-stage");
       const eoslProgressTitle = document.getElementById("eosl-progress-title");
@@ -6223,6 +6225,8 @@
       let eoslRows = [];
       let eoslFilteredRows = [];
       let eoslUpdating = false;
+      let eoslActiveSyncJobId = "";
+      let eoslStopRequested = false;
       let eoslPage = 1;
       let eoslPageSize = 50;
       const EOSL_DATE_COLUMNS = ["released", "eol_date", "eoas_date"];
@@ -7110,6 +7114,45 @@
           eoslProgressBar.style.width = "";
         }
         eoslProgressClose.hidden = !(done || error);
+        if (done || error) {
+          setEoslProgressStopUi("hidden");
+        }
+      }
+
+      function setEoslProgressStopUi(state) {
+        if (!eoslProgressStop) {
+          return;
+        }
+        if (state === "hidden") {
+          eoslProgressStop.hidden = true;
+          eoslProgressStop.disabled = false;
+          eoslProgressStop.textContent = "Stop";
+          return;
+        }
+        eoslProgressStop.hidden = false;
+        if (state === "stopping") {
+          eoslProgressStop.disabled = true;
+          eoslProgressStop.textContent = "Stopping…";
+        } else {
+          eoslProgressStop.disabled = false;
+          eoslProgressStop.textContent = "Stop";
+        }
+      }
+
+      async function handleEoslStop() {
+        if (!eoslActiveSyncJobId || eoslStopRequested) {
+          return;
+        }
+        eoslStopRequested = true;
+        setEoslProgressStopUi("stopping");
+        setEoslProgressState({ stage: "Stopping… finishing in-flight requests." });
+        try {
+          await fetch(`/api/vendor-lookups/sync/${eoslActiveSyncJobId}/cancel`, {
+            method: "POST",
+          });
+        } catch {
+          // The stream loop below will still surface whatever final state arrives.
+        }
       }
 
       function formatEoslProgressStage(sourceId, stage) {
@@ -7152,6 +7195,9 @@
         }
         eoslUpdating = true;
         eoslUpdateButton.disabled = true;
+        eoslActiveSyncJobId = "";
+        eoslStopRequested = false;
+        setEoslProgressStopUi("idle");
         if (eoslProgressEyebrow) {
           eoslProgressEyebrow.textContent = sourceMeta.label;
         }
@@ -7217,6 +7263,7 @@
           let buffer = "";
           let result = null;
           let streamError = "";
+          let cancelled = false;
 
           while (true) {
             const { done, value } = await reader.read();
@@ -7238,7 +7285,9 @@
               }
 
               const event = JSON.parse(line.slice(6));
-              if (event.type === "progress") {
+              if (event.type === "started") {
+                eoslActiveSyncJobId = event.job_id || "";
+              } else if (event.type === "progress") {
                 setEoslProgressState({
                   text: `${event.processed ?? 0} of ${event.total ?? 0} processed`,
                   stage: formatEoslProgressStage(sourceId, event.stage),
@@ -7247,6 +7296,9 @@
                 });
               } else if (event.type === "complete") {
                 result = event.result || {};
+              } else if (event.type === "cancelled") {
+                result = event.result || {};
+                cancelled = true;
               } else if (event.type === "error") {
                 streamError = event.message || `Failed to update ${sourceMeta.label}.`;
               }
@@ -7259,17 +7311,21 @@
 
           result = result || {};
           setEoslProgressState({
-            text: `Updated ${result.product_count ?? 0} products, ${result.release_count ?? 0} releases.`,
+            text: cancelled
+              ? `Stopped. Partial data saved: ${result.product_count ?? 0} products, ${result.release_count ?? 0} releases.`
+              : `Updated ${result.product_count ?? 0} products, ${result.release_count ?? 0} releases.`,
             stage: "Done. You can close this dialog.",
             done: true,
           });
           showStatus(
-            `${sourceMeta.label} updated: ${result.release_count ?? 0} releases` +
-              (result.manufacturer_labels?.length
-                ? ` (${result.manufacturer_labels.join(", ")})`
-                : "") +
-              `.`,
-            result.errors && result.errors.length ? "info" : "success"
+            cancelled
+              ? `${sourceMeta.label} update stopped: ${result.release_count ?? 0} releases saved before stopping.`
+              : `${sourceMeta.label} updated: ${result.release_count ?? 0} releases` +
+                  (result.manufacturer_labels?.length
+                    ? ` (${result.manufacturer_labels.join(", ")})`
+                    : "") +
+                  `.`,
+            cancelled || (result.errors && result.errors.length) ? "info" : "success"
           );
           if (eoslDialog.open) {
             await loadEoslDialogData();
@@ -7284,6 +7340,8 @@
         } finally {
           eoslUpdating = false;
           eoslUpdateButton.disabled = false;
+          eoslActiveSyncJobId = "";
+          eoslStopRequested = false;
         }
       }
 
@@ -7775,6 +7833,9 @@
       eoslDialogClose.addEventListener("click", closeEoslDialog);
       eoslUpdateButton.addEventListener("click", handleEoslUpdate);
       eoslProgressClose.addEventListener("click", closeEoslProgress);
+      if (eoslProgressStop) {
+        eoslProgressStop.addEventListener("click", handleEoslStop);
+      }
       if (eoslSourceSelect) {
         eoslSourceSelect.addEventListener("change", async () => {
           eoslActiveSource = eoslSourceSelect.value || "eosl";
