@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "os-health-check",
+      "runtimeExecutable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "runtimeArgs": [
+        "-ExecutionPolicy",
+        "ByPass",
+        "-NoExit",
+        "-Command",
+        "& 'C:\\Users\\jibin.george\\Anaconda3\\shell\\condabin\\conda-hook.ps1' ; conda activate SDS ; python -m uvicorn app:app --reload --port 8000"
+      ],
+      "port": 8000
+    }
+  ]
+}

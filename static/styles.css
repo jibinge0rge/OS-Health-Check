@@ -2591,9 +2591,13 @@ body.lookup-readonly td .theme-select-trigger:disabled {
   display: none;
 }
 
+.eosl-progress-dialog.modal {
+  width: min(460px, calc(100% - 32px));
+}
+
 .eosl-progress-dialog .modal-card {
   min-width: 0;
-  width: min(460px, 100%);
+  width: 100%;
 }
 
 .search-field {
