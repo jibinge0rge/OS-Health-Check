@@ -9,7 +9,4 @@ __pycache__/
 .env.test
 .env.production
 _config/
-*.db
-_data/*.db
-_draft/*.db
 .claude/
