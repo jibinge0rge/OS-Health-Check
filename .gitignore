@@ -12,3 +12,4 @@ _config/
 *.db
 _data/*.db
 _draft/*.db
+.claude
