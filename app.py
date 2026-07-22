@@ -791,6 +791,61 @@ async def azure_upload_events(payload: AzureUploadRequest) -> AsyncIterator[str]
         worker.join(timeout=1)
 
 
+async def vendor_lookup_sync_events(
+    source_id: str,
+    options: dict[str, object] | None,
+) -> AsyncIterator[str]:
+    """Stream scrape progress so the UI can show N of M processed, not just a spinner."""
+    output_queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+    result_holder: dict[str, object] = {}
+    error_holder: list[str] = []
+
+    def progress_callback(stage: str, processed: int, total: int) -> None:
+        loop.call_soon_threadsafe(
+            output_queue.put_nowait,
+            {"type": "progress", "stage": stage, "processed": processed, "total": total},
+        )
+
+    def run_sync() -> None:
+        try:
+            result_holder["result"] = vendor_sync_source(
+                source_id,
+                progress_callback=progress_callback,
+                options=options,
+            )
+        except Exception as exc:  # noqa: BLE001 - surface scrape failures to UI
+            error_holder.append(str(exc))
+        finally:
+            loop.call_soon_threadsafe(output_queue.put_nowait, None)
+
+    async with VENDOR_SYNC_LOCK:
+        worker = threading.Thread(target=run_sync, daemon=True)
+        worker.start()
+        try:
+            while True:
+                item = await output_queue.get()
+                if item is None:
+                    break
+                yield sse_event(item)
+        finally:
+            worker.join(timeout=1)
+
+    if error_holder:
+        yield sse_event(
+            {
+                "type": "error",
+                "message": f"Failed to update {source_id} database: {error_holder[0]}",
+            }
+        )
+        return
+
+    status = await asyncio.to_thread(vendor_get_status, source_id)
+    yield sse_event(
+        {"type": "complete", "result": result_holder.get("result", {}), "status": status}
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
@@ -1127,6 +1182,32 @@ async def vendor_lookup_sync(
             ) from error
     status = await asyncio.to_thread(vendor_get_status, source_id)
     return {"result": result, "status": status, "source_id": source_id}
+
+
+@app.post("/api/vendor-lookups/{source_id}/sync/stream")
+async def vendor_lookup_sync_stream(
+    source_id: str,
+    payload: VendorSyncRequest | None = None,
+) -> StreamingResponse:
+    if source_id not in VALID_VENDOR_SOURCES:
+        raise HTTPException(status_code=404, detail=f"Unknown vendor source: {source_id}")
+    if VENDOR_SYNC_LOCK.locked():
+        raise HTTPException(
+            status_code=409,
+            detail="A vendor lookup update is already running. Please wait for it to finish.",
+        )
+    options: dict[str, object] = {}
+    if payload and payload.manufacturers is not None:
+        options["manufacturers"] = payload.manufacturers
+    return StreamingResponse(
+        vendor_lookup_sync_events(source_id, options or None),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/vendor-lookup")

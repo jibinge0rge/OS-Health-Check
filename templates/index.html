@@ -7081,17 +7081,52 @@
         scheduleEoslTableLayoutSync();
       }
 
-      function setEoslProgressState({ text, stage, done = false, error = false } = {}) {
+      function setEoslProgressState({
+        text,
+        stage,
+        done = false,
+        error = false,
+        processed = null,
+        total = null,
+      } = {}) {
         if (text != null) {
           eoslProgressText.textContent = text;
         }
         if (stage != null) {
           eoslProgressStage.textContent = stage;
         }
-        eoslProgressBar.classList.toggle("eosl-progress-indeterminate", !done && !error);
+        const hasCounts = Number.isFinite(total) && total > 0 && Number.isFinite(processed);
+        eoslProgressBar.classList.toggle(
+          "eosl-progress-indeterminate",
+          !done && !error && !hasCounts
+        );
         eoslProgressBar.classList.toggle("is-error", error);
-        eoslProgressBar.style.width = done || error ? "100%" : "";
+        if (done || error) {
+          eoslProgressBar.style.width = "100%";
+        } else if (hasCounts) {
+          const percent = Math.max(0, Math.min(100, (processed / total) * 100));
+          eoslProgressBar.style.width = `${percent}%`;
+        } else {
+          eoslProgressBar.style.width = "";
+        }
         eoslProgressClose.hidden = !(done || error);
+      }
+
+      function formatEoslProgressStage(sourceId, stage) {
+        const cleanStage = String(stage || "").trim();
+        if (sourceId === "eosl") {
+          return cleanStage ? `Scraping ${cleanStage}…` : "Scraping eosl.date…";
+        }
+        if (sourceId === "junos" || sourceId === "suse") {
+          if (cleanStage === "fetch") {
+            return "Fetching the lifecycle table…";
+          }
+          if (cleanStage === "store") {
+            return "Storing results…";
+          }
+          return cleanStage || "Working…";
+        }
+        return cleanStage || "Working…";
       }
 
       function closeEoslProgress() {
@@ -7151,19 +7186,78 @@
         }
         showStatus(`Updating ${sourceMeta.label}…`, "info");
         try {
-          const response = await fetch(`/api/vendor-lookups/${sourceId}/sync`, {
+          const response = await fetch(`/api/vendor-lookups/${sourceId}/sync/stream`, {
             method: "POST",
-            headers:
-              Object.keys(syncBody).length > 0
+            headers: {
+              Accept: "text/event-stream",
+              ...(Object.keys(syncBody).length > 0
                 ? { "Content-Type": "application/json" }
-                : undefined,
+                : {}),
+            },
             body: Object.keys(syncBody).length > 0 ? JSON.stringify(syncBody) : undefined,
           });
-          const payload = await response.json().catch(() => ({}));
+
           if (!response.ok) {
-            throw new Error(payload.detail || `Failed to update ${sourceMeta.label}.`);
+            let detail = `Failed to update ${sourceMeta.label}.`;
+            try {
+              const payload = await response.json();
+              if (payload?.detail) {
+                detail = Array.isArray(payload.detail)
+                  ? payload.detail.map((item) => item.msg || item).join(" ")
+                  : String(payload.detail);
+              }
+            } catch {
+              // Keep default message when response is not JSON.
+            }
+            throw new Error(detail);
           }
-          const result = payload.result ?? {};
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          let result = null;
+          let streamError = "";
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              break;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const chunks = buffer.split("\n\n");
+            buffer = chunks.pop() || "";
+
+            for (const chunk of chunks) {
+              const line = chunk
+                .split("\n")
+                .map((entry) => entry.trim())
+                .find((entry) => entry.startsWith("data: "));
+              if (!line) {
+                continue;
+              }
+
+              const event = JSON.parse(line.slice(6));
+              if (event.type === "progress") {
+                setEoslProgressState({
+                  text: `${event.processed ?? 0} of ${event.total ?? 0} processed`,
+                  stage: formatEoslProgressStage(sourceId, event.stage),
+                  processed: event.processed,
+                  total: event.total,
+                });
+              } else if (event.type === "complete") {
+                result = event.result || {};
+              } else if (event.type === "error") {
+                streamError = event.message || `Failed to update ${sourceMeta.label}.`;
+              }
+            }
+          }
+
+          if (streamError) {
+            throw new Error(streamError);
+          }
+
+          result = result || {};
           setEoslProgressState({
             text: `Updated ${result.product_count ?? 0} products, ${result.release_count ?? 0} releases.`,
             stage: "Done. You can close this dialog.",
