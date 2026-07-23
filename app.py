@@ -124,6 +124,8 @@ class LookupPayload(BaseModel):
     rows: list[LookupRow] = Field(default_factory=list)
     # Sidecar evidence keyed by os_string. Not written into the lookup CSV.
     evidence: dict[str, object] = Field(default_factory=dict)
+    # Optional label appended to Validate backup filenames.
+    backup_suffix: str = ""
 
 
 class EolLookupItem(BaseModel):
@@ -374,6 +376,13 @@ def delete_evidence(source: str) -> None:
         path.unlink()
 
 
+def _normalize_status_cell(value: object) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"", "true", "false"}:
+        return normalized
+    return ""
+
+
 def load_rows(source: str = "data") -> list[dict[str, str]]:
     path = lookup_path(source)
     if not path.exists():
@@ -388,10 +397,13 @@ def load_rows(source: str = "data") -> list[dict[str, str]]:
                 detail="CSV headers do not match the expected lookup schema.",
             )
 
-        return [
-            {header: (row.get(header) or "") for header in CSV_HEADERS}
-            for row in reader
-        ]
+        rows: list[dict[str, str]] = []
+        for row in reader:
+            item = {header: (row.get(header) or "") for header in CSV_HEADERS}
+            item["eol_status"] = _normalize_status_cell(item.get("eol_status"))
+            item["eoas_status"] = _normalize_status_cell(item.get("eoas_status"))
+            rows.append(item)
+        return rows
 
 
 def save_rows(rows: list[LookupRow], source: str = "data") -> None:
@@ -415,24 +427,36 @@ def save_rows(rows: list[LookupRow], source: str = "data") -> None:
     temp_path.replace(path)
 
 
-def backup_data_file() -> Path | None:
+def sanitize_backup_suffix(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "-", text)
+    text = re.sub(r"\s+", "-", text)
+    text = re.sub(r"-{2,}", "-", text).strip(".-_")
+    return text[:80]
+
+
+def backup_data_file(suffix: str = "") -> Path | None:
     if not DATA_PATH.exists():
         return None
 
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_path = BACKUP_DIR / f"eol_lookup_{timestamp}.csv"
+    suffix_part = f"_{suffix}" if suffix else ""
+    backup_path = BACKUP_DIR / f"eol_lookup_{timestamp}{suffix_part}.csv"
     shutil.copy2(DATA_PATH, backup_path)
     return backup_path
 
 
-def backup_data_evidence() -> Path | None:
+def backup_data_evidence(suffix: str = "") -> Path | None:
     if not DATA_EVIDENCE_PATH.exists():
         return None
 
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_path = BACKUP_DIR / f"eol_lookup_evidence_{timestamp}.json"
+    suffix_part = f"_{suffix}" if suffix else ""
+    backup_path = BACKUP_DIR / f"eol_lookup_evidence_{timestamp}{suffix_part}.json"
     shutil.copy2(DATA_EVIDENCE_PATH, backup_path)
     return backup_path
 
@@ -892,17 +916,21 @@ async def update_lookup(payload: LookupPayload, source: str = "draft") -> dict[s
 
 @app.post("/api/lookup/validate")
 async def validate_lookup(payload: LookupPayload) -> dict[str, object]:
-    backup_path = backup_data_file()
-    evidence_backup_path = backup_data_evidence()
+    suffix = sanitize_backup_suffix(payload.backup_suffix)
+    backup_path = backup_data_file(suffix)
+    evidence_backup_path = backup_data_evidence(suffix)
     save_rows(payload.rows, "data")
     evidence = save_evidence(prune_evidence_to_rows(payload.evidence, payload.rows), "data")
-    # Keep draft evidence aligned with what was validated.
+    # Promote replaces Draft: remove working copy after writing Data.
     if DRAFT_PATH.exists():
-        save_evidence(evidence, "draft")
+        DRAFT_PATH.unlink()
+    delete_evidence("draft")
     return {
         "validated": True,
         "row_count": len(payload.rows),
         "source": "data",
+        "draft_deleted": True,
+        "backup_suffix": suffix,
         "backup_path": str(backup_path) if backup_path else "",
         "evidence_backup_path": str(evidence_backup_path) if evidence_backup_path else "",
         "evidence": evidence,

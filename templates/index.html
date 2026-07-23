@@ -64,7 +64,13 @@
           >
             Exit Draft
           </button>
-          <button id="validate-button" class="secondary-button compact-button edit-only-control hidden" disabled>
+          <button
+            id="validate-button"
+            class="secondary-button compact-button edit-only-control hidden"
+            type="button"
+            title="Write Draft to EOL Lookup, keep the previous copy in the backup folder, then delete the Draft"
+            disabled
+          >
             Validate
           </button>
           <button id="revert-button" class="secondary-button compact-button edit-only-control hidden" disabled>
@@ -176,9 +182,11 @@
             <div class="source-controls">
               <label class="source-field">
                 <span class="source-inline-label">Source</span>
-                <select id="source-select">
+                <select id="source-select" aria-label="Lookup source">
                   <option value="data" selected>Data</option>
-                  <option value="draft">Draft</option>
+                  <option value="draft" disabled title="No draft yet. Click Edit Data to create one.">
+                    Draft
+                  </option>
                 </select>
               </label>
             </div>
@@ -383,6 +391,18 @@
         </div>
 
         <p id="confirm-message" class="confirm-message"></p>
+        <p id="confirm-note" class="modal-note confirm-note hidden"></p>
+        <label id="confirm-prompt" class="confirm-prompt hidden">
+          <span id="confirm-prompt-label">Optional label</span>
+          <input
+            id="confirm-prompt-input"
+            type="text"
+            maxlength="80"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <span id="confirm-prompt-hint" class="confirm-prompt-hint"></span>
+        </label>
 
         <div class="modal-actions">
           <button id="confirm-cancel-button" class="ghost-button" value="cancel" type="submit">
@@ -1022,6 +1042,9 @@
       let autoSaveEnabled = true;
       let autoSaveTimer = null;
       let saveInFlight = false;
+      let saveInFlightPromise = null;
+      // Bumped when Draft is deleted/validated so late saves cannot resurrect it.
+      let draftEpoch = 0;
       const AUTO_SAVE_DELAY_MS = 1800;
       let aiMatchEnabled = false;
       let aiMatchAvailable = false;
@@ -1031,6 +1054,9 @@
       let pageSize = 20;
       let currentPage = 1;
       let currentSource = "data";
+      // True when a Draft file exists on disk. Draft source stays selectable while
+      // actively editing even before the first save.
+      let draftAvailable = false;
       let statusTimer = null;
       let bulkProcessing = false;
       let bulkAbortController = null;
@@ -1308,6 +1334,11 @@
       const confirmEyebrow = document.getElementById("confirm-eyebrow");
       const confirmTitle = document.getElementById("confirm-title");
       const confirmMessage = document.getElementById("confirm-message");
+      const confirmNote = document.getElementById("confirm-note");
+      const confirmPrompt = document.getElementById("confirm-prompt");
+      const confirmPromptLabel = document.getElementById("confirm-prompt-label");
+      const confirmPromptInput = document.getElementById("confirm-prompt-input");
+      const confirmPromptHint = document.getElementById("confirm-prompt-hint");
       const confirmOkButton = document.getElementById("confirm-ok-button");
       const proofDialog = document.getElementById("proof-dialog");
       const proofOsLabel = document.getElementById("proof-os-label");
@@ -1696,6 +1727,8 @@
         eyebrow = "Confirm",
         title = "Are you sure?",
         message = "",
+        note = "",
+        prompt = null,
         confirmLabel = "Continue",
         cancelLabel = "Cancel",
         danger = false,
@@ -1708,19 +1741,54 @@
           document.getElementById("confirm-cancel-button").textContent = cancelLabel;
           confirmOkButton.classList.toggle("danger-button", Boolean(danger));
 
+          const noteText = String(note || "").trim();
+          confirmNote.textContent = noteText;
+          confirmNote.classList.toggle("hidden", !noteText);
+
+          const hasPrompt = Boolean(prompt && typeof prompt === "object");
+          confirmPrompt.classList.toggle("hidden", !hasPrompt);
+          if (hasPrompt) {
+            confirmPromptLabel.textContent = String(prompt.label || "Optional label");
+            confirmPromptInput.value = String(prompt.value || "");
+            confirmPromptInput.placeholder = String(prompt.placeholder || "");
+            const hintText = String(prompt.hint || "").trim();
+            confirmPromptHint.textContent = hintText;
+            confirmPromptHint.classList.toggle("hidden", !hintText);
+          } else {
+            confirmPromptInput.value = "";
+            confirmPromptInput.placeholder = "";
+            confirmPromptHint.textContent = "";
+            confirmPromptHint.classList.add("hidden");
+          }
+
           const finish = (result) => {
             confirmDialog.removeEventListener("close", onClose);
             resolve(result);
           };
 
           const onClose = () => {
-            finish(confirmDialog.returnValue === "confirm");
+            const confirmed = confirmDialog.returnValue === "confirm";
+            if (hasPrompt) {
+              finish({
+                confirmed,
+                value: confirmed ? String(confirmPromptInput.value || "").trim() : "",
+              });
+              return;
+            }
+            finish(confirmed);
           };
 
           confirmDialog.addEventListener("close", onClose, { once: true });
           confirmDialog.returnValue = "cancel";
           confirmDialog.showModal();
-          setTimeout(() => confirmOkButton.focus(), 0);
+          setTimeout(() => {
+            if (hasPrompt) {
+              confirmPromptInput.focus();
+              confirmPromptInput.select();
+            } else {
+              confirmOkButton.focus();
+            }
+          }, 0);
         });
       }
 
@@ -2241,6 +2309,34 @@
         }
       }
 
+      function invalidateDraftEpoch() {
+        draftEpoch += 1;
+        cancelScheduledAutoSave();
+        return draftEpoch;
+      }
+
+      async function waitForSaveIdle() {
+        cancelScheduledAutoSave();
+        const pending = saveInFlightPromise;
+        if (pending) {
+          await pending.catch(() => {});
+        }
+      }
+
+      async function prepareDraftTeardown() {
+        invalidateDraftEpoch();
+        await waitForSaveIdle();
+        cancelScheduledAutoSave();
+      }
+
+      async function deleteDraftFileQuietly() {
+        try {
+          await fetch("/api/lookup/draft", { method: "DELETE" });
+        } catch (_error) {
+          // Best-effort cleanup after a stale save resurrected the draft.
+        }
+      }
+
       function scheduleAutoSave() {
         cancelScheduledAutoSave();
         if (
@@ -2285,6 +2381,38 @@
 
       function sourceLabel(source) {
         return source === "draft" ? "Draft" : "Data";
+      }
+
+      function getDraftSourceOption() {
+        return sourceSelect.querySelector('option[value="draft"]');
+      }
+
+      function syncDraftSourceAvailability() {
+        const draftOption = getDraftSourceOption();
+        if (!draftOption) {
+          return;
+        }
+        const enable = draftAvailable || currentSource === "draft";
+        draftOption.disabled = !enable;
+        draftOption.title = enable
+          ? ""
+          : "No draft yet. Click Edit Data to create one.";
+        refreshThemeSelect(sourceSelect);
+      }
+
+      function markDraftAvailable(available = true) {
+        draftAvailable = Boolean(available);
+        syncDraftSourceAvailability();
+      }
+
+      async function refreshDraftAvailability() {
+        try {
+          const response = await fetch("/api/lookup?source=draft");
+          draftAvailable = response.ok;
+        } catch (_error) {
+          draftAvailable = false;
+        }
+        syncDraftSourceAvailability();
       }
 
       function isAiMatchingEnabled() {
@@ -2419,7 +2547,7 @@
         const onData = currentSource === "data";
 
         sourceSelect.value = currentSource;
-        refreshThemeSelect(sourceSelect);
+        syncDraftSourceAvailability();
         sourceIndicator.textContent = sourceLabel(currentSource);
         sourceIndicator.classList.toggle("draft-pill", currentSource === "draft");
         if (dataReadonlyHint) {
@@ -2500,14 +2628,21 @@
 
         showStatus("Opening Draft for editing...");
         try {
-          const draftResponse = await fetch("/api/lookup?source=draft");
-          if (draftResponse.ok) {
-            await loadRows("draft");
-            showStatus("Draft opened for editing.", "success");
-            return;
-          }
-          if (draftResponse.status !== 404) {
-            throw new Error("Unable to open Draft for editing.");
+          if (draftAvailable) {
+            const draftResponse = await fetch("/api/lookup?source=draft");
+            if (draftResponse.ok) {
+              markDraftAvailable(true);
+              await loadRows("draft");
+              showStatus("Draft opened for editing.", "success");
+              return;
+            }
+            if (draftResponse.status !== 404) {
+              throw new Error("Unable to open Draft for editing.");
+            }
+            markDraftAvailable(false);
+          } else {
+            // After Delete/Validate, never reopen a late-save resurrected draft file.
+            await deleteDraftFileQuietly();
           }
 
           const cleanRows = allRows.map((row) =>
@@ -2552,11 +2687,14 @@
       }
 
       function findDataBaselineRow(row) {
-        if (row.__dataSourceIndex != null && dataBaselineRows[row.__dataSourceIndex]) {
-          return dataBaselineRows[row.__dataSourceIndex];
+        const osKey = dataBaselineKey(row.os_string);
+        if (row.__dataSourceIndex != null && row.__dataSourceIndex >= 0) {
+          const byIndex = dataBaselineRows[row.__dataSourceIndex];
+          if (byIndex && dataBaselineKey(byIndex.os_string) === osKey) {
+            return byIndex;
+          }
         }
 
-        const osKey = dataBaselineKey(row.os_string);
         if (!osKey) {
           return null;
         }
@@ -3958,8 +4096,20 @@
         return true;
       }
 
+      function comparableCellValue(header, value) {
+        if (booleanStatusHeaders.has(header)) {
+          const normalized = String(value ?? "").trim().toLowerCase();
+          return normalized === "true" || normalized === "false" ? normalized : "";
+        }
+        return value ?? "";
+      }
+
       function rowsEqual(leftRow, rightRow) {
-        return headers.every((header) => (leftRow?.[header] ?? "") === (rightRow?.[header] ?? ""));
+        return headers.every(
+          (header) =>
+            comparableCellValue(header, leftRow?.[header]) ===
+            comparableCellValue(header, rightRow?.[header])
+        );
       }
 
       function rowHasChanges(row) {
@@ -4570,6 +4720,7 @@
           const draftResponse = await fetch("/api/lookup?source=draft");
           if (draftResponse.ok) {
             // Prefer existing Draft so Data refresh cannot wipe draft changes.
+            markDraftAvailable(true);
             await loadRows("draft");
             showStatus("Using existing Draft for EOL/EOAS refresh.", "info");
             return true;
@@ -5414,15 +5565,25 @@
         });
       }
 
+      function normalizeLookupRowValues(row) {
+        const next = { ...row };
+        booleanStatusHeaders.forEach((header) => {
+          next[header] = comparableCellValue(header, next[header]);
+        });
+        return next;
+      }
+
       function hydrateRows(rows, evidenceByOs = currentEvidenceByOs) {
         return rows.map((row, index) => {
-          const osKey = String(row.os_string ?? "").trim();
+          const normalizedRow = normalizeLookupRowValues(row);
+          const osKey = String(normalizedRow.os_string ?? "").trim();
           const storedProof = osKey ? evidenceByOs[osKey] : null;
           return {
             __id: crypto.randomUUID?.() ?? `row-${index}-${Date.now()}`,
             __sourceIndex: index,
             __dataSourceIndex: dataBaselineRows.findIndex(
-              (candidate) => dataBaselineKey(candidate.os_string) === dataBaselineKey(row.os_string)
+              (candidate) =>
+                dataBaselineKey(candidate.os_string) === dataBaselineKey(normalizedRow.os_string)
             ),
             __normalizedDetailedAuto: false,
             __normalizedOsAuto: false,
@@ -5432,7 +5593,7 @@
             __eoasStatusAuto: false,
             __proof: proofFromStored(storedProof),
             ...blankRow(),
-            ...row,
+            ...normalizedRow,
           };
         });
       }
@@ -5699,7 +5860,9 @@
             }
 
             const dataBaselinePayload = await dataBaselineResponse.json();
-            dataBaselineRows = cloneRows(dataBaselinePayload.rows);
+            dataBaselineRows = cloneRows(dataBaselinePayload.rows).map((row) =>
+              normalizeLookupRowValues(row)
+            );
             dataEvidenceByOs = evidenceByOsFromPayload(dataBaselinePayload);
           }
 
@@ -5713,6 +5876,9 @@
 
           const payload = await response.json();
           currentSource = payload.source === "draft" ? "draft" : "data";
+          if (currentSource === "draft") {
+            markDraftAvailable(true);
+          }
           originalRows = cloneRows(payload.rows);
           currentEvidenceByOs =
             currentSource === "data"
@@ -5747,8 +5913,13 @@
           return true;
         }
 
+        const epochAtStart = draftEpoch;
         cancelScheduledAutoSave();
         saveInFlight = true;
+        let resolveSaveIdle = null;
+        saveInFlightPromise = new Promise((resolve) => {
+          resolveSaveIdle = resolve;
+        });
         updateSourceUi();
 
         if (mode === "manual" && !quiet) {
@@ -5769,17 +5940,25 @@
             body: JSON.stringify({ rows, evidence }),
           });
 
+          if (epochAtStart !== draftEpoch) {
+            // Draft was deleted/validated while this save was in flight.
+            if (response.ok) {
+              await deleteDraftFileQuietly();
+            }
+            return false;
+          }
+
           if (!response.ok) {
             throw new Error("Unable to save draft.");
           }
 
           const payload = await response.json().catch(() => ({}));
           currentSource = "draft";
+          markDraftAvailable(true);
           originalRows = cloneRows(rows);
           currentEvidenceByOs = evidenceByOsFromPayload(
             payload?.evidence ? payload : { evidence }
           );
-          saveInFlight = false;
           setDirty(false);
           updateSourceUi();
           if (!quiet) {
@@ -5791,7 +5970,9 @@
           }
           return true;
         } catch (error) {
-          saveInFlight = false;
+          if (epochAtStart !== draftEpoch) {
+            return false;
+          }
           dirtyIndicator.textContent = isDirty ? "Unsaved" : "Saved";
           dirtyIndicator.classList.toggle("dirty", isDirty);
           updateSourceUi();
@@ -5800,6 +5981,13 @@
             scheduleAutoSave();
           }
           return false;
+        } finally {
+          saveInFlight = false;
+          if (resolveSaveIdle) {
+            resolveSaveIdle();
+          }
+          saveInFlightPromise = null;
+          updateSourceUi();
         }
       }
 
@@ -5816,18 +6004,25 @@
           }
         }
 
-        const confirmed = await askConfirm({
-          eyebrow: "Validate changes",
-          title: "Overwrite Data with Draft?",
+        const confirmation = await askConfirm({
+          eyebrow: "Validate and delete draft",
+          title: "Write Draft to EOL Lookup?",
           message:
-            "Validate changes and overwrite Data with the current Draft? A backup of the current Data file will be created first.",
-          confirmLabel: "Validate changes",
+            "This writes your Draft into EOL Lookup and then deletes the Draft.",
+          note: "The previous EOL Lookup will be stored in the backup folder first.",
+          prompt: {
+            label: "Backup name suffix (optional)",
+            placeholder: "e.g. before-windows-refresh",
+            hint: "If provided, it is appended to the backup file name.",
+          },
+          confirmLabel: "Validate and delete draft",
         });
-        if (!confirmed) {
+        if (!confirmation?.confirmed) {
           return;
         }
 
-        showStatus("Validating Draft and updating Data...");
+        showStatus("Writing Draft to EOL Lookup...");
+        await prepareDraftTeardown();
 
         const rows = allRows.map((row) =>
           Object.fromEntries(headers.map((header) => [header, row[header] ?? ""]))
@@ -5837,20 +6032,31 @@
           const response = await fetch("/api/lookup/validate", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ rows, evidence }),
+            body: JSON.stringify({
+              rows,
+              evidence,
+              backup_suffix: confirmation.value || "",
+            }),
           });
 
           if (!response.ok) {
-            throw new Error("Unable to validate changes.");
+            let detail = "Unable to validate and delete draft.";
+            try {
+              const errorPayload = await response.json();
+              if (typeof errorPayload?.detail === "string" && errorPayload.detail.trim()) {
+                detail = errorPayload.detail.trim();
+              }
+            } catch (_error) {
+              // Keep the friendly fallback message.
+            }
+            throw new Error(detail);
           }
 
-          const payload = await response.json().catch(() => ({}));
-          dataBaselineRows = cloneRows(rows);
-          dataEvidenceByOs = evidenceByOsFromPayload(
-            payload?.evidence ? payload : { evidence }
-          );
-          currentEvidenceByOs = { ...dataEvidenceByOs };
-          showStatus("Draft validated and _data lookup overwritten.", "success");
+          setDirty(false);
+          currentSource = "data";
+          await loadRows("data");
+          markDraftAvailable(false);
+          showStatus("Written to EOL Lookup. Draft deleted.", "success");
         } catch (error) {
           showStatus(error.message, "error");
         }
@@ -7671,19 +7877,24 @@
         showStatus("Deleting draft...");
 
         try {
+          await prepareDraftTeardown();
+          setDirty(false);
+
           const response = await fetch("/api/lookup/draft", {
             method: "DELETE",
           });
 
-          if (!response.ok) {
-            if (response.status === 404) {
-              throw new Error("Draft lookup not found.");
-            }
+          // 404 = already gone (or never saved). Still return to Data.
+          if (!response.ok && response.status !== 404) {
             throw new Error("Unable to delete draft.");
           }
 
           currentSource = "data";
           await loadRows("data");
+          markDraftAvailable(false);
+          // Catch a late save that slipped through between teardown and DELETE.
+          await deleteDraftFileQuietly();
+          markDraftAvailable(false);
           showStatus("Draft deleted. Loaded Data.", "success");
         } catch (error) {
           showStatus(error.message, "error");
@@ -8014,6 +8225,19 @@
       });
       deleteDraftButton.addEventListener("click", deleteDraft);
       sourceSelect.addEventListener("change", async () => {
+        const nextSource = sourceSelect.value;
+        const draftOption = getDraftSourceOption();
+        if (
+          nextSource === "draft" &&
+          draftOption?.disabled &&
+          currentSource !== "draft"
+        ) {
+          sourceSelect.value = currentSource;
+          refreshThemeSelect(sourceSelect);
+          showStatus("No draft yet. Click Edit Data to create one.", "info");
+          return;
+        }
+
         if (isDirty) {
           const confirmed = await askConfirm({
             eyebrow: "Switch source",
@@ -8029,7 +8253,7 @@
           }
         }
 
-        await loadRows(sourceSelect.value);
+        await loadRows(nextSource);
       });
       searchInput.addEventListener("input", applyFilter);
 
@@ -8146,7 +8370,11 @@
       loadAppSettings()
         .catch(() => {})
         .finally(() => {
-          loadRows("data");
+          refreshDraftAvailability()
+            .catch(() => {})
+            .finally(() => {
+              loadRows("data");
+            });
         });
     </script>
   </body>
