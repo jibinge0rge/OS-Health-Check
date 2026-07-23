@@ -10,3 +10,4 @@ __pycache__/
 .env.production
 _config/
 .claude/
+_draft/
