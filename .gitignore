@@ -11,3 +11,4 @@ __pycache__/
 _config/
 .claude/
 _draft/
+.pytest_cache/

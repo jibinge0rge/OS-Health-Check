@@ -4,6 +4,7 @@ fastapi
 jinja2
 openai
 openpyxl
+psycopg[binary,pool]
 python-dotenv
 python-multipart
 requests

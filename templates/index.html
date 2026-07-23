@@ -44,12 +44,13 @@
           <label
             id="ai-provider-wrap"
             class="ai-provider-control edit-only-control hidden"
-            title="Choose OpenAI or Gemini for AI match"
+            title="Choose OpenAI, Gemini, or OpenRouter for AI match"
           >
             <span class="ai-provider-label">Provider</span>
             <select id="ai-provider-select" aria-label="AI provider">
               <option value="openai">OpenAI</option>
               <option value="gemini">Gemini</option>
+              <option value="openrouter">OpenRouter</option>
             </select>
           </label>
           <button id="save-button" class="primary-button compact-button edit-only-control hidden" disabled>
@@ -733,31 +734,102 @@
           <button id="settings-close" class="ghost-button" value="cancel">Close</button>
         </div>
 
-        <section class="settings-section vendor-settings-section" aria-labelledby="settings-vendor-heading">
-          <div class="settings-section-head">
-            <h3 id="settings-vendor-heading">Vendor lookups</h3>
-            <p class="settings-section-note">
-              Local sources used during Refresh EOL/EOAS after the API. Toggle each source and
-              set family keywords for specialist databases.
-            </p>
-          </div>
+        <div class="settings-tabs" role="tablist" aria-label="Settings sections">
+          <button
+            id="settings-tab-vendor"
+            class="settings-tab is-active"
+            type="button"
+            role="tab"
+            aria-selected="true"
+            aria-controls="settings-panel-vendor"
+            data-settings-tab="vendor"
+          >
+            Vendor lookups
+          </button>
+          <button
+            id="settings-tab-ai-prompt"
+            class="settings-tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="settings-panel-ai-prompt"
+            data-settings-tab="ai-prompt"
+          >
+            AI match prompt
+          </button>
+        </div>
 
-          <div class="vendor-settings-flow" aria-label="Refresh fallback order">
-            <span class="vendor-flow-chip is-api is-active" data-flow-source="api">endoflife.date</span>
-            <span class="vendor-flow-arrow" aria-hidden="true">→</span>
-            <span class="vendor-flow-chip" data-flow-source="eosl">eosl</span>
-            <span class="vendor-flow-arrow" aria-hidden="true">→</span>
-            <span class="vendor-flow-chip" data-flow-source="junos">junos</span>
-            <span class="vendor-flow-arrow" aria-hidden="true">→</span>
-            <span class="vendor-flow-chip" data-flow-source="suse">suse</span>
-            <span class="vendor-flow-arrow" aria-hidden="true">→</span>
-            <span class="vendor-flow-chip" data-flow-source="layer23-switch">layer23-switch</span>
-            <span class="vendor-flow-arrow" aria-hidden="true">→</span>
-            <span class="vendor-flow-chip" data-flow-source="router-switch">router-switch</span>
-          </div>
+        <div class="settings-panels">
+          <section
+            id="settings-panel-vendor"
+            class="settings-section settings-panel vendor-settings-section"
+            role="tabpanel"
+            aria-labelledby="settings-tab-vendor"
+            data-settings-panel="vendor"
+          >
+            <div class="settings-section-head">
+              <h3 id="settings-vendor-heading" class="visually-hidden">Vendor lookups</h3>
+              <p class="settings-section-note">
+                Local sources used during Refresh EOL/EOAS after the API. Toggle each source and
+                set family keywords for specialist databases.
+              </p>
+            </div>
 
-          <div id="settings-vendor-list" class="vendor-settings-list"></div>
-        </section>
+            <div class="vendor-settings-flow" aria-label="Refresh fallback order">
+              <span class="vendor-flow-chip is-api is-active" data-flow-source="api">endoflife.date</span>
+              <span class="vendor-flow-arrow" aria-hidden="true">→</span>
+              <span class="vendor-flow-chip" data-flow-source="eosl">eosl</span>
+              <span class="vendor-flow-arrow" aria-hidden="true">→</span>
+              <span class="vendor-flow-chip" data-flow-source="junos">junos</span>
+              <span class="vendor-flow-arrow" aria-hidden="true">→</span>
+              <span class="vendor-flow-chip" data-flow-source="suse">suse</span>
+              <span class="vendor-flow-arrow" aria-hidden="true">→</span>
+              <span class="vendor-flow-chip" data-flow-source="layer23-switch">layer23-switch</span>
+              <span class="vendor-flow-arrow" aria-hidden="true">→</span>
+              <span class="vendor-flow-chip" data-flow-source="router-switch">router-switch</span>
+            </div>
+
+            <div id="settings-vendor-list" class="vendor-settings-list"></div>
+          </section>
+
+          <section
+            id="settings-panel-ai-prompt"
+            class="settings-section settings-panel ai-prompt-settings-section hidden"
+            role="tabpanel"
+            aria-labelledby="settings-tab-ai-prompt"
+            data-settings-panel="ai-prompt"
+            hidden
+          >
+            <div class="settings-section-head">
+              <div class="settings-section-head-row">
+                <h3 id="settings-ai-prompt-heading" class="visually-hidden">AI match prompt</h3>
+                <p class="settings-section-note">
+                  Write matching rules in plain language. Leave as the default (or clear it)
+                  to use the built-in prompt. Use <code>{threshold}</code> where the confidence
+                  cutoff should appear. The app always adds the technical output format
+                  (<code>pair_index</code> / JSON) after your text — you do not need to include it.
+                </p>
+                <button
+                  id="settings-ai-prompt-reset"
+                  class="ghost-button compact-button"
+                  type="button"
+                >
+                  Reset to default
+                </button>
+              </div>
+            </div>
+            <label class="settings-ai-prompt-label" for="settings-ai-prompt">
+              <span class="visually-hidden">AI match system prompt</span>
+              <textarea
+                id="settings-ai-prompt"
+                class="settings-ai-prompt-input"
+                rows="12"
+                spellcheck="false"
+                aria-describedby="settings-ai-prompt-heading"
+              ></textarea>
+            </label>
+          </section>
+        </div>
 
         <div class="modal-actions">
           <button id="settings-cancel" class="ghost-button" value="cancel">Cancel</button>
@@ -1048,9 +1120,12 @@
       const AUTO_SAVE_DELAY_MS = 1800;
       let aiMatchEnabled = false;
       let aiMatchAvailable = false;
+      let aiMatchPrompt = "";
+      let defaultAiMatchPrompt = "";
       let aiProvider = "openai";
       let openaiAvailable = false;
       let geminiAvailable = false;
+      let openrouterAvailable = false;
       let pageSize = 20;
       let currentPage = 1;
       let currentSource = "data";
@@ -1177,6 +1252,13 @@
       const settingsCancel = document.getElementById("settings-cancel");
       const settingsSave = document.getElementById("settings-save");
       const settingsVendorList = document.getElementById("settings-vendor-list");
+      const settingsAiPrompt = document.getElementById("settings-ai-prompt");
+      const settingsAiPromptReset = document.getElementById("settings-ai-prompt-reset");
+      const settingsTabVendor = document.getElementById("settings-tab-vendor");
+      const settingsTabAiPrompt = document.getElementById("settings-tab-ai-prompt");
+      const settingsPanelVendor = document.getElementById("settings-panel-vendor");
+      const settingsPanelAiPrompt = document.getElementById("settings-panel-ai-prompt");
+      let settingsActiveTab = "vendor";
       const eoslDialog = document.getElementById("eosl-dialog");
       const eoslDialogClose = document.getElementById("eosl-dialog-close");
       const eoslFilterInput = document.getElementById("eosl-filter-input");
@@ -2420,24 +2502,84 @@
       }
 
       function providerLabel(provider) {
-        return provider === "gemini" ? "Gemini" : "OpenAI";
+        switch (provider) {
+          case "gemini":
+            return "Gemini";
+          case "openrouter":
+            return "OpenRouter";
+          default:
+            return "OpenAI";
+        }
       }
 
       function providerKeyHint(provider) {
-        return provider === "gemini"
-          ? "GEMINI_API_KEY (or GOOGLE_API_KEY)"
-          : "OPENAI_API_KEY";
+        switch (provider) {
+          case "gemini":
+            return "GEMINI_API_KEY (or GOOGLE_API_KEY)";
+          case "openrouter":
+            return "OPENROUTER_API_KEY";
+          default:
+            return "OPENAI_API_KEY";
+        }
+      }
+
+      function normalizeProviderValue(value) {
+        const cleaned = String(value ?? "").trim().toLowerCase();
+        if (cleaned === "gemini" || cleaned === "openrouter") {
+          return cleaned;
+        }
+        return "openai";
+      }
+
+      function anyAiProviderAvailable() {
+        return openaiAvailable || geminiAvailable || openrouterAvailable;
       }
 
       function applySettingsPayload(payload) {
         aiMatchEnabled = Boolean(payload.ai_enabled);
-        aiProvider =
-          String(payload.ai_provider ?? "openai").toLowerCase() === "gemini"
-            ? "gemini"
-            : "openai";
+        aiProvider = normalizeProviderValue(payload.ai_provider);
         openaiAvailable = Boolean(payload.openai_available);
         geminiAvailable = Boolean(payload.gemini_available);
+        openrouterAvailable = Boolean(payload.openrouter_available);
         aiMatchAvailable = Boolean(payload.ai_available);
+        if (typeof payload.default_ai_match_prompt === "string") {
+          defaultAiMatchPrompt = payload.default_ai_match_prompt;
+        }
+        if (typeof payload.ai_match_prompt === "string") {
+          aiMatchPrompt = payload.ai_match_prompt.trim();
+        }
+      }
+
+      function displayedAiMatchPrompt() {
+        return aiMatchPrompt || defaultAiMatchPrompt || "";
+      }
+
+      function syncAiMatchPromptField() {
+        if (!settingsAiPrompt) {
+          return;
+        }
+        settingsAiPrompt.value = displayedAiMatchPrompt();
+      }
+
+      function promptValueForSave(rawValue) {
+        const legacyJsonSuffix =
+          'Respond with JSON: {"matches":[{"item_index":0,"pair_index":1,"confidence":98}]}';
+        let trimmed = String(rawValue || "").trim();
+        if (trimmed.endsWith(legacyJsonSuffix)) {
+          trimmed = trimmed.slice(0, -legacyJsonSuffix.length).trim();
+        }
+        const contractMarker = "Output rules (required by the application):";
+        const contractAt = trimmed.lastIndexOf(contractMarker);
+        if (contractAt >= 0) {
+          trimmed = trimmed.slice(0, contractAt).trim();
+        }
+        if (!trimmed) {
+          return "";
+        }
+        if (trimmed === String(defaultAiMatchPrompt || "").trim()) {
+          return "";
+        }
+        return trimmed;
       }
 
       function syncAiMatchToggleUi({ busy = false, editable = isLookupEditable() } = {}) {
@@ -2468,6 +2610,9 @@
 
           const openaiOption = aiProviderSelect.querySelector('option[value="openai"]');
           const geminiOption = aiProviderSelect.querySelector('option[value="gemini"]');
+          const openrouterOption = aiProviderSelect.querySelector(
+            'option[value="openrouter"]'
+          );
           if (openaiOption) {
             openaiOption.disabled = !openaiAvailable;
             openaiOption.textContent = openaiAvailable ? "OpenAI" : "OpenAI (no key)";
@@ -2476,16 +2621,20 @@
             geminiOption.disabled = !geminiAvailable;
             geminiOption.textContent = geminiAvailable ? "Gemini" : "Gemini (no key)";
           }
+          if (openrouterOption) {
+            openrouterOption.disabled = !openrouterAvailable;
+            openrouterOption.textContent = openrouterAvailable
+              ? "OpenRouter"
+              : "OpenRouter (no key)";
+          }
 
-          aiProviderSelect.disabled =
-            busy || !editable || (!openaiAvailable && !geminiAvailable);
-          aiProviderWrap.title = `AI provider for match and Ambiguous OS detection. OpenAI key: ${
+          aiProviderSelect.disabled = busy || !editable || !anyAiProviderAvailable();
+          aiProviderWrap.title = `AI provider for match and Ambiguous OS detection. OpenAI: ${
             openaiAvailable ? "configured" : "missing"
-          }. Gemini key: ${geminiAvailable ? "configured" : "missing"}.`;
-          aiProviderWrap.classList.toggle(
-            "is-unavailable",
-            !openaiAvailable && !geminiAvailable
-          );
+          }. Gemini: ${geminiAvailable ? "configured" : "missing"}. OpenRouter: ${
+            openrouterAvailable ? "configured" : "missing"
+          }.`;
+          aiProviderWrap.classList.toggle("is-unavailable", !anyAiProviderAvailable());
           refreshThemeSelect(aiProviderSelect);
         }
       }
@@ -2503,11 +2652,14 @@
           aiProvider = "openai";
           openaiAvailable = false;
           geminiAvailable = false;
+          openrouterAvailable = false;
+          aiMatchPrompt = "";
         }
         if (aiMatchToggle) {
           aiMatchToggle.checked = aiMatchEnabled;
         }
         syncAiMatchToggleUi();
+        syncAiMatchPromptField();
       }
 
       async function saveAppAiSettings({ enabled = aiMatchEnabled, provider = aiProvider } = {}) {
@@ -2516,7 +2668,7 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             ai_enabled: Boolean(enabled),
-            ai_provider: provider === "gemini" ? "gemini" : "openai",
+            ai_provider: normalizeProviderValue(provider),
           }),
         });
         if (!response.ok) {
@@ -6778,6 +6930,13 @@
       }
 
       async function openSettingsDialog() {
+        setSettingsTab("vendor");
+        try {
+          await loadAppSettings();
+        } catch {
+          /* loadAppSettings already soft-fails */
+        }
+        syncAiMatchPromptField();
         try {
           await loadVendorSettingsSection();
         } catch (error) {
@@ -6788,6 +6947,29 @@
           showStatus(error.message, "error");
         }
         settingsDialog.showModal();
+      }
+
+      function setSettingsTab(tabId) {
+        const nextTab = tabId === "ai-prompt" ? "ai-prompt" : "vendor";
+        settingsActiveTab = nextTab;
+        const isVendor = nextTab === "vendor";
+
+        if (settingsTabVendor) {
+          settingsTabVendor.classList.toggle("is-active", isVendor);
+          settingsTabVendor.setAttribute("aria-selected", isVendor ? "true" : "false");
+        }
+        if (settingsTabAiPrompt) {
+          settingsTabAiPrompt.classList.toggle("is-active", !isVendor);
+          settingsTabAiPrompt.setAttribute("aria-selected", isVendor ? "false" : "true");
+        }
+        if (settingsPanelVendor) {
+          settingsPanelVendor.classList.toggle("hidden", !isVendor);
+          settingsPanelVendor.hidden = !isVendor;
+        }
+        if (settingsPanelAiPrompt) {
+          settingsPanelAiPrompt.classList.toggle("hidden", isVendor);
+          settingsPanelAiPrompt.hidden = isVendor;
+        }
       }
 
       function closeSettingsDialog() {
@@ -6824,6 +7006,23 @@
           }
         });
         try {
+          const promptToSave = promptValueForSave(settingsAiPrompt?.value);
+          const aiResponse = await fetch("/api/settings", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              ai_enabled: Boolean(aiMatchEnabled),
+              ai_provider: normalizeProviderValue(aiProvider),
+              ai_match_prompt: promptToSave,
+            }),
+          });
+          if (!aiResponse.ok) {
+            throw new Error("Unable to save AI match prompt.");
+          }
+          applySettingsPayload(await aiResponse.json());
+          syncAiMatchToggleUi();
+          syncAiMatchPromptField();
+
           const response = await fetch("/api/vendor-lookups/settings", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -8031,8 +8230,7 @@
       }
       if (aiProviderSelect) {
         aiProviderSelect.addEventListener("change", () => {
-          const nextProvider =
-            aiProviderSelect.value === "gemini" ? "gemini" : "openai";
+          const nextProvider = normalizeProviderValue(aiProviderSelect.value);
           const previousProvider = aiProvider;
           saveAppAiSettings({ enabled: aiMatchEnabled, provider: nextProvider })
             .then(() => {
@@ -8101,6 +8299,20 @@
       }
       if (settingsSave) {
         settingsSave.addEventListener("click", saveSettings);
+      }
+      if (settingsTabVendor) {
+        settingsTabVendor.addEventListener("click", () => setSettingsTab("vendor"));
+      }
+      if (settingsTabAiPrompt) {
+        settingsTabAiPrompt.addEventListener("click", () => setSettingsTab("ai-prompt"));
+      }
+      if (settingsAiPromptReset) {
+        settingsAiPromptReset.addEventListener("click", () => {
+          if (settingsAiPrompt) {
+            settingsAiPrompt.value = defaultAiMatchPrompt || "";
+            settingsAiPrompt.focus();
+          }
+        });
       }
       if (settingsCancel) {
         settingsCancel.addEventListener("click", closeSettingsDialog);

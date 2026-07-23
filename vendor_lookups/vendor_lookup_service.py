@@ -12,21 +12,21 @@ from __future__ import annotations
 import threading
 from typing import Any, Callable
 
-from eosl_service import (
+from .eosl_service import (
     get_status as eosl_get_status,
     list_all_rows as eosl_list_all_rows,
     lookup_os_eosl,
     lookup_os_eosl_batch,
     sync_os_database as eosl_sync_os_database,
 )
-from junos_service import (
+from .junos_service import (
     get_status as junos_get_status,
     list_all_rows as junos_list_all_rows,
     lookup_os_junos,
     lookup_os_junos_batch,
     sync_junos_database,
 )
-from layer23_switch_service import (
+from .layer23_switch_service import (
     get_status as layer23_switch_get_status,
     list_all_rows as layer23_switch_list_all_rows,
     list_manufacturers as layer23_switch_list_manufacturers,
@@ -36,7 +36,7 @@ from layer23_switch_service import (
     save_selected_manufacturers as layer23_switch_save_selected_manufacturers,
     sync_layer23_switch_database,
 )
-from router_switch_service import (
+from .router_switch_service import (
     get_status as router_switch_get_status,
     list_all_rows as router_switch_list_all_rows,
     list_manufacturers as router_switch_list_manufacturers,
@@ -46,14 +46,14 @@ from router_switch_service import (
     save_selected_manufacturers as router_switch_save_selected_manufacturers,
     sync_router_switch_database,
 )
-from suse_service import (
+from .suse_service import (
     get_status as suse_get_status,
     list_all_rows as suse_list_all_rows,
     lookup_os_suse,
     lookup_os_suse_batch,
     sync_suse_database,
 )
-from vendor_settings import (
+from .vendor_settings import (
     VENDOR_FALLBACK_ORDER,
     load_settings,
     save_settings,

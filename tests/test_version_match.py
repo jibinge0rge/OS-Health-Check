@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 
 from eol_service import extract_version_hints, pick_release
-from suse_service import _release_score
+from vendor_lookups.suse_service import _release_score
 from version_match import score_release_against_hint
 
 

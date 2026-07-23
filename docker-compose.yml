@@ -1,0 +1,68 @@
+# OS Health Check
+#
+# Local:
+#   cp .env.example .env   # optional AI keys
+#   docker compose up --build
+#
+# Portainer: deploy this stack and set env in the UI
+#   OPENAI_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY, DATABASE_URL / POSTGRES_* , APP_PORT
+#
+# The repo is bind-mounted so host/git changes reload live when UVICORN_RELOAD=true.
+# Vendor lookup caches live in PostgreSQL (named volume), not SQLite files.
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: os-health-check-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-oshealth}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-oshealth}"
+      POSTGRES_DB: "${POSTGRES_DB:-oshealth}"
+    volumes:
+      - os_health_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-oshealth} -d ${POSTGRES_DB:-oshealth}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  os-health-check:
+    build: .
+    image: os-health-check:local
+    container_name: os-health-check
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      APP_PORT: "8000"
+      UVICORN_RELOAD: "${UVICORN_RELOAD:-true}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      OPENAI_MODEL: "${OPENAI_MODEL:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
+      GEMINI_MODEL: "${GEMINI_MODEL:-}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      OPENROUTER_MODEL: "${OPENROUTER_MODEL:-}"
+      POSTGRES_USER: "${POSTGRES_USER:-oshealth}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-oshealth}"
+      POSTGRES_DB: "${POSTGRES_DB:-oshealth}"
+      DATABASE_URL: "${DATABASE_URL:-postgresql://oshealth:oshealth@db:5432/oshealth}"
+    volumes:
+      - ./:/app
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  os_health_pg:

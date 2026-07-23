@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
-from layer23_switch_service import (
+from vendor_lookups.layer23_switch_service import (
     _parse_iso_date,
     _parse_table_rows,
     get_status,
@@ -39,6 +41,14 @@ SAMPLE_HTML = """
 </table>
 </body></html>
 """
+
+
+def _pg_available() -> bool:
+    return bool(str(os.environ.get("DATABASE_URL") or "").strip())
+
+
+def _temp_schema(prefix: str) -> str:
+    return f"test_{prefix}_{uuid.uuid4().hex[:12]}"
 
 
 class Layer23SwitchParseTests(unittest.TestCase):
@@ -87,18 +97,20 @@ class Layer23SwitchParseTests(unittest.TestCase):
                 pass
 
 
+@unittest.skipUnless(_pg_available(), "DATABASE_URL not set")
 class Layer23SwitchLookupTests(unittest.TestCase):
     def test_lookup_hits_matching_row_in_db(self) -> None:
-        tmp = tempfile.mkdtemp()
-        db_path = Path(tmp) / "layer23_match.db"
+        from vendor_lookups.db import drop_schema
+
+        schema_name = _temp_schema("l23")
         try:
-            init_db(db_path)
+            init_db(schema_name)
             scraped_at = "2026-01-01T00:00:00+00:00"
-            with _connect(db_path) as connection:
+            with _connect(schema_name) as connection:
                 connection.execute(
                     """
                     INSERT INTO products (slug, name, category, url, scraped_at)
-                    VALUES (?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s)
                     """,
                     ("cisco", "Cisco", "hardware", "https://example.com/cisco", scraped_at),
                 )
@@ -107,7 +119,7 @@ class Layer23SwitchLookupTests(unittest.TestCase):
                     INSERT INTO releases (
                         product_slug, release_name, released_date,
                         eol_date, eoas_date, latest_raw, is_supported
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         "cisco",
@@ -119,44 +131,38 @@ class Layer23SwitchLookupTests(unittest.TestCase):
                         1,
                     ),
                 )
-                connection.commit()
 
             hit = lookup_os_layer23_switch(
                 "Cisco Catalyst 9300 C9300-24P-A",
                 "",
                 "",
-                db_path=db_path,
+                schema_name=schema_name,
             )
             self.assertTrue(hit["eol_date"])
             self.assertEqual(hit["release_name"], "C9300-24P-A")
             self.assertEqual(hit["source"], "layer23-switch")
         finally:
-            try:
-                db_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-            try:
-                Path(tmp).rmdir()
-            except OSError:
-                pass
+            drop_schema(schema_name)
 
 
+@unittest.skipUnless(_pg_available(), "DATABASE_URL not set")
 class Layer23SwitchLiveSmokeTests(unittest.TestCase):
     def test_sync_one_cisco_page(self) -> None:
-        tmp = tempfile.mkdtemp()
-        db_path = Path(tmp) / "layer23.db"
+        from vendor_lookups.db import drop_schema
+
+        schema_name = _temp_schema("l23live")
         try:
             result = sync_layer23_switch_database(
-                db_path=db_path,
+                schema_name=schema_name,
                 manufacturers=(("cisco", "Cisco"),),
                 max_pages_per_manufacturer=1,
             )
             self.assertTrue(result["ok"], result)
             self.assertGreater(int(result["release_count"]), 0)
-            status = get_status(db_path)
+            status = get_status(schema_name)
             self.assertEqual(status["source_id"], "layer23-switch")
             self.assertGreater(int(status["release_count"]), 0)
-            rows = list_all_rows(db_path)
+            rows = list_all_rows(schema_name)
             self.assertGreater(len(rows), 0)
             sample = rows[0]
             self.assertIn("product", sample)
@@ -164,14 +170,7 @@ class Layer23SwitchLiveSmokeTests(unittest.TestCase):
             self.assertIn("eol_date", sample)
             self.assertIn("eoas_date", sample)
         finally:
-            try:
-                db_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-            try:
-                Path(tmp).rmdir()
-            except OSError:
-                pass
+            drop_schema(schema_name)
 
 
 if __name__ == "__main__":

@@ -100,7 +100,7 @@ def _default_settings() -> dict[str, Any]:
 
 
 def default_prefs_path() -> Path:
-    return Path(__file__).resolve().parent / "_data" / "vendor_lookup_settings.json"
+    return Path(__file__).resolve().parent.parent / "_data" / "vendor_lookup_settings.json"
 
 
 def _clean(value: object) -> str:

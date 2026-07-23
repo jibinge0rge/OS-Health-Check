@@ -2,6 +2,8 @@
 
 Web UI for maintaining an **OS normalization and lifecycle lookup** CSV (`eol_lookup.csv`).
 
+**New here?** Start with the step-by-step [User Guide](USER_GUIDE.md) (features, navigation, and everyday workflows). This README covers setup, configuration, and technical detail.
+
 Use it to:
 
 - Search and browse existing OS lookup rows
@@ -16,30 +18,189 @@ Use it to:
 - **FastAPI** — API, CSV/evidence I/O, Azure upload
 - **Jinja2** — app shell
 - **Vanilla HTML / CSS / JS** — table UI and workflows
-- **OpenAI** (optional) — AI match + Ambiguous OS detection
-- **endoflife.date API** — lifecycle dates
-- **Vendor Lookups (SQLite)** — local scrapes: eosl.date (OS), Juniper Junos, SUSE lifecycle, Layer23-Switch EOL, and Router-Switch EOL
+- **PostgreSQL** — vendor lookup scrape caches
+- **AI providers (optional)** — OpenAI, Google Gemini, or OpenRouter for AI match + Ambiguous OS detection
+- **endoflife.date API** — primary lifecycle dates
+- **Vendor Lookups** — local scrapes used when the API misses
 
-## Run locally
+---
+
+## Quick start (recommended: Docker)
+
+You need **Docker** and **Docker Compose**.
+
+```bash
+# 1. Clone / open this repo, then create your env file
+cp .env.example .env
+
+# 2. (Optional) Edit .env and add AI keys — see "Configure .env" below
+#    Vendor lookups work without AI keys.
+
+# 3. Start PostgreSQL + the app
+docker compose up --build
+```
+
+Open [http://127.0.0.1:8000](http://127.0.0.1:8000).
+
+Compose starts:
+
+| Service | Role |
+|---------|------|
+| `db` | PostgreSQL 16 — vendor lookup caches |
+| `os-health-check` | FastAPI app on port `8000` (override with `APP_PORT`) |
+
+The app bind-mounts the repo and enables live reload by default (`UVICORN_RELOAD=true`), so code edits apply without rebuilding.
+
+**First useful steps in the UI**
+
+1. Open the app → Source **Data** (read-only published CSV).
+2. Click **Edit Data** to work in **Draft**.
+3. (Optional) Turn on **AI match** and pick a provider (needs a key in `.env`).
+4. Under **View / Update Vendor Lookups**, run **Update** for sources you care about (populates Postgres).
+5. Use **Refresh EOL/EOAS** to fill dates (API first, then vendor caches).
+6. **Validate** when ready to publish Draft → Data.
+
+---
+
+## Configure `.env`
+
+Copy the template, then fill only what you need:
+
+```bash
+cp .env.example .env
+```
+
+Never commit `.env` (it is gitignored). For Portainer, set the same variables in the stack Environment UI instead of a file.
+
+### Full reference
+
+| Variable | Required? | Default | Purpose |
+|----------|-----------|---------|---------|
+| `DATABASE_URL` | **Yes** for vendor lookups | Compose: `postgresql://oshealth:oshealth@db:5432/oshealth` | PostgreSQL connection string |
+| `POSTGRES_USER` | Compose `db` service | `oshealth` | Postgres username |
+| `POSTGRES_PASSWORD` | Compose `db` service | `oshealth` | Postgres password |
+| `POSTGRES_DB` | Compose `db` service | `oshealth` | Postgres database name |
+| `OPENAI_API_KEY` | For OpenAI | *(empty)* | Enables the **OpenAI** provider |
+| `OPENAI_MODEL` | Optional | `gpt-4o-mini` | OpenAI chat model |
+| `GEMINI_API_KEY` | For Gemini | *(empty)* | Enables the **Gemini** provider |
+| `GOOGLE_API_KEY` | Alternate for Gemini | *(empty)* | Accepted if `GEMINI_API_KEY` is empty |
+| `GEMINI_MODEL` | Optional | `gemini-2.0-flash` | Gemini model id |
+| `OPENROUTER_API_KEY` | For OpenRouter | *(empty)* | Enables the **OpenRouter** provider |
+| `OPENROUTER_MODEL` | Optional | `openrouter/free` | OpenRouter model / router (see below) |
+| `APP_PORT` | Optional | `8000` | Host port mapped to the container |
+| `UVICORN_RELOAD` | Optional | `true` (compose) | Live reload; set `false` in production-style deploys |
+
+### Minimal `.env` (Docker, no AI)
+
+Enough to run the app + Postgres with vendor lookups:
+
+```env
+POSTGRES_USER=oshealth
+POSTGRES_PASSWORD=oshealth
+POSTGRES_DB=oshealth
+DATABASE_URL=postgresql://oshealth:oshealth@db:5432/oshealth
+```
+
+### Example `.env` with all three AI providers
+
+```env
+POSTGRES_USER=oshealth
+POSTGRES_PASSWORD=oshealth
+POSTGRES_DB=oshealth
+DATABASE_URL=postgresql://oshealth:oshealth@db:5432/oshealth
+
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o-mini
+
+GEMINI_API_KEY=...
+GEMINI_MODEL=gemini-2.0-flash
+
+OPENROUTER_API_KEY=sk-or-v1-...
+OPENROUTER_MODEL=openrouter/free
+```
+
+You do **not** need every provider. Configure one (or more). In Edit mode, pick which provider to use from the **Provider** dropdown next to **AI match**.
+
+### `DATABASE_URL` tips
+
+| How you run | Typical `DATABASE_URL` |
+|-------------|-------------------------|
+| `docker compose` (app talks to service `db`) | `postgresql://oshealth:oshealth@db:5432/oshealth` |
+| App on host, Postgres in Docker published on `5432` | `postgresql://oshealth:oshealth@127.0.0.1:5432/oshealth` |
+| Your own Postgres | `postgresql://USER:PASSWORD@HOST:5432/DBNAME` |
+
+User / password / db name in the URL must match `POSTGRES_*` (or your real Postgres credentials).
+
+---
+
+## AI providers (OpenAI, Gemini, OpenRouter)
+
+AI is **optional**. Fuzzy matching works without any API key. AI is used for:
+
+1. **AI match** — when fuzzy match fails, suggest a normalization from **existing CSV pairs only** (never invents names).
+2. **Ambiguous OS detection** — strings with `/` that list multiple products.
+
+### Supported providers
+
+| Provider | Env key(s) | Default model | Notes |
+|----------|------------|---------------|-------|
+| **OpenAI** | `OPENAI_API_KEY` | `OPENAI_MODEL` → `gpt-4o-mini` | [platform.openai.com](https://platform.openai.com/api-keys) |
+| **Gemini** | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | `GEMINI_MODEL` → `gemini-2.0-flash` | [Google AI Studio](https://aistudio.google.com/apikey) |
+| **OpenRouter** | `OPENROUTER_API_KEY` | `OPENROUTER_MODEL` → `openrouter/free` | [openrouter.ai/keys](https://openrouter.ai/keys) |
+
+**OpenRouter model tip:** `openrouter/free` is OpenRouter’s free-models router — it picks an available free model for you. You still set `OPENROUTER_MODEL` (or accept the default); you do not omit the field entirely. To pin a specific free or paid model, set e.g. `meta-llama/llama-3.3-70b-instruct:free` or another [OpenRouter model slug](https://openrouter.ai/models).
+
+### Enable AI in the UI
+
+1. Put at least one provider key in `.env` and restart the app (`docker compose up` / restart the container).
+2. Switch to **Draft** (Edit Data).
+3. Turn on **AI match**.
+4. Choose **OpenAI**, **Gemini**, or **OpenRouter** in the **Provider** dropdown.
+   - Options without a configured key show as unavailable (e.g. “OpenAI (no key)”).
+5. Optionally open **Settings → AI match prompt** to customize matching rules in plain language (default is shown; leave as default or clear to use the built-in prompt). `{threshold}` is replaced with the confidence cutoff at runtime. Technical output rules (`pair_index` / JSON shape) are always appended by the app and are not editable.
+
+AI match stays **off by default** even when keys are present, so you never get surprise AI calls.
+
+### Settings tabs
+
+**Settings** has two tabs:
+
+| Tab | What it controls | Stored in |
+|-----|------------------|-----------|
+| **Vendor lookups** | Enable sources + family keywords for Refresh fallback | `_data/vendor_lookup_settings.json` |
+| **AI match prompt** | Custom system prompt for AI normalization | `_config/app_settings.json` |
+
+Provider choice and AI on/off are also stored in `_config/app_settings.json` (updated from the toolbar).
+
+---
+
+## Run without Docker
+
+1. Install **Python 3.12+** and a **PostgreSQL** instance.
+2. Create a database/user (or reuse defaults from `.env.example`).
+3. Configure `.env`:
+
+```env
+DATABASE_URL=postgresql://oshealth:oshealth@127.0.0.1:5432/oshealth
+# plus optional OPENAI_* / GEMINI_* / OPENROUTER_* as above
+```
+
+4. Install and run:
 
 ```bash
 python -m pip install -r requirements.txt
-# optional: set AI keys in .env
-# OPENAI_API_KEY=...
-# GEMINI_API_KEY=...   # or GOOGLE_API_KEY
 python -m uvicorn app:app --reload
 ```
 
 Open [http://127.0.0.1:8000](http://127.0.0.1:8000).
 
-| Variable | Required? | Purpose |
-|----------|-----------|---------|
-| `OPENAI_API_KEY` | For OpenAI AI match / Ambiguous detect | Enables OpenAI provider |
-| `OPENAI_MODEL` | Optional | Defaults to `gpt-4o-mini` |
-| `GEMINI_API_KEY` | For Gemini AI match / Ambiguous detect | Enables Gemini provider (`GOOGLE_API_KEY` also accepted) |
-| `GEMINI_MODEL` | Optional | Defaults to `gemini-2.0-flash` |
+Without `DATABASE_URL` / Postgres, the main CSV UI still works, but **Vendor Lookups** (Update / Refresh fallback to local scrapes) will not.
 
-In Edit mode, choose **OpenAI** or **Gemini** next to **AI match**. AI match is off by default. Azure upload uses Azure CLI (`az login`), not app secrets.
+### Portainer
+
+Deploy `docker-compose.yml` as a stack, then set environment variables in the Portainer UI (`DATABASE_URL` / `POSTGRES_*`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, models, `APP_PORT`, etc.).
+
+Azure **Deploy** uses Azure CLI (`az login`) on the host. The default image does **not** include `az`, so Deploy from Portainer needs a host with Azure CLI or a custom image that installs it.
 
 ---
 
@@ -68,35 +229,38 @@ OS-Health-Check/
 ├── app.py                      # FastAPI routes
 ├── normalization_service.py    # Vendor tags, fuzzy helpers, AI match
 ├── eol_service.py              # endoflife.date lookup
-├── eosl_service.py             # eosl.date scraper + SQLite cache (OS only)
-├── junos_service.py            # Juniper Junos Dates & Milestones scraper
-├── suse_service.py             # SUSE lifecycle scraper (suse.com/lifecycle)
-├── layer23_switch_service.py   # Layer23-Switch EOL/EOSL scraper + lookup
-├── router_switch_service.py    # Router-Switch EOL/EOSL scraper + lookup
-├── vendor_lookup_service.py    # Registry + routed vendor fallback lookup
-├── vendor_settings.py          # Persistent enable/keywords for vendor Refresh
+├── version_match.py            # Shared release/version scoring
 ├── os_import_service.py        # Bulk import from CSV/XLSX
+├── vendor_lookups/             # Local vendor scrape caches + Refresh routing
+│   ├── __init__.py
+│   ├── db.py                   # PostgreSQL pool + per-source schemas
+│   ├── vendor_settings.py      # Persistent enable/keywords for vendor Refresh
+│   ├── vendor_lookup_service.py  # Registry + routed vendor fallback lookup
+│   ├── eosl_service.py         # eosl.date scraper (OS only)
+│   ├── junos_service.py        # Juniper Junos Dates & Milestones scraper
+│   ├── suse_service.py         # SUSE lifecycle scraper
+│   ├── layer23_switch_service.py  # Layer23-Switch EOL/EOSL scraper
+│   └── router_switch_service.py   # Router-Switch EOL/EOSL scraper
 ├── templates/index.html        # UI + client workflows
 ├── static/                     # CSS, favicon
+├── Dockerfile                  # Container image
+├── docker-compose.yml          # App + PostgreSQL (local / Portainer)
+├── docker/entrypoint.sh        # uvicorn startup (+ optional --reload)
+├── .env.example                # Documented env vars (copy to .env)
 ├── _data/
 │   ├── eol_lookup.csv          # Canonical published lookup
 │   ├── eol_lookup_evidence.json
 │   ├── vendor_lookup_settings.json  # Refresh enable/keywords (shared)
 │   ├── layer23_switch_sync.json # Layer23-Switch manufacturer selection
-│   ├── router_switch_sync.json # Router-Switch manufacturer selection
-│   ├── eosl_os.db              # SQLite cache of eosl.date OS data (gitignored)
-│   ├── junos_os.db             # SQLite cache of Junos EOL table (gitignored)
-│   ├── suse_os.db              # SQLite cache of SUSE lifecycle (gitignored)
-│   ├── layer23_switch_os.db    # SQLite cache of Layer23-Switch EOL (gitignored)
-│   └── router_switch_os.db     # SQLite cache of Router-Switch EOL (gitignored)
+│   └── router_switch_sync.json # Router-Switch manufacturer selection
 ├── _draft/                     # Working editable copy (+ evidence)
 ├── _config/                    # Local settings (gitignored)
-│   ├── app_settings.json       # ai_enabled, ai_provider (openai|gemini)
+│   ├── app_settings.json       # ai_enabled, ai_provider, ai_match_prompt
 │   └── azure.json              # Named Azure Blob profiles + active selection
 └── _backup/                    # Timestamped backups on Validate
 ```
 
----
+Vendor lookup scrapes are stored in PostgreSQL (schemas: `eosl`, `junos`, `suse`, `layer23_switch`, `router_switch`). Re-run **Vendor Lookups → Update** after a fresh deploy to populate them.
 
 ## High-level architecture
 
@@ -106,17 +270,19 @@ flowchart LR
   API["FastAPI<br/>app.py"]
   Norm["normalization_service"]
   Eol["eol_service"]
-  Vendor["vendor_lookup_service"]
-  Eosl["eosl_service"]
-  Junos["junos_service"]
+  subgraph vl [vendor_lookups]
+    Vendor["vendor_lookup_service"]
+    Eosl["eosl_service"]
+    Junos["junos_service"]
+  end
   Data["_data/eol_lookup.csv"]
   Draft["_draft/eol_lookup.csv"]
   Ev["_data / _draft evidence JSON"]
-  DB[("_data/*.db<br/>SQLite")]
+  DB[("PostgreSQL<br/>vendor schemas")]
   EOLAPI["endoflife.date"]
   EOSLSITE["eosl.date"]
   JUNIPER["support.juniper.net"]
-  OAI["OpenAI / Gemini optional"]
+  AI["OpenAI / Gemini / OpenRouter"]
   Az["Azure Blob via az CLI"]
 
   UI <--> API
@@ -133,7 +299,7 @@ flowchart LR
   Junos --> DB
   Eosl -->|scrape| EOSLSITE
   Junos -->|scrape| JUNIPER
-  Norm --> OAI
+  Norm --> AI
   API --> Az
 ```
 
@@ -141,7 +307,7 @@ flowchart LR
 
 ## Modes: Data vs Draft
 
-The **Source** dropdown switches between the published lookup and the editable working copy. Scraped vendor data is viewed under **Vendor Lookups** — see [Vendor Lookups](#vendor-lookups-local-scraped-databases).
+The **Source** dropdown switches between the published lookup and the editable working copy. Scraped vendor data is viewed under **Vendor Lookups** — see [Vendor Lookups](#vendor-lookups-postgresql-caches).
 
 | | **Data** (read-only) | **Draft** (editable) |
 |--|----------------------|----------------------|
@@ -210,7 +376,7 @@ flowchart TD
 
 1. **Fuzzy first** — compare the OS string to existing `normalized_os_detailed_name` / `normalized_os` (not other raw `os_string`s). Score must be high (≥ 95%).
 2. **Vendor guardrails** — keyword brands (Oracle, AlmaLinux, Cisco, Apple, Windows, …). Different brands cannot match (e.g. Oracle Linux ≠ AlmaLinux).
-3. **AI match** — **off by default**. When enabled and the selected provider’s API key is set (`OPENAI_API_KEY` or `GEMINI_API_KEY`), AI may choose only from existing CSV pairs; never invents names. Batches are grouped by vendor so Oracle items don’t see AlmaLinux pairs in the same prompt. Accepted picks must also pass code checks: confidence ≥ threshold, same vendor, compatible version family, and no extra Windows SKU words (e.g. Pro must not become Pro Enterprise). OpenAI gets a stricter “prefer null over guess” instruction because `gpt-4o-mini` tends to over-match compared with Gemini.
+3. **AI match** — **off by default**. When enabled and the selected provider’s API key is set (`OPENAI_API_KEY`, `GEMINI_API_KEY` / `GOOGLE_API_KEY`, or `OPENROUTER_API_KEY`), AI may choose only from existing CSV pairs; never invents names. Batches are grouped by vendor so Oracle items don’t see AlmaLinux pairs in the same prompt. Accepted picks must also pass code checks: confidence ≥ threshold, same vendor, compatible version family, and no extra Windows SKU words (e.g. Pro must not become Pro Enterprise). OpenAI and OpenRouter get a stricter “prefer null over guess” instruction because small chat models tend to over-match compared with Gemini.
 4. **Conservative** — if unsure → no match (better blank than wrong).
 
 **Example:** `Oracle Linux Server 9.5` → fuzzy/AI can map to `Oracle Linux 9`, but must **not** map to `AlmaLinux OS 9`.
@@ -219,7 +385,7 @@ flowchart TD
 
 ## EOL / EOAS refresh flow
 
-**Refresh EOL/EOAS** fills dates per row in this order. **endoflife.date is always first** (not configurable). Local Vendor Lookups follow a fixed order: **eosl → junos → suse → layer23-switch → router-switch**. Specialists (junos / suse / layer23-switch / router-switch) only run when **enabled** and their **family keywords** match. eosl has no keyword gate. Enable flags and keywords are edited under **Settings** and stored in `_data/vendor_lookup_settings.json` (Layer23-Switch and Router-Switch are **disabled by default**).
+**Refresh EOL/EOAS** fills dates per row in this order. **endoflife.date is always first** (not configurable). Local Vendor Lookups follow a fixed order: **eosl → junos → suse → layer23-switch → router-switch**. Specialists (junos / suse / layer23-switch / router-switch) only run when **enabled** and their **family keywords** match. eosl has no keyword gate. Enable flags and keywords are edited under **Settings → Vendor lookups** and stored in `_data/vendor_lookup_settings.json` (Layer23-Switch and Router-Switch are **disabled by default**).
 
 ### Per-row decision order
 
@@ -238,7 +404,7 @@ flowchart TD
 
 **Product slug detection** (endoflife.date): the v1 product catalog (`GET /api/v1/products`) is cached and indexed by slug, label, and aliases. Inventory strings are normalized first (letter/digit boundaries, glued names like `UbuntuLinux`), then matched longest-phrase-first against that index, with a small regex override table for ambiguous families (e.g. `windows-server` vs `windows`, RHEL vs OpenShift).
 
-**Important:** scraping / **Update** under Vendor Lookups only rebuilds the local SQLite DBs. It does **not** apply dates to your CSV. Dates are applied only by **Refresh EOL/EOAS** (or equivalent lookup APIs).
+**Important:** scraping / **Update** under Vendor Lookups only rebuilds the PostgreSQL vendor schemas. It does **not** apply dates to your CSV. Dates are applied only by **Refresh EOL/EOAS** (or equivalent lookup APIs).
 
 ```mermaid
 flowchart TD
@@ -257,19 +423,25 @@ flowchart TD
   EoslHit -->|Yes| ApplyE[evidence: eosl]
   EoslHit -->|No| JunosGate{junos enabled<br/>+ keywords?}
 
-  JunosGate -->|Yes| JunosDB[junos_os.db]
+  JunosGate -->|Yes| JunosDB[junos schema]
   JunosGate -->|No| SuseGate
   JunosDB --> JunosHit{Hit?}
   JunosHit -->|Yes| ApplyJ[evidence: junos]
   JunosHit -->|No| SuseGate{suse enabled<br/>+ keywords?}
 
-  SuseGate -->|Yes| SuseDB[suse_os.db]
-  SuseGate -->|No| RsGate
+  SuseGate -->|Yes| SuseDB[suse schema]
+  SuseGate -->|No| L23Gate
   SuseDB --> SuseHit{Hit?}
   SuseHit -->|Yes| ApplyS[evidence: suse]
-  SuseHit -->|No| RsGate{router-switch enabled<br/>+ keywords?}
+  SuseHit -->|No| L23Gate{layer23-switch enabled<br/>+ keywords?}
 
-  RsGate -->|Yes| RsDB[router_switch_os.db]
+  L23Gate -->|Yes| L23DB[layer23_switch schema]
+  L23Gate -->|No| RsGate
+  L23DB --> L23Hit{Hit?}
+  L23Hit -->|Yes| ApplyL[evidence: layer23-switch]
+  L23Hit -->|No| RsGate{router-switch enabled<br/>+ keywords?}
+
+  RsGate -->|Yes| RsDB[router_switch schema]
   RsGate -->|No| CopyFb
   RsDB --> RsHit{Hit?}
   RsHit -->|Yes| ApplyR[evidence: router-switch]
@@ -281,12 +453,13 @@ flowchart TD
   ApplyE --> Proof
   ApplyJ --> Proof
   ApplyS --> Proof
+  ApplyL --> Proof
   ApplyR --> Proof
   ApplyCopy --> Proof
   Empty --> Proof
 ```
 
-### When are vendor DBs checked?
+### When are vendor caches checked?
 
 | Situation | eosl | Junos | SUSE | Layer23-Switch | Router-Switch |
 |-----------|------|-------|------|----------------|---------------|
@@ -301,17 +474,17 @@ Dates are stored as Unix epoch. Status `true`/`false` is only used when a date i
 
 ---
 
-## Vendor Lookups (local scraped databases)
+## Vendor Lookups (PostgreSQL caches)
 
-Umbrella for **offline** lifecycle scrapers used as the Refresh fallback above. **View / Update Vendor Lookups** opens a read-only modal with a **Source** selector (browse + rebuild DB only).
+Umbrella for **offline** lifecycle scrapes used as the Refresh fallback above. **View / Update Vendor Lookups** opens a read-only modal with a **Source** selector (browse + rebuild cache only).
 
-| Source | Origin | Local DB | Date mapping | Used on Refresh when… |
-|--------|--------|----------|--------------|------------------------|
-| **eosl.date** | [eosl.date](https://eosl.date) OS category | `_data/eosl_os.db` | EOAS = earliest support date, EOL = latest | API missed **and** source enabled (2nd) |
-| **Juniper Junos** | [Junos Dates & Milestones](https://support.juniper.net/support/eol/software/junos/) | `_data/junos_os.db` | **EOE → `eol_date`**, **EOS → `eoas_date`**, FRS → released | API+eosl miss, enabled, keywords match (3rd) |
-| **SUSE Lifecycle** | [suse.com/lifecycle](https://www.suse.com/lifecycle/) | `_data/suse_os.db` | **General Ends → `eol_date`**, **LTSS Ends → `eoas_date`**, FCS → released | prior miss, enabled, keywords match (4th) |
-| **Layer23-Switch EOL** | [layer23-switch.com EOL tool](https://www.layer23-switch.com/eol-eosl-tool/) | `_data/layer23_switch_os.db` | **EOL Announcement → `eol_date`**, **EOSL → `eoas_date`**, EOS → released | prior miss, enabled, keywords match (5th; **off by default**) |
-| **Router-Switch EOL** | [router-switch.com EOL checker](https://www.router-switch.com/eol-eosl-checker/) | `_data/router_switch_os.db` | **EOL Announcement → `eol_date`**, **EOSL → `eoas_date`**, EOS → released | prior miss, enabled, keywords match (6th; **off by default**) |
+| Source | Origin | Postgres schema | Date mapping | Used on Refresh when… |
+|--------|--------|-----------------|--------------|------------------------|
+| **eosl.date** | [eosl.date](https://eosl.date) OS category | `eosl` | EOAS = earliest support date, EOL = latest | API missed **and** source enabled (2nd) |
+| **Juniper Junos** | [Junos Dates & Milestones](https://support.juniper.net/support/eol/software/junos/) | `junos` | **EOE → `eol_date`**, **EOS → `eoas_date`**, FRS → released | API+eosl miss, enabled, keywords match (3rd) |
+| **SUSE Lifecycle** | [suse.com/lifecycle](https://www.suse.com/lifecycle/) | `suse` | **General Ends → `eol_date`**, **LTSS Ends → `eoas_date`**, FCS → released | prior miss, enabled, keywords match (4th) |
+| **Layer23-Switch EOL** | [layer23-switch.com EOL tool](https://www.layer23-switch.com/eol-eosl-tool/) | `layer23_switch` | **EOL Announcement → `eol_date`**, **EOSL → `eoas_date`**, EOS → released | prior miss, enabled, keywords match (5th; **off by default**) |
+| **Router-Switch EOL** | [router-switch.com EOL checker](https://www.router-switch.com/eol-eosl-checker/) | `router_switch` | **EOL Announcement → `eol_date`**, **EOSL → `eoas_date`**, EOS → released | prior miss, enabled, keywords match (6th; **off by default**) |
 
 Per-source **Use for Refresh** + **family keywords** are edited under **Settings → Vendor lookups** and saved to `_data/vendor_lookup_settings.json`.
 
@@ -321,7 +494,8 @@ flowchart LR
     A[endoflife.date] -->|miss| D[eosl]
     D -->|miss| C[junos if keywords]
     C -->|miss| S[suse if keywords]
-    S -->|miss| RS[router-switch if enabled]
+    S -->|miss| L23[layer23-switch if enabled]
+    L23 -->|miss| RS[router-switch if enabled]
     RS -->|miss| E[lookup-copy]
   end
 
@@ -330,7 +504,8 @@ flowchart LR
     U --> C
     U --> S
     U --> D
-    U --> RS2[router_switch_os.db]
+    U --> L232[layer23_switch schema]
+    U --> RS2[router_switch schema]
   end
 ```
 
@@ -378,10 +553,12 @@ flowchart TD
   Prog --> EoslPath[eosl.date: crawl OS products]
   Prog --> JunosPath[Juniper: fetch junos EOL table]
   Prog --> SusePath[SUSE: fetch lifecycle tables]
+  Prog --> L23Path[Layer23-Switch: paginated manufacturer lists]
   Prog --> RsPath[Router-Switch: paginated manufacturer lists]
-  EoslPath --> Store[(SQLite per source)]
+  EoslPath --> Store[(PostgreSQL schemas)]
   JunosPath --> Store
   SusePath --> Store
+  L23Path --> Store
   RsPath --> Store
   Store --> RefreshUI[Viewer table refreshes]
 ```
@@ -416,9 +593,9 @@ Shape:
 }
 ```
 
-Proof methods include: `fuzzy`, `ai`, `fuzzy+ai`, `eol` / `api`, `eosl`, `junos`, `suse`, `lookup-fallback`, `ambiguous`, `manual`, `none`.
+Proof methods include: `fuzzy`, `ai`, `fuzzy+ai`, `eol` / `api`, `eosl`, `junos`, `suse`, `layer23-switch`, `router-switch`, `lookup-fallback`, `ambiguous`, `manual`, `none`.
 
-The Actions column filter can narrow rows by: Fuzzy, AI, Fuzzy + AI, Manual, EOL API, eosl.date, Juniper Junos, SUSE Lifecycle, Lookup copy, Ambiguous, or NULL.
+The Actions column filter can narrow rows by: Fuzzy, AI, Fuzzy + AI, Manual, EOL API, eosl.date, Juniper Junos, SUSE Lifecycle, Layer23-Switch, Router-Switch, Lookup copy, Ambiguous, or NULL.
 
 ---
 
@@ -427,14 +604,14 @@ The Actions column filter can narrow rows by: Fuzzy, AI, Fuzzy + AI, Manual, EOL
 | Control | Default / notes |
 |---------|-----------------|
 | **Auto-save** | On by default; debounced save to Draft |
-| **AI match** | **Off by default**; Edit mode only; choose OpenAI or Gemini; needs that provider’s API key |
+| **AI match** | **Off by default**; Edit mode only; Provider = OpenAI / Gemini / OpenRouter; needs that provider’s API key in `.env` |
 | **Save Draft** | Manual draft + evidence write |
 | **Validate** | Backup Data → write Draft into Data |
 | **Revert** | Reset Draft rows (+ evidence) to the Data baseline and **save `_draft/`** immediately |
 | **Delete draft** | Remove Draft (+ evidence), return to Data |
 | **Show Delta / Download Delta** | Draft-only change view |
-| **Settings** | Vendor lookup enable/keywords for Refresh (saved to `_data/vendor_lookup_settings.json`); extensible for future options |
-| **View / Update Vendor Lookups** | Read-only viewer for eosl.date / Juniper Junos / SUSE Lifecycle / Router-Switch EOL DBs; update/re-scrape per source |
+| **Settings** | Tabs: **Vendor lookups** (enable/keywords) and **AI match prompt** (custom system prompt) |
+| **View / Update Vendor Lookups** | Read-only viewer for eosl / Junos / SUSE / Layer23-Switch / Router-Switch; update/re-scrape per source |
 | **Deploy** | Data mode: cloud deploy dialog with named Azure profiles (inline settings + upload); AWS/GCP placeholders |
 
 ---
@@ -448,11 +625,11 @@ The Actions column filter can narrow rows by: Fuzzy, AI, Fuzzy + AI, Manual, EOL
 | `POST` | `/api/normalize-suggest` | AI normalization (if enabled) |
 | `POST` | `/api/ambiguous-os-detect` | Detect ambiguous `/` OS strings |
 | `POST` | `/api/eol-lookup` | Batch EOL/EOAS from endoflife.date |
-| `POST` | `/api/vendor-lookup` | Routed vendor fallback (Junos or eosl.date) |
+| `POST` | `/api/vendor-lookup` | Routed vendor fallback |
 | `GET` | `/api/vendor-lookups/sources` | List vendor lookup sources |
 | `GET` | `/api/vendor-lookups/settings` | Enable flags + family keywords for Refresh |
 | `POST` | `/api/vendor-lookups/settings` | Save enable flags + family keywords |
-| `GET` | `/api/vendor-lookups/{source}/rows` | Viewer rows + status (`eosl` \| `junos`) |
+| `GET` | `/api/vendor-lookups/{source}/rows` | Viewer rows + status |
 | `GET` | `/api/vendor-lookups/{source}/status` | DB status for a source |
 | `POST` | `/api/vendor-lookups/{source}/sync` | Re-scrape and rebuild that source’s DB |
 | `POST` | `/api/eosl-lookup` | Batch from eosl.date only (compat) |
@@ -461,7 +638,7 @@ The Actions column filter can narrow rows by: Fuzzy, AI, Fuzzy + AI, Manual, EOL
 | `GET` / `POST` | `/api/junos/*` | Junos status / rows / sync |
 | `POST` | `/api/suse-lookup` | Batch from SUSE DB only |
 | `GET` / `POST` | `/api/suse/*` | SUSE status / rows / sync |
-| `GET` / `PUT` | `/api/settings` | Persist `ai_enabled` + `ai_provider` |
+| `GET` / `PUT` | `/api/settings` | Persist `ai_enabled`, `ai_provider`, `ai_match_prompt` |
 
 ---
 
@@ -481,7 +658,7 @@ flowchart LR
 ## Design choices worth knowing
 
 - **Fuzzy before AI** — fast, local, no API key required.
-- **AI opt-in** — avoids surprise wrong matches; toggle in Edit mode when needed.
+- **AI opt-in** — avoids surprise wrong matches; toggle in Edit mode when needed. Supports OpenAI, Gemini, and OpenRouter.
 - **EOL release matching** — if unsure, don’t populate (no version / weak major / bitness → blank; never default to latest release).
 - **Vendor keywords** — guardrails for known traps (Oracle/AlmaLinux, Cisco/Apple iOS). Not a full brand encyclopedia; AI + “unsure = no match” covers unknown brands.
 - **Draft vs Data** — safe editing; Validate is the promote step; Refresh never silently wipes an existing Draft.

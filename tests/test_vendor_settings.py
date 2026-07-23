@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from vendor_lookup_service import lookup_vendor_batch
-from vendor_settings import (
+from vendor_lookups.vendor_lookup_service import lookup_vendor_batch
+from vendor_lookups.vendor_settings import (
     VENDOR_FALLBACK_ORDER,
     load_settings,
     query_matches_keywords,
@@ -64,8 +64,10 @@ class VendorSettingsTests(unittest.TestCase):
     def test_save_lookup_settings_bulk(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "vendor_lookup_settings.json"
-            with patch("vendor_settings.default_prefs_path", return_value=path):
-                from vendor_lookup_service import save_lookup_settings
+            with patch(
+                "vendor_lookups.vendor_settings.default_prefs_path", return_value=path
+            ):
+                from vendor_lookups.vendor_lookup_service import save_lookup_settings
 
                 result = save_lookup_settings(
                     {
@@ -133,7 +135,7 @@ class VendorLookupBatchOrderTests(unittest.TestCase):
                 prefs_path=path,
             )
 
-            import vendor_lookup_service as vls
+            import vendor_lookups.vendor_lookup_service as vls
 
             with (
                 patch.object(vls, "load_settings", return_value=load_settings(path)),
@@ -204,7 +206,7 @@ class VendorLookupBatchOrderTests(unittest.TestCase):
                 },
                 prefs_path=path,
             )
-            import vendor_lookup_service as vls
+            import vendor_lookups.vendor_lookup_service as vls
 
             with (
                 patch.object(vls, "load_settings", return_value=load_settings(path)),
@@ -287,7 +289,7 @@ class VendorLookupBatchOrderTests(unittest.TestCase):
                 },
                 prefs_path=path,
             )
-            import vendor_lookup_service as vls
+            import vendor_lookups.vendor_lookup_service as vls
 
             with (
                 patch.object(vls, "load_settings", return_value=load_settings(path)),

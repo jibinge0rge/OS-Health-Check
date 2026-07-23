@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
-from router_switch_service import (
+from vendor_lookups.router_switch_service import (
     _MIN_RELEASE_SCORE,
     _parse_page_count,
     _parse_table_rows,
@@ -43,6 +45,14 @@ SAMPLE_HTML = """
 """
 
 
+def _pg_available() -> bool:
+    return bool(str(os.environ.get("DATABASE_URL") or "").strip())
+
+
+def _temp_schema(prefix: str) -> str:
+    return f"test_{prefix}_{uuid.uuid4().hex[:12]}"
+
+
 class RouterSwitchParseTests(unittest.TestCase):
     def test_parse_us_date(self) -> None:
         self.assertEqual(_parse_us_date("08/31/2017"), "2017-08-31")
@@ -72,7 +82,7 @@ class RouterSwitchParseTests(unittest.TestCase):
             manufacturers_from_slugs(["not-a-vendor"])
 
     def test_selected_manufacturers_prefs_roundtrip(self) -> None:
-        from router_switch_service import (
+        from vendor_lookups.router_switch_service import (
             load_selected_manufacturers,
             save_selected_manufacturers,
         )
@@ -136,17 +146,19 @@ class RouterSwitchMatchTests(unittest.TestCase):
         score = _score_router_switch_row(part, product, query, ["12.2", "50", "5"])
         self.assertGreaterEqual(score, _MIN_RELEASE_SCORE)
 
+    @unittest.skipUnless(_pg_available(), "DATABASE_URL not set")
     def test_lookup_rejects_nxos_false_positive_in_db(self) -> None:
-        tmp = tempfile.mkdtemp()
-        db_path = Path(tmp) / "rs_match.db"
+        from vendor_lookups.db import drop_schema
+
+        schema_name = _temp_schema("rs")
         try:
-            init_db(db_path)
+            init_db(schema_name)
             scraped_at = "2026-01-01T00:00:00+00:00"
-            with _connect(db_path) as connection:
+            with _connect(schema_name) as connection:
                 connection.execute(
                     """
                     INSERT INTO products (slug, name, category, url, scraped_at)
-                    VALUES (?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s)
                     """,
                     ("cisco", "Cisco", "hardware", "https://example.com/cisco", scraped_at),
                 )
@@ -155,7 +167,7 @@ class RouterSwitchMatchTests(unittest.TestCase):
                     INSERT INTO releases (
                         product_slug, release_name, released_date,
                         eol_date, eoas_date, latest_raw, is_supported
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         "cisco",
@@ -172,7 +184,7 @@ class RouterSwitchMatchTests(unittest.TestCase):
                     INSERT INTO releases (
                         product_slug, release_name, released_date,
                         eol_date, eoas_date, latest_raw, is_supported
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         "cisco",
@@ -184,13 +196,12 @@ class RouterSwitchMatchTests(unittest.TestCase):
                         0,
                     ),
                 )
-                connection.commit()
 
             miss = lookup_os_router_switch(
                 "Cisco NX-OS 10.3(7)",
                 "",
                 "",
-                db_path=db_path,
+                schema_name=schema_name,
             )
             self.assertEqual(miss["eol_date"], "")
             self.assertIn("No matching", miss["api_note"])
@@ -199,37 +210,32 @@ class RouterSwitchMatchTests(unittest.TestCase):
                 "Cisco IOS XE 16.5.1",
                 "",
                 "",
-                db_path=db_path,
+                schema_name=schema_name,
             )
             self.assertTrue(hit["eol_date"])
             self.assertEqual(hit["release_name"], "IOS XE 16.5.1")
         finally:
-            try:
-                db_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-            try:
-                Path(tmp).rmdir()
-            except OSError:
-                pass
+            drop_schema(schema_name)
 
 
+@unittest.skipUnless(_pg_available(), "DATABASE_URL not set")
 class RouterSwitchLiveSmokeTests(unittest.TestCase):
     def test_sync_one_cisco_page(self) -> None:
-        tmp = tempfile.mkdtemp()
-        db_path = Path(tmp) / "rs.db"
+        from vendor_lookups.db import drop_schema
+
+        schema_name = _temp_schema("rslive")
         try:
             result = sync_router_switch_database(
-                db_path=db_path,
+                schema_name=schema_name,
                 manufacturers=(("cisco", "Cisco"),),
                 max_pages_per_manufacturer=1,
             )
             self.assertTrue(result["ok"], result)
             self.assertGreater(int(result["release_count"]), 0)
-            status = get_status(db_path)
+            status = get_status(schema_name)
             self.assertEqual(status["source_id"], "router-switch")
             self.assertGreater(int(status["release_count"]), 0)
-            rows = list_all_rows(db_path)
+            rows = list_all_rows(schema_name)
             self.assertGreater(len(rows), 0)
             sample = rows[0]
             self.assertIn("product", sample)
@@ -237,14 +243,7 @@ class RouterSwitchLiveSmokeTests(unittest.TestCase):
             self.assertIn("eol_date", sample)
             self.assertIn("eoas_date", sample)
         finally:
-            try:
-                db_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-            try:
-                Path(tmp).rmdir()
-            except OSError:
-                pass
+            drop_schema(schema_name)
 
 
 if __name__ == "__main__":

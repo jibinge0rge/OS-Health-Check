@@ -22,25 +22,25 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, field_validator
 
 from eol_service import lookup_os_eol_batch
-from eosl_service import (
+from vendor_lookups.eosl_service import (
     get_status as eosl_get_status,
     list_all_rows as eosl_list_all_rows,
     lookup_os_eosl_batch,
     sync_os_database as eosl_sync_os_database,
 )
-from junos_service import (
+from vendor_lookups.junos_service import (
     get_status as junos_get_status,
     list_all_rows as junos_list_all_rows,
     lookup_os_junos_batch,
     sync_junos_database,
 )
-from suse_service import (
+from vendor_lookups.suse_service import (
     get_status as suse_get_status,
     list_all_rows as suse_list_all_rows,
     lookup_os_suse_batch,
     sync_suse_database,
 )
-from vendor_lookup_service import (
+from vendor_lookups.vendor_lookup_service import (
     get_lookup_settings as vendor_get_lookup_settings,
     get_status as vendor_get_status,
     list_rows as vendor_list_rows,
@@ -51,10 +51,12 @@ from vendor_lookup_service import (
     sync_source as vendor_sync_source,
 )
 from normalization_service import (
+    DEFAULT_AI_MATCH_PROMPT,
     DEFAULT_FUZZY_MATCH_THRESHOLD,
     detect_ambiguous_os_batch,
     normalize_ai_provider,
     provider_api_key_configured,
+    strip_ai_match_response_format,
     suggest_normalization_batch,
 )
 from os_import_service import extract_distinct_os_values, inspect_os_import_file
@@ -247,6 +249,28 @@ class AzureSettingsSaveRequest(BaseModel):
 class AppSettings(BaseModel):
     ai_enabled: bool = False
     ai_provider: str = "openai"
+    # Empty means use DEFAULT_AI_MATCH_PROMPT at match time.
+    ai_match_prompt: str = ""
+
+    @field_validator("ai_provider", mode="before")
+    @classmethod
+    def validate_ai_provider(cls, value: object) -> str:
+        return normalize_ai_provider(value)
+
+    @field_validator("ai_match_prompt", mode="before")
+    @classmethod
+    def validate_ai_match_prompt(cls, value: object) -> str:
+        if value is None:
+            return ""
+        return str(value).strip()
+
+
+class AppSettingsUpdateRequest(BaseModel):
+    """Partial settings update. Omit ai_match_prompt to leave it unchanged."""
+
+    ai_enabled: bool = False
+    ai_provider: str = "openai"
+    ai_match_prompt: str | None = None
 
     @field_validator("ai_provider", mode="before")
     @classmethod
@@ -260,6 +284,9 @@ class AppSettingsResponse(BaseModel):
     ai_available: bool = False
     openai_available: bool = False
     gemini_available: bool = False
+    openrouter_available: bool = False
+    ai_match_prompt: str = ""
+    default_ai_match_prompt: str = DEFAULT_AI_MATCH_PROMPT
 
 
 AZURE_PROGRESS_RE = re.compile(r"(\d+(?:\.\d+)?)%")
@@ -271,6 +298,10 @@ def openai_api_key_configured() -> bool:
 
 def gemini_api_key_configured() -> bool:
     return provider_api_key_configured("gemini")
+
+
+def openrouter_api_key_configured() -> bool:
+    return provider_api_key_configured("openrouter")
 
 
 def selected_ai_provider_available(settings: AppSettings | None = None) -> bool:
@@ -633,9 +664,18 @@ def load_app_settings() -> AppSettings:
     if not isinstance(payload, dict):
         return AppSettings()
 
+    stored_prompt = payload.get("ai_match_prompt", "")
+    if stored_prompt is None:
+        stored_prompt = ""
+    cleaned_prompt = strip_ai_match_response_format(stored_prompt)
+    # Treat an exact copy of the built-in default as "use default".
+    if cleaned_prompt == DEFAULT_AI_MATCH_PROMPT.strip():
+        cleaned_prompt = ""
+
     return AppSettings(
         ai_enabled=bool(payload.get("ai_enabled", False)),
         ai_provider=normalize_ai_provider(payload.get("ai_provider", "openai")),
+        ai_match_prompt=cleaned_prompt,
     )
 
 
@@ -651,12 +691,16 @@ def app_settings_response() -> AppSettingsResponse:
     settings = load_app_settings()
     openai_available = openai_api_key_configured()
     gemini_available = gemini_api_key_configured()
+    openrouter_available = openrouter_api_key_configured()
     return AppSettingsResponse(
         ai_enabled=settings.ai_enabled,
         ai_provider=settings.ai_provider,
         ai_available=selected_ai_provider_available(settings),
         openai_available=openai_available,
         gemini_available=gemini_available,
+        openrouter_available=openrouter_available,
+        ai_match_prompt=settings.ai_match_prompt,
+        default_ai_match_prompt=DEFAULT_AI_MATCH_PROMPT,
     )
 
 
@@ -967,11 +1011,18 @@ async def get_app_settings() -> AppSettingsResponse:
 
 
 @app.put("/api/settings")
-async def update_app_settings(payload: AppSettings) -> AppSettingsResponse:
+async def update_app_settings(payload: AppSettingsUpdateRequest) -> AppSettingsResponse:
     current = load_app_settings()
+    if payload.ai_match_prompt is None:
+        prompt = current.ai_match_prompt
+    else:
+        prompt = strip_ai_match_response_format(payload.ai_match_prompt)
+        if prompt == DEFAULT_AI_MATCH_PROMPT.strip():
+            prompt = ""
     merged = AppSettings(
         ai_enabled=payload.ai_enabled,
         ai_provider=normalize_ai_provider(payload.ai_provider or current.ai_provider),
+        ai_match_prompt=prompt,
     )
     save_app_settings(merged)
     return app_settings_response()
@@ -1038,6 +1089,7 @@ async def normalize_suggest(payload: NormalizeSuggestRequest) -> dict[str, objec
         [pair.model_dump() for pair in payload.allowed_pairs],
         payload.fuzzy_match_threshold,
         settings.ai_provider,
+        settings.ai_match_prompt,
     )
 
     results: list[NormalizeSuggestResult | None] = []

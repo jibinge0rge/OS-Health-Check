@@ -1,19 +1,21 @@
-"""Scrape OS lifecycle data from eosl.date into a local SQLite cache."""
+"""Scrape OS lifecycle data from eosl.date into a PostgreSQL vendor schema."""
 
 from __future__ import annotations
 
 import re
-import sqlite3
 import threading
 import time
+from collections.abc import Mapping
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
-from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, Iterator
 from urllib.parse import urljoin
 
+import psycopg
 import requests
 from bs4 import BeautifulSoup
 
+from .db import connection_for, init_source_schema, set_metadata
 from eol_service import (
     extract_version_hints,
     iso_date_to_epoch,
@@ -22,6 +24,8 @@ from eol_service import (
 )
 from normalization_service import vendors_compatible
 from version_match import score_release_against_hint
+
+SOURCE_ID = "eosl"
 
 
 BASE_URL = "https://eosl.date"
@@ -57,72 +61,33 @@ def _clean(value: object) -> str:
     return str(value or "").strip()
 
 
-def _default_db_path() -> Path:
-    return Path(__file__).resolve().parent / "_data" / "eosl_os.db"
+def init_db(schema_name: str | None = None) -> None:
+    init_source_schema(SOURCE_ID, schema_name)
 
 
-def _connect(db_path: Path | None = None) -> sqlite3.Connection:
-    path = db_path or _default_db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path)
-    connection.row_factory = sqlite3.Row
-    return connection
+@contextmanager
+def _connect(schema_name: str | None = None) -> Iterator[psycopg.Connection[Any]]:
+    with connection_for(SOURCE_ID, schema_override=schema_name) as connection:
+        yield connection
 
 
-def init_db(db_path: Path | None = None) -> None:
-    with _connect(db_path) as connection:
-        connection.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS metadata (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS products (
-                slug TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                category TEXT NOT NULL DEFAULT 'os',
-                url TEXT NOT NULL,
-                scraped_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS releases (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                product_slug TEXT NOT NULL,
-                release_name TEXT NOT NULL,
-                released_date TEXT NOT NULL DEFAULT '',
-                eol_date TEXT NOT NULL DEFAULT '',
-                eoas_date TEXT NOT NULL DEFAULT '',
-                latest_raw TEXT NOT NULL DEFAULT '',
-                is_supported INTEGER NOT NULL DEFAULT 0,
-                UNIQUE(product_slug, release_name),
-                FOREIGN KEY (product_slug) REFERENCES products(slug)
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_releases_product
-                ON releases(product_slug);
-            """
-        )
-        connection.commit()
+def _set_metadata(connection: psycopg.Connection[Any], key: str, value: str) -> None:
+    set_metadata(connection, key, value)
 
 
-def _set_metadata(connection: sqlite3.Connection, key: str, value: str) -> None:
-    connection.execute(
-        "INSERT INTO metadata(key, value) VALUES(?, ?) "
-        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        (key, value),
-    )
-
-
-def get_status(db_path: Path | None = None) -> dict[str, object]:
-    init_db(db_path)
-    with _connect(db_path) as connection:
+def get_status(schema_name: str | None = None) -> dict[str, object]:
+    init_db(schema_name)
+    with _connect(schema_name) as connection:
         meta = {
             str(row["key"]): str(row["value"])
             for row in connection.execute("SELECT key, value FROM metadata")
         }
-        product_count = connection.execute("SELECT COUNT(*) FROM products").fetchone()[0]
-        release_count = connection.execute("SELECT COUNT(*) FROM releases").fetchone()[0]
+        product_count = connection.execute(
+            "SELECT COUNT(*) AS count FROM products"
+        ).fetchone()["count"]
+        release_count = connection.execute(
+            "SELECT COUNT(*) AS count FROM releases"
+        ).fetchone()["count"]
     return {
         "last_updated": meta.get("last_updated", ""),
         "last_sync_status": meta.get("last_sync_status", ""),
@@ -304,11 +269,11 @@ def collect_os_products() -> list[tuple[str, str]]:
 
 
 def sync_os_database(
-    db_path: Path | None = None,
+    schema_name: str | None = None,
     progress_callback: Callable[[str, int, int], None] | None = None,
     cancel_event: threading.Event | None = None,
 ) -> dict[str, object]:
-    init_db(db_path)
+    init_db(schema_name)
     started = datetime.now(timezone.utc).isoformat(timespec="seconds")
     errors: list[dict[str, str]] = []
     products = collect_os_products()
@@ -316,7 +281,7 @@ def sync_os_database(
     release_total = 0
     cancelled = False
 
-    with _connect(db_path) as connection:
+    with _connect(schema_name) as connection:
         connection.execute("DELETE FROM releases")
         connection.execute("DELETE FROM products")
 
@@ -333,33 +298,34 @@ def sync_os_database(
                 if not product_name:
                     product_name = list_name
                 scraped_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-                connection.execute(
-                    """
-                    INSERT INTO products(slug, name, category, url, scraped_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (slug, product_name, OS_CATEGORY, product_url, scraped_at),
-                )
-                for release in releases:
+                with connection.transaction():
                     connection.execute(
                         """
-                        INSERT INTO releases(
-                            product_slug, release_name, released_date,
-                            eol_date, eoas_date, latest_raw, is_supported
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO products(slug, name, category, url, scraped_at)
+                        VALUES (%s, %s, %s, %s, %s)
                         """,
-                        (
-                            slug,
-                            release["release_name"],
-                            release.get("released_date", ""),
-                            release.get("eol_date", ""),
-                            release.get("eoas_date", ""),
-                            release.get("latest_raw", ""),
-                            int(release.get("is_supported", "0") or 0),
-                        ),
+                        (slug, product_name, OS_CATEGORY, product_url, scraped_at),
                     )
-                    release_total += 1
-            except (requests.RequestException, ValueError, sqlite3.Error) as exc:
+                    for release in releases:
+                        connection.execute(
+                            """
+                            INSERT INTO releases(
+                                product_slug, release_name, released_date,
+                                eol_date, eoas_date, latest_raw, is_supported
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                slug,
+                                release["release_name"],
+                                release.get("released_date", ""),
+                                release.get("eol_date", ""),
+                                release.get("eoas_date", ""),
+                                release.get("latest_raw", ""),
+                                int(release.get("is_supported", "0") or 0),
+                            ),
+                        )
+                        release_total += 1
+            except (requests.RequestException, ValueError, psycopg.Error) as exc:
                 errors.append({"slug": slug, "error": str(exc)})
             time.sleep(REQUEST_DELAY_SECONDS)
 
@@ -376,7 +342,6 @@ def sync_os_database(
              f"Synced {total - len(errors)} of {total} OS products "
              f"({release_total} releases)."),
         )
-        connection.commit()
 
     return {
         "last_updated": finished,
@@ -388,17 +353,19 @@ def sync_os_database(
     }
 
 
-def _load_products(connection: sqlite3.Connection) -> list[sqlite3.Row]:
+def _load_products(connection: psycopg.Connection[Any]) -> list[Mapping[str, Any]]:
     return list(connection.execute("SELECT slug, name FROM products ORDER BY name"))
 
 
-def _load_releases(connection: sqlite3.Connection, product_slug: str) -> list[sqlite3.Row]:
+def _load_releases(
+    connection: psycopg.Connection[Any], product_slug: str
+) -> list[Mapping[str, Any]]:
     return list(
         connection.execute(
             """
             SELECT release_name, released_date, eol_date, eoas_date, latest_raw, is_supported
             FROM releases
-            WHERE product_slug = ?
+            WHERE product_slug = %s
             ORDER BY released_date DESC, release_name DESC
             """,
             (product_slug,),
@@ -440,7 +407,9 @@ def _release_score(release_name: str, hint: str) -> int:
 _MIN_RELEASE_SCORE = 80
 
 
-def _pick_release(releases: list[sqlite3.Row], hints: list[str]) -> sqlite3.Row | None:
+def _pick_release(
+    releases: list[Mapping[str, Any]], hints: list[str]
+) -> Mapping[str, Any] | None:
     """Match product releases by version hint. Product alone is not enough —
     a strong release score is required so we never guess.
     """
@@ -478,7 +447,7 @@ def _query_targets_generic_family(query: str, slug: str) -> bool:
     return True
 
 
-def _resolve_product_slug(query: str, products: list[sqlite3.Row]) -> str | None:
+def _resolve_product_slug(query: str, products: list[Mapping[str, Any]]) -> str | None:
     lowered = query.lower()
     if not lowered:
         return None
@@ -522,7 +491,7 @@ def lookup_os_eosl(
     normalized_os_detailed_name: str,
     normalized_os: str,
     reference_date: str | None = None,
-    db_path: Path | None = None,
+    schema_name: str | None = None,
 ) -> dict[str, str]:
     today = reference_date or date.today().isoformat()
     cleaned_name, query_field = pick_api_os_value_with_field(
@@ -545,9 +514,11 @@ def lookup_os_eosl(
         "source": "eosl",
     }
 
-    init_db(db_path)
-    with _connect(db_path) as connection:
-        product_count = connection.execute("SELECT COUNT(*) FROM products").fetchone()[0]
+    init_db(schema_name)
+    with _connect(schema_name) as connection:
+        product_count = connection.execute(
+            "SELECT COUNT(*) AS count FROM products"
+        ).fetchone()["count"]
         if not product_count:
             empty["api_note"] = "Local EOSL database is empty. Run Update EOSL Lookup first."
             return empty
@@ -562,7 +533,7 @@ def lookup_os_eosl(
             return empty
 
         product = connection.execute(
-            "SELECT slug, name FROM products WHERE slug = ?", (product_slug,)
+            "SELECT slug, name FROM products WHERE slug = %s", (product_slug,)
         ).fetchone()
         if product and _clean(os_string):
             if not vendors_compatible(os_string, _clean(product["name"])):
@@ -603,7 +574,7 @@ def lookup_os_eosl(
 def lookup_os_eosl_batch(
     items: list[dict[str, str]],
     reference_date: str | None = None,
-    db_path: Path | None = None,
+    schema_name: str | None = None,
 ) -> list[dict[str, str]]:
     return [
         lookup_os_eosl(
@@ -611,21 +582,21 @@ def lookup_os_eosl_batch(
             item.get("normalized_os_detailed_name", ""),
             item.get("normalized_os", ""),
             reference_date=reference_date,
-            db_path=db_path,
+            schema_name=schema_name,
         )
         for item in items
     ]
 
 
-def list_all_rows(db_path: Path | None = None) -> list[dict[str, object]]:
+def list_all_rows(schema_name: str | None = None) -> list[dict[str, object]]:
     """Return every scraped release with the database's own column shape.
 
     Used to render the read-only EOSL Lookup viewer in the UI. Dates are the
     raw ISO values scraped from eosl.date (empty string when unknown).
     """
-    init_db(db_path)
+    init_db(schema_name)
     rows: list[dict[str, object]] = []
-    with _connect(db_path) as connection:
+    with _connect(schema_name) as connection:
         product_names = {
             _clean(product["slug"]): _clean(product["name"])
             for product in connection.execute("SELECT slug, name FROM products")

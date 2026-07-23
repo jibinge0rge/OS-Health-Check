@@ -1,17 +1,19 @@
-"""Scrape SUSE product lifecycle data from suse.com/lifecycle into SQLite."""
+"""Scrape SUSE product lifecycle data from suse.com/lifecycle into a PostgreSQL vendor schema."""
 
 from __future__ import annotations
 
 import re
-import sqlite3
 import threading
+from collections.abc import Mapping
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
-from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, Iterator
 
+import psycopg
 import requests
 from bs4 import BeautifulSoup
 
+from .db import connection_for, init_source_schema, set_metadata
 from eol_service import (
     extract_version_hints,
     iso_date_to_epoch,
@@ -20,7 +22,9 @@ from eol_service import (
 )
 from normalization_service import vendors_compatible
 from version_match import score_release_against_hint
-from vendor_settings import query_matches_keywords, source_keywords
+from .vendor_settings import query_matches_keywords, source_keywords
+
+SOURCE_ID = "suse"
 
 
 SOURCE_URL = "https://www.suse.com/lifecycle/"
@@ -55,72 +59,33 @@ def _clean(value: object) -> str:
     return str(value or "").replace("\xa0", " ").strip()
 
 
-def _default_db_path() -> Path:
-    return Path(__file__).resolve().parent / "_data" / "suse_os.db"
+def init_db(schema_name: str | None = None) -> None:
+    init_source_schema(SOURCE_ID, schema_name)
 
 
-def _connect(db_path: Path | None = None) -> sqlite3.Connection:
-    path = db_path or _default_db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path)
-    connection.row_factory = sqlite3.Row
-    return connection
+@contextmanager
+def _connect(schema_name: str | None = None) -> Iterator[psycopg.Connection[Any]]:
+    with connection_for(SOURCE_ID, schema_override=schema_name) as connection:
+        yield connection
 
 
-def init_db(db_path: Path | None = None) -> None:
-    with _connect(db_path) as connection:
-        connection.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS metadata (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS products (
-                slug TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                category TEXT NOT NULL DEFAULT 'os',
-                url TEXT NOT NULL,
-                scraped_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS releases (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                product_slug TEXT NOT NULL,
-                release_name TEXT NOT NULL,
-                released_date TEXT NOT NULL DEFAULT '',
-                eol_date TEXT NOT NULL DEFAULT '',
-                eoas_date TEXT NOT NULL DEFAULT '',
-                latest_raw TEXT NOT NULL DEFAULT '',
-                is_supported INTEGER NOT NULL DEFAULT 0,
-                UNIQUE(product_slug, release_name),
-                FOREIGN KEY (product_slug) REFERENCES products(slug)
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_releases_product
-                ON releases(product_slug);
-            """
-        )
-        connection.commit()
+def _set_metadata(connection: psycopg.Connection[Any], key: str, value: str) -> None:
+    set_metadata(connection, key, value)
 
 
-def _set_metadata(connection: sqlite3.Connection, key: str, value: str) -> None:
-    connection.execute(
-        "INSERT INTO metadata(key, value) VALUES(?, ?) "
-        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        (key, value),
-    )
-
-
-def get_status(db_path: Path | None = None) -> dict[str, object]:
-    init_db(db_path)
-    with _connect(db_path) as connection:
+def get_status(schema_name: str | None = None) -> dict[str, object]:
+    init_db(schema_name)
+    with _connect(schema_name) as connection:
         meta = {
             str(row["key"]): str(row["value"])
             for row in connection.execute("SELECT key, value FROM metadata")
         }
-        product_count = connection.execute("SELECT COUNT(*) FROM products").fetchone()[0]
-        release_count = connection.execute("SELECT COUNT(*) FROM releases").fetchone()[0]
+        product_count = connection.execute(
+            "SELECT COUNT(*) AS count FROM products"
+        ).fetchone()["count"]
+        release_count = connection.execute(
+            "SELECT COUNT(*) AS count FROM releases"
+        ).fetchone()["count"]
     return {
         "last_updated": meta.get("last_updated", ""),
         "last_sync_status": meta.get("last_sync_status", ""),
@@ -389,11 +354,11 @@ def parse_suse_lifecycle_tables(html: str) -> list[dict[str, str]]:
 
 
 def sync_suse_database(
-    db_path: Path | None = None,
+    schema_name: str | None = None,
     progress_callback: Callable[[str, int, int], None] | None = None,
     cancel_event: threading.Event | None = None,
 ) -> dict[str, object]:
-    init_db(db_path)
+    init_db(schema_name)
     started = datetime.now(timezone.utc).isoformat(timespec="seconds")
     if cancel_event is not None and cancel_event.is_set():
         return {
@@ -422,14 +387,14 @@ def sync_suse_database(
     for release in releases:
         products[release["product_slug"]] = release["product_name"]
 
-    with _connect(db_path) as connection:
+    with _connect(schema_name) as connection:
         connection.execute("DELETE FROM releases")
         connection.execute("DELETE FROM products")
         for slug, name in products.items():
             connection.execute(
                 """
                 INSERT INTO products(slug, name, category, url, scraped_at)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s)
                 """,
                 (slug, name, "os", SOURCE_URL, scraped_at),
             )
@@ -439,7 +404,7 @@ def sync_suse_database(
                 INSERT INTO releases(
                     product_slug, release_name, released_date,
                     eol_date, eoas_date, latest_raw, is_supported
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     release["product_slug"],
@@ -459,7 +424,6 @@ def sync_suse_database(
             f"Synced {len(products)} products / {len(releases)} releases from SUSE.",
         )
         _set_metadata(connection, "last_sync_started", started)
-        connection.commit()
 
     return {
         "ok": True,
@@ -539,7 +503,9 @@ def _release_score(release_name: str, hint: str) -> int:
     return score_release_against_hint(rel, hint_key)
 
 
-def _pick_release(releases: list[sqlite3.Row], hints: list[str]) -> sqlite3.Row | None:
+def _pick_release(
+    releases: list[Mapping[str, Any]], hints: list[str]
+) -> Mapping[str, Any] | None:
     if not releases or not hints:
         return None
     best = None
@@ -553,7 +519,7 @@ def _pick_release(releases: list[sqlite3.Row], hints: list[str]) -> sqlite3.Row 
     return best if best_score >= _MIN_RELEASE_SCORE else None
 
 
-def _resolve_product_slug(query: str, products: list[sqlite3.Row]) -> str | None:
+def _resolve_product_slug(query: str, products: list[Mapping[str, Any]]) -> str | None:
     lowered = query.lower()
     if not lowered:
         return None
@@ -611,7 +577,7 @@ def lookup_os_suse(
     normalized_os_detailed_name: str,
     normalized_os: str,
     reference_date: str | None = None,
-    db_path: Path | None = None,
+    schema_name: str | None = None,
 ) -> dict[str, str]:
     today = reference_date or date.today().isoformat()
     cleaned_name, query_field = pick_api_os_value_with_field(
@@ -640,9 +606,11 @@ def lookup_os_suse(
         empty["api_note"] = "Not a SUSE/SLES OS string"
         return empty
 
-    init_db(db_path)
-    with _connect(db_path) as connection:
-        release_count = connection.execute("SELECT COUNT(*) FROM releases").fetchone()[0]
+    init_db(schema_name)
+    with _connect(schema_name) as connection:
+        release_count = connection.execute(
+            "SELECT COUNT(*) AS count FROM releases"
+        ).fetchone()["count"]
         if not release_count:
             empty["api_note"] = (
                 "Local SUSE database is empty. Run Update under Vendor Lookups first."
@@ -658,7 +626,7 @@ def lookup_os_suse(
             return empty
 
         product = connection.execute(
-            "SELECT slug, name FROM products WHERE slug = ?", (product_slug,)
+            "SELECT slug, name FROM products WHERE slug = %s", (product_slug,)
         ).fetchone()
         product_name = _clean(product["name"]) if product else product_slug
         if _clean(os_string) and not vendors_compatible(os_string, product_name):
@@ -672,7 +640,7 @@ def lookup_os_suse(
                 SELECT release_name, released_date, eol_date, eoas_date,
                        latest_raw, is_supported
                 FROM releases
-                WHERE product_slug = ?
+                WHERE product_slug = %s
                 ORDER BY released_date DESC, release_name DESC
                 """,
                 (product_slug,),
@@ -711,7 +679,7 @@ def lookup_os_suse(
 def lookup_os_suse_batch(
     items: list[dict[str, str]],
     reference_date: str | None = None,
-    db_path: Path | None = None,
+    schema_name: str | None = None,
 ) -> list[dict[str, str]]:
     return [
         lookup_os_suse(
@@ -719,16 +687,16 @@ def lookup_os_suse_batch(
             item.get("normalized_os_detailed_name", ""),
             item.get("normalized_os", ""),
             reference_date=reference_date,
-            db_path=db_path,
+            schema_name=schema_name,
         )
         for item in items
     ]
 
 
-def list_all_rows(db_path: Path | None = None) -> list[dict[str, object]]:
-    init_db(db_path)
+def list_all_rows(schema_name: str | None = None) -> list[dict[str, object]]:
+    init_db(schema_name)
     rows: list[dict[str, object]] = []
-    with _connect(db_path) as connection:
+    with _connect(schema_name) as connection:
         product_names = {
             _clean(product["slug"]): _clean(product["name"])
             for product in connection.execute("SELECT slug, name FROM products")

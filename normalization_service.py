@@ -18,11 +18,95 @@ from openai import OpenAI
 AMBIGUOUS_OS = "ambiguous os"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
+DEFAULT_OPENROUTER_MODEL = "openrouter/free"
 DEFAULT_FUZZY_MATCH_THRESHOLD = 95
-AiProvider = Literal["openai", "gemini"]
+AiProvider = Literal["openai", "gemini", "openrouter"]
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 GEMINI_GENERATE_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 )
+
+# Matching rules shown/edited in Settings. Keep this in plain language — no API field names.
+# Output contract (pair_index / JSON shape) is appended separately and is not user-editable.
+DEFAULT_AI_MATCH_PROMPT = (
+    "Match each operating system string to one existing normalization pair ONLY when "
+    "you are at least {threshold}% confident it is the same product family, major version, "
+    "and edition/SKU. Be conservative: leave unmatched rather than make a risky guess. "
+    "Only choose from the provided allowed pairs. Never invent normalized values. "
+    "Vendor / product family is mandatory. Shared tokens are not enough. "
+    "Version family must agree (major or dotted prefix). "
+    "'Windows Server 2019' must NOT match 'Windows Server 2022'. "
+    "'Ubuntu 20.04' must NOT match 'Ubuntu 22.04'. "
+    "Edition, SKU, and qualifier words matter. "
+    "If the candidate adds qualifiers missing from the OS string, reject it "
+    "(example: 'Windows 11 Pro' must NOT match 'Windows 11 Pro Enterprise'). "
+    "Vague strings such as 'Other … Linux', 'or later', or unspecified families "
+    "must stay unmatched unless an exact same-vendor pair clearly fits. "
+    "Never choose placeholder or junk pairs such as '<!-- default -->', '-', "
+    "'Unknown', 'n/a', HTML comments, or hex/id dumps. Those are not real operating systems. "
+    "Never map a garbage/hex/id string to a real OS pair — leave it unmatched instead. "
+    "Examples of INVALID matches: "
+    "'Cisco IOS 12.2(55)SE9' must NOT match 'Apple iOS 12'; "
+    "'Cisco IOS-XE 17.09.05a' must NOT match 'Apple iOS 17'; "
+    "'Oracle Linux Server 9.5' must NOT match 'AlmaLinux OS 9.5' or 'AlmaLinux OS 9'; "
+    "'Windows Server 2019' must NOT match 'Red Hat Enterprise Linux 9'. "
+    "Examples of VALID matches from this lookup style: "
+    "'Cisco IOS 12.2(55)SE9' -> 'CISCO IOS 12.2'; "
+    "'Cisco IOS-XE 17.09.05a' -> 'Cisco IOS XE 17.9'; "
+    "'Cisco IOS XE 17.03.04a' -> 'Cisco IOS XE 17.3'; "
+    "'Oracle Linux Server 9.5' -> 'Oracle Linux 9'. "
+    "Treat dotted versions that differ only by trailing .0 as the same "
+    "(for example 3.2 and 3.2.0; also 17.03 ~= 17.3 when the pair uses the short form). "
+    "If no pair is a very sure same-vendor match, leave that item unmatched. "
+    "For every accepted match include a confidence score from 0-100. "
+    "Do not accept a match when confidence is below {threshold}."
+)
+
+# Always appended after the user/default matching rules. Not shown in Settings.
+AI_MATCH_OUTPUT_CONTRACT = (
+    "Output rules (required by the application): "
+    "Choose matches only by pair_index from the allowed_pairs list in the user message. "
+    "Never invent normalized names. "
+    "If unsure or confidence is below {threshold}, set pair_index to null for that item. "
+    "Include confidence as an integer 0-100 for every accepted match. "
+    'Respond with JSON: {"matches":[{"item_index":0,"pair_index":1,"confidence":98}]}'
+)
+
+# Legacy suffix from earlier builds (kept for stripping saved prompts).
+_AI_MATCH_RESPONSE_FORMAT_LEGACY = (
+    'Respond with JSON: {"matches":[{"item_index":0,"pair_index":1,"confidence":98}]}'
+)
+
+
+def strip_ai_match_response_format(prompt: object) -> str:
+    """Remove trailing fixed output-contract text if a user pasted or saved it."""
+    cleaned = str(prompt or "").strip()
+    if not cleaned:
+        return ""
+    for suffix in (AI_MATCH_OUTPUT_CONTRACT.strip(), _AI_MATCH_RESPONSE_FORMAT_LEGACY.strip()):
+        # Strip after substituting a placeholder threshold so saved prompts still match.
+        for threshold_token in ("{threshold}", "95", "90", "80", "70", "50", "100"):
+            candidate = suffix.replace("{threshold}", threshold_token)
+            if cleaned.endswith(candidate):
+                cleaned = cleaned[: -len(candidate)].rstrip()
+                break
+    return cleaned
+
+
+def resolve_ai_match_prompt(
+    custom_prompt: object = None,
+    fuzzy_match_threshold: int = DEFAULT_FUZZY_MATCH_THRESHOLD,
+) -> str:
+    """Build the match system prompt; always append the fixed output contract."""
+    threshold = max(50, min(100, int(fuzzy_match_threshold)))
+    cleaned = strip_ai_match_response_format(custom_prompt)
+    if not cleaned or cleaned == DEFAULT_AI_MATCH_PROMPT.strip():
+        body = DEFAULT_AI_MATCH_PROMPT
+    else:
+        body = cleaned
+    body = body.replace("{threshold}", str(threshold)).rstrip()
+    contract = AI_MATCH_OUTPUT_CONTRACT.replace("{threshold}", str(threshold))
+    return f"{body} {contract}"
 
 # Placeholder / junk values that must never be used as normalization targets.
 _PLACEHOLDER_OS_VALUES = frozenset(
@@ -337,6 +421,8 @@ def normalize_ai_provider(value: object) -> AiProvider:
     cleaned = _clean(value).lower()
     if cleaned == "gemini":
         return "gemini"
+    if cleaned == "openrouter":
+        return "openrouter"
     return "openai"
 
 
@@ -350,10 +436,16 @@ def gemini_api_key() -> str:
     )
 
 
+def openrouter_api_key() -> str:
+    return _clean(os.environ.get("OPENROUTER_API_KEY"))
+
+
 def provider_api_key_configured(provider: object) -> bool:
     selected = normalize_ai_provider(provider)
     if selected == "gemini":
         return bool(gemini_api_key())
+    if selected == "openrouter":
+        return bool(openrouter_api_key())
     return bool(openai_api_key())
 
 
@@ -363,6 +455,10 @@ def openai_model_name() -> str:
 
 def gemini_model_name() -> str:
     return _clean(os.environ.get("GEMINI_MODEL")) or DEFAULT_GEMINI_MODEL
+
+
+def openrouter_model_name() -> str:
+    return _clean(os.environ.get("OPENROUTER_MODEL")) or DEFAULT_OPENROUTER_MODEL
 
 
 def _extract_json_object(text: str) -> dict[str, Any] | None:
@@ -387,15 +483,28 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
         return None
 
 
-def _complete_json_openai(system_prompt: str, user_prompt: str) -> dict[str, Any] | None:
-    api_key = openai_api_key()
+def _complete_json_openai_compatible(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    api_key: str,
+    model: str,
+    base_url: str | None = None,
+    default_headers: dict[str, str] | None = None,
+) -> dict[str, Any] | None:
     if not api_key:
         return None
 
-    client = OpenAI(api_key=api_key)
+    client_kwargs: dict[str, Any] = {"api_key": api_key}
+    if base_url:
+        client_kwargs["base_url"] = base_url
+    if default_headers:
+        client_kwargs["default_headers"] = default_headers
+
+    client = OpenAI(**client_kwargs)
     try:
         response = client.chat.completions.create(
-            model=openai_model_name(),
+            model=model,
             temperature=0,
             response_format={"type": "json_object"},
             messages=[
@@ -408,6 +517,31 @@ def _complete_json_openai(system_prompt: str, user_prompt: str) -> dict[str, Any
 
     content = _clean(response.choices[0].message.content)
     return _extract_json_object(content)
+
+
+def _complete_json_openai(system_prompt: str, user_prompt: str) -> dict[str, Any] | None:
+    return _complete_json_openai_compatible(
+        system_prompt,
+        user_prompt,
+        api_key=openai_api_key(),
+        model=openai_model_name(),
+    )
+
+
+def _complete_json_openrouter(
+    system_prompt: str, user_prompt: str
+) -> dict[str, Any] | None:
+    return _complete_json_openai_compatible(
+        system_prompt,
+        user_prompt,
+        api_key=openrouter_api_key(),
+        model=openrouter_model_name(),
+        base_url=OPENROUTER_BASE_URL,
+        default_headers={
+            "HTTP-Referer": "https://github.com/local/os-health-check",
+            "X-Title": "OS Health Check",
+        },
+    )
 
 
 def _complete_json_gemini(system_prompt: str, user_prompt: str) -> dict[str, Any] | None:
@@ -464,6 +598,8 @@ def complete_json(
     selected = normalize_ai_provider(provider)
     if selected == "gemini":
         return _complete_json_gemini(system_prompt, user_prompt)
+    if selected == "openrouter":
+        return _complete_json_openrouter(system_prompt, user_prompt)
     return _complete_json_openai(system_prompt, user_prompt)
 
 
@@ -670,6 +806,7 @@ def suggest_normalization_batch(
     allowed_pairs: list[dict[str, str]],
     fuzzy_match_threshold: int = DEFAULT_FUZZY_MATCH_THRESHOLD,
     provider: object = "openai",
+    match_prompt: object = None,
 ) -> list[dict[str, str] | None]:
     threshold = max(50, min(100, int(fuzzy_match_threshold)))
     cleaned_strings = [_clean(value) for value in os_strings]
@@ -695,43 +832,8 @@ def suggest_normalization_batch(
         key = tuple(sorted(_vendor_tags(value)))
         groups.setdefault(key, []).append(index)
 
-    system_prompt = (
-        "Match each operating system string to one existing normalization pair ONLY when "
-        f"you are at least {threshold}% confident it is the same product family, major version, "
-        "and edition/SKU. Be conservative: prefer pair_index null over a risky guess. "
-        "You must only choose pair_index values from the allowed_pairs list. "
-        "Never invent normalized values. "
-        "Vendor / product family is mandatory. Shared tokens are not enough. "
-        "Version family must agree (major or dotted prefix). "
-        "'Windows Server 2019' must NOT match 'Windows Server 2022'. "
-        "'Ubuntu 20.04' must NOT match 'Ubuntu 22.04'. "
-        "Edition, SKU, and qualifier words matter. "
-        "If the candidate adds qualifiers missing from the OS string, reject it "
-        "(example: 'Windows 11 Pro' must NOT match 'Windows 11 Pro Enterprise'). "
-        "Vague strings such as 'Other … Linux', 'or later', or unspecified families "
-        "must return null unless an exact same-vendor pair clearly fits. "
-        "Never choose placeholder or junk pairs such as '<!-- default -->', '-', "
-        "'Unknown', 'n/a', HTML comments, or hex/id dumps. Those are not real operating systems. "
-        "Never map a garbage/hex/id string to a real OS pair — return null instead. "
-        "Examples of INVALID matches: "
-        "'Cisco IOS 12.2(55)SE9' must NOT match 'Apple iOS 12'; "
-        "'Cisco IOS-XE 17.09.05a' must NOT match 'Apple iOS 17'; "
-        "'Oracle Linux Server 9.5' must NOT match 'AlmaLinux OS 9.5' or 'AlmaLinux OS 9'; "
-        "'Windows Server 2019' must NOT match 'Red Hat Enterprise Linux 9'. "
-        "Examples of VALID matches from this lookup style: "
-        "'Cisco IOS 12.2(55)SE9' -> 'CISCO IOS 12.2'; "
-        "'Cisco IOS-XE 17.09.05a' -> 'Cisco IOS XE 17.9'; "
-        "'Cisco IOS XE 17.03.04a' -> 'Cisco IOS XE 17.3'; "
-        "'Oracle Linux Server 9.5' -> 'Oracle Linux 9'. "
-        "Treat dotted versions that differ only by trailing .0 as the same "
-        "(for example 3.2 and 3.2.0; also 17.03 ~= 17.3 when the pair uses the short form). "
-        "If no pair is a very sure same-vendor match, return pair_index as null for that item. "
-        "For every accepted match include confidence as an integer 0-100. "
-        "Do not return a pair_index when confidence is below "
-        f"{threshold}. "
-        'Respond with JSON: {"matches":[{"item_index":0,"pair_index":1,"confidence":98}]}'
-    )
-    if selected == "openai":
+    system_prompt = resolve_ai_match_prompt(match_prompt, threshold)
+    if selected in {"openai", "openrouter"}:
         system_prompt += (
             " Extra strictness for this request: when two candidates are merely similar, "
             "return null. Do not fill gaps with the closest-looking pair."
