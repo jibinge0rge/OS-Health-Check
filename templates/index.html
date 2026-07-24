@@ -6076,7 +6076,8 @@
 
         if (mode === "manual" && !quiet) {
           showStatus("Saving draft...");
-        } else if (!quiet) {
+        }
+        if (!quiet) {
           dirtyIndicator.textContent = "Saving...";
           dirtyIndicator.classList.add("dirty");
         }
@@ -6125,9 +6126,6 @@
           if (epochAtStart !== draftEpoch) {
             return false;
           }
-          dirtyIndicator.textContent = isDirty ? "Unsaved" : "Saved";
-          dirtyIndicator.classList.toggle("dirty", isDirty);
-          updateSourceUi();
           showStatus(error.message, "error");
           if (isDirty) {
             scheduleAutoSave();
@@ -6139,6 +6137,9 @@
             resolveSaveIdle();
           }
           saveInFlightPromise = null;
+          // setDirty() skips pill updates while saveInFlight is true; sync now.
+          dirtyIndicator.textContent = isDirty ? "Unsaved" : "Saved";
+          dirtyIndicator.classList.toggle("dirty", isDirty);
           updateSourceUi();
         }
       }
