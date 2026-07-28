@@ -1,0 +1,154 @@
+<div class="modal-scrim" id="modal-scrim" hidden>
+
+  <div class="modal" id="modal-refresh" data-width="520" hidden>
+    <div class="modal-header">
+      <div>
+        <div class="modal-eyebrow">EOL/EOAS REFRESH</div>
+        <h2 class="modal-title">Refresh lifecycle data?</h2>
+      </div>
+      <button class="icon-btn modal-close" type="button" data-close-modal aria-label="Close"></button>
+    </div>
+    <div class="modal-body" id="modal-refresh-body">
+      <p id="refresh-summary"></p>
+      <p class="modal-note">Existing EOL/EOAS values on eligible rows are overwritten. Source order: endoflife.date → eosl.date → Juniper Junos → SUSE Lifecycle → Layer23-Switch EOL → Router-Switch EOL.</p>
+    </div>
+    <div class="modal-footer" id="modal-refresh-footer">
+      <button class="btn" type="button" data-close-modal>Cancel</button>
+      <button class="btn primary" id="refresh-confirm-btn" type="button">Refresh EOL/EOAS</button>
+    </div>
+  </div>
+
+  <div class="modal" id="modal-add" data-width="620" hidden>
+    <div class="modal-header">
+      <div>
+        <div class="modal-eyebrow">DRAFT</div>
+        <h2 class="modal-title">Add operating systems</h2>
+      </div>
+      <button class="icon-btn modal-close" type="button" data-close-modal aria-label="Close"></button>
+    </div>
+    <div class="modal-body" id="modal-add-body">
+      <div class="tab-strip small">
+        <button class="tab-item active" data-add-tab="single" type="button">Single OS</button>
+        <button class="tab-item" data-add-tab="list" type="button">Paste list</button>
+        <button class="tab-item" data-add-tab="file" type="button">CSV / Excel</button>
+      </div>
+      <div class="add-tab-panel" id="add-panel-single">
+        <label class="field-label">OS string as it appears in inventory</label>
+        <input type="text" class="text-input" id="add-single-input" placeholder="Oracle Linux Server 9.5" />
+      </div>
+      <div class="add-tab-panel" id="add-panel-list" hidden>
+        <label class="field-label">One OS string per line · duplicates are skipped</label>
+        <textarea class="mono-textarea" id="add-list-input" rows="6"></textarea>
+      </div>
+      <div class="add-tab-panel" id="add-panel-file" hidden>
+        <div class="drop-zone" id="add-file-drop">Drop a CSV or Excel file, or click to choose one</div>
+        <input type="file" id="add-file-input" accept=".csv,.xlsx,.xls" hidden />
+        <div class="column-chip-row" id="add-file-columns"></div>
+      </div>
+      <div class="add-explainer">
+        <div class="add-explainer-title">What happens on add</div>
+        <ol>
+          <li>Ambiguity check when the string contains "/"</li>
+          <li>Fuzzy match against existing normalized pairs (≥ 95%, vendor-gated)</li>
+          <li>AI match if fuzzy fails and AI match is on</li>
+          <li>EOL/EOAS lookup — endoflife.date first, then enabled vendor caches</li>
+        </ol>
+      </div>
+    </div>
+    <div class="modal-footer" id="modal-add-footer">
+      <button class="btn" type="button" data-close-modal>Cancel</button>
+      <button class="btn primary" id="add-confirm-btn" type="button">Add OS</button>
+    </div>
+  </div>
+
+  <div class="modal" id="modal-validate" data-width="560" hidden>
+    <div class="modal-header">
+      <div>
+        <div class="modal-eyebrow">PUBLISH</div>
+        <h2 class="modal-title">Write draft to the published lookup?</h2>
+      </div>
+      <button class="icon-btn modal-close" type="button" data-close-modal aria-label="Close"></button>
+    </div>
+    <div class="modal-body" id="modal-validate-body">
+      <p class="modal-note">The current Data file and its evidence sidecar are backed up first. The draft is then written over Data and deleted.</p>
+      <div class="kpi-row">
+        <div class="kpi-tile"><span class="kpi-label">NEW ROWS</span><span class="kpi-value" id="kpi-new">0</span></div>
+        <div class="kpi-tile"><span class="kpi-label">EDITED ROWS</span><span class="kpi-value" id="kpi-edited">0</span></div>
+        <div class="kpi-tile"><span class="kpi-label">STILL UNRESOLVED</span><span class="kpi-value warn" id="kpi-unresolved">0</span></div>
+      </div>
+      <label class="field-label">Backup name suffix (optional)</label>
+      <input type="text" class="text-input" id="backup-suffix-input" placeholder="pre-q3-refresh" />
+    </div>
+    <div class="modal-footer" id="modal-validate-footer">
+      <button class="btn" type="button" data-close-modal>Cancel</button>
+      <button class="btn primary" id="validate-confirm-btn" type="button">Validate and publish</button>
+    </div>
+  </div>
+
+  <div class="modal" id="modal-delete-draft" data-width="520" hidden>
+    <div class="modal-header">
+      <div>
+        <div class="modal-eyebrow">DRAFT</div>
+        <h2 class="modal-title">Delete this draft?</h2>
+      </div>
+      <button class="icon-btn modal-close" type="button" data-close-modal aria-label="Close"></button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-note">The draft file and its evidence sidecar are removed. Published Data is untouched. This cannot be undone.</p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" type="button" data-close-modal>Cancel</button>
+      <button class="btn danger" id="delete-draft-confirm-btn" type="button">Delete draft</button>
+    </div>
+  </div>
+
+  <div class="modal" id="modal-revert-draft" data-width="520" hidden>
+    <div class="modal-header">
+      <div>
+        <div class="modal-eyebrow">DRAFT</div>
+        <h2 class="modal-title">Revert all changes in this draft?</h2>
+      </div>
+      <button class="icon-btn modal-close" type="button" data-close-modal aria-label="Close"></button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-note">Every row is reset to match the published Data file. Rows you've added are removed. The draft itself is kept — only its contents change. This cannot be undone.</p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" type="button" data-close-modal>Cancel</button>
+      <button class="btn danger" id="revert-draft-confirm-btn" type="button">Revert all changes</button>
+    </div>
+  </div>
+
+  <div class="modal" id="modal-vendor-update" data-width="520" hidden>
+    <div class="modal-header">
+      <div>
+        <div class="modal-eyebrow" id="vendor-update-eyebrow">VENDOR LOOKUPS</div>
+        <h2 class="modal-title" id="vendor-update-title">Update source?</h2>
+      </div>
+      <button class="icon-btn modal-close" type="button" data-close-modal aria-label="Close"></button>
+    </div>
+    <div class="modal-body" id="modal-vendor-update-body"></div>
+    <div class="modal-footer" id="modal-vendor-update-footer">
+      <button class="btn" type="button" data-close-modal>Cancel</button>
+      <button class="btn primary" id="vendor-update-confirm-btn" type="button">Update</button>
+    </div>
+  </div>
+
+  <div class="modal" id="modal-deploy-upload" data-width="520" hidden>
+    <div class="modal-header">
+      <div>
+        <div class="modal-eyebrow" id="deploy-upload-eyebrow">AZURE BLOB</div>
+        <h2 class="modal-title">Upload to storage</h2>
+      </div>
+      <button class="icon-btn modal-close" type="button" data-close-modal aria-label="Close"></button>
+    </div>
+    <div class="modal-body" id="modal-deploy-upload-body"></div>
+    <div class="modal-footer" id="modal-deploy-upload-footer"></div>
+  </div>
+
+</div>
+
+<div class="toast" id="toast" hidden>
+  <span class="toast-dot"></span>
+  <span class="toast-message" id="toast-message"></span>
+</div>

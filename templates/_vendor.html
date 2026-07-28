@@ -1,0 +1,46 @@
+<section class="screen" id="screen-vendor" hidden>
+  <div class="vendor-header">
+    <div class="vendor-header-top">
+      <h1 class="screen-title">Vendor lookups</h1>
+      <span class="chip">READ-ONLY</span>
+      <div class="topbar-spacer"></div>
+      <span class="vendor-meta" id="vendor-meta">Last updated — · 0 products · 0 releases</span>
+      <button class="btn" id="vendor-update-all-btn" type="button">Update all</button>
+      <button class="btn primary" id="vendor-update-source-btn" type="button">Update <span id="vendor-update-source-label">eosl.date</span></button>
+    </div>
+    <p class="screen-note">
+      Browse the local vendor lifecycle databases used to fill EOL/EOAS dates when
+      endoflife.date doesn't have a match. Updating a source refreshes its local
+      vendor lifecycle database only — it does not write dates into the lookup.
+      Run Refresh EOL/EOAS afterward to pull the new data into rows.
+    </p>
+    <div class="vendor-source-picker">
+      <label class="field-label" for="vendor-source-select">Source</label>
+      <select class="select-input" id="vendor-source-select"></select>
+      <span class="vendor-source-status" id="vendor-source-status">
+        <span class="status-dot"></span>
+        <span id="vendor-source-rank"></span>
+      </span>
+    </div>
+  </div>
+  <div class="vendor-table-wrap">
+    <div class="vendor-table-head">
+      <div class="vendor-col">Product</div>
+      <div class="vendor-col">Release</div>
+      <div class="vendor-col">Released</div>
+      <div class="vendor-col">EOL</div>
+      <div class="vendor-col">EOAS</div>
+      <div class="vendor-col">Supported</div>
+    </div>
+    <div class="vendor-table-body" id="vendor-table-body"></div>
+  </div>
+  <div class="table-footer" id="vendor-footer">
+    <span id="vendor-footer-shown"></span>
+    <div class="topbar-spacer"></div>
+    <span>Rows per page</span>
+    <span class="value-chip" id="vendor-rows-per-page-chip">100</span>
+    <span id="vendor-footer-page"></span>
+    <button class="btn tertiary" id="vendor-footer-prev-btn" type="button">Previous</button>
+    <button class="btn tertiary" id="vendor-footer-next-btn" type="button">Next</button>
+  </div>
+</section>

@@ -1,0 +1,34 @@
+<section class="screen" id="screen-background" hidden>
+  <div class="screen-header">
+    <h1 class="screen-title">Background tasks</h1>
+    <p class="screen-note">
+      Refresh EOL/EOAS, vendor lookup updates, and publish keep running here even
+      if you close their progress window or navigate away. You can keep editing
+      data while these run — starting the same kind of task twice isn't allowed
+      until the first one finishes.
+    </p>
+  </div>
+
+  <div class="tab-strip" style="margin: 0 24px;">
+    <button class="tab-item active" data-bg-tab="active" type="button">Active</button>
+    <button class="tab-item" data-bg-tab="history" type="button">History</button>
+  </div>
+
+  <div class="bg-tab-panel" id="bg-tab-active">
+    <div class="bg-tasks-list" id="bg-active-list"></div>
+    <div class="bg-tasks-empty" id="bg-active-empty" hidden>
+      <p>Nothing running right now.</p>
+    </div>
+  </div>
+
+  <div class="bg-tab-panel" id="bg-tab-history" hidden>
+    <div class="bg-history-header">
+      <span class="screen-note" style="margin:0;">Most recent first · last 40 kept</span>
+      <button class="btn tertiary" id="bg-clear-history-btn" type="button">Clear history</button>
+    </div>
+    <div class="bg-tasks-list" id="bg-history-list"></div>
+    <div class="bg-tasks-empty" id="bg-history-empty" hidden>
+      <p>No finished tasks yet.</p>
+    </div>
+  </div>
+</section>

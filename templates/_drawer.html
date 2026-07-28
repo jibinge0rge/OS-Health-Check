@@ -1,0 +1,50 @@
+<aside class="side-panel" id="drawer-panel" hidden>
+  <div class="side-panel-header drawer-header">
+    <div>
+      <div class="side-panel-eyebrow">ROW DETAIL</div>
+      <div class="drawer-title" id="drawer-title"></div>
+    </div>
+    <button class="icon-btn" id="drawer-close-btn" type="button" aria-label="Close row detail"></button>
+  </div>
+  <div class="side-panel-body" id="drawer-body">
+    <div class="drawer-field">
+      <label class="field-label">Normalized OS detailed name</label>
+      <input type="text" class="value-box" data-drawer-field="normalized_os_detailed_name" />
+    </div>
+    <div class="drawer-field">
+      <label class="field-label">Normalized OS</label>
+      <input type="text" class="value-box" data-drawer-field="normalized_os" />
+    </div>
+    <div class="drawer-field">
+      <label class="field-label">EOL date</label>
+      <input type="text" class="value-box" data-drawer-field="eol_date" />
+    </div>
+    <div class="drawer-field">
+      <label class="field-label">EOL status</label>
+      <input type="text" class="value-box" data-drawer-field="eol_status" />
+    </div>
+    <div class="drawer-field">
+      <label class="field-label">EOAS date</label>
+      <input type="text" class="value-box" data-drawer-field="eoas_date" />
+    </div>
+    <div class="drawer-field">
+      <label class="field-label">EOAS status</label>
+      <input type="text" class="value-box" data-drawer-field="eoas_status" />
+    </div>
+    <div class="drawer-field">
+      <label class="field-label">Matched by</label>
+      <input type="text" class="value-box" data-drawer-field="matched_by" readonly />
+    </div>
+
+    <div class="drawer-evidence" id="drawer-evidence">
+      <div class="side-panel-eyebrow">EVIDENCE</div>
+      <div id="drawer-evidence-list"></div>
+    </div>
+
+    <div class="drawer-actions" id="drawer-actions" hidden>
+      <button class="btn" id="drawer-same-as-os-btn" type="button">Same as OS</button>
+      <button class="btn" id="drawer-rerun-btn" type="button">Re-run lookup</button>
+      <button class="btn" id="drawer-revert-btn" type="button">Revert row</button>
+    </div>
+  </div>
+</aside>

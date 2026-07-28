@@ -1,0 +1,87 @@
+<section class="screen" id="screen-editor">
+  <div class="editor-layout">
+    <div class="editor-main">
+      <div class="mode-bar" id="mode-bar">
+        <div class="mode-bar-left">
+          <div class="segmented" id="mode-segmented">
+            <button class="segment active" data-mode="data" type="button">Data</button>
+            <button class="segment" data-mode="draft" type="button" id="segment-draft">Draft</button>
+          </div>
+          <span class="chip" id="mode-chip">PUBLISHED · READ-ONLY</span>
+          <span class="mode-hint" id="mode-hint">Click Edit data to create a draft</span>
+        </div>
+        <div class="mode-bar-right" id="mode-bar-right">
+          <button class="btn primary" id="edit-data-btn" type="button">
+            <span class="icon" style="width:14px;height:14px;background-image:url('/static/icons/edit.svg');background-size:contain;filter:var(--icon-filter)"></span>
+            Edit data
+          </button>
+        </div>
+      </div>
+
+      <div class="toolbar" id="editor-toolbar">
+        <div class="search-field">
+          <span class="icon search-icon" id="toolbar-search-icon"></span>
+          <input type="search" id="search-input" placeholder="Search OS, normalized name…" autocomplete="off" />
+        </div>
+        <div class="quick-chips" id="quick-chips"></div>
+        <div class="action-cluster" id="action-cluster">
+          <button class="btn" id="refresh-eol-btn" type="button">
+            <span class="icon" style="width:14px;height:14px;background-image:url('/static/icons/retry.svg');background-size:contain;filter:var(--icon-filter)"></span>
+            Refresh EOL/EOAS
+          </button>
+          <button class="btn" id="add-os-btn" type="button" hidden>
+            <span class="icon" style="width:14px;height:14px;background-image:url('/static/icons/add.svg');background-size:contain;filter:var(--icon-filter)"></span>
+            Add OS
+          </button>
+          <button class="btn" id="export-btn" type="button">
+            <span class="icon" style="width:14px;height:14px;background-image:url('/static/icons/download.svg');background-size:contain;filter:var(--icon-filter)"></span>
+            Export
+          </button>
+          <button class="btn" id="column-filters-btn" type="button">
+            <span class="icon" id="sliders-icon"></span>
+            Column filters
+            <span class="filter-count-badge" id="filter-count-badge" hidden>0</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="bulk-bar" id="bulk-bar" hidden>
+        <span id="bulk-count">0 selected</span>
+        <div class="bulk-divider"></div>
+        <button class="btn tertiary" id="bulk-refresh-btn" type="button">Refresh lifecycle</button>
+        <button class="btn tertiary" id="bulk-same-as-os-btn" type="button">Same as OS</button>
+        <button class="btn tertiary" id="bulk-revert-btn" type="button">Revert to Data</button>
+        <button class="btn tertiary" id="bulk-export-btn" type="button">Export selection</button>
+        <button class="btn danger" id="bulk-delete-btn" type="button">Delete</button>
+        <div class="topbar-spacer"></div>
+        <button class="btn tertiary" id="bulk-clear-btn" type="button">Clear</button>
+      </div>
+
+      <div class="table-scroll" id="table-scroll">
+        <div class="table-track" id="table-track">
+          <div class="table-header-row" id="table-header-row"></div>
+          <div class="table-body" id="table-body"></div>
+        </div>
+        <div class="table-empty" id="table-empty" hidden>
+          <p>No rows match this filter.</p>
+          <button class="btn" id="clear-filters-btn" type="button">Clear filters</button>
+        </div>
+      </div>
+
+      <div class="table-footer" id="table-footer">
+        <span id="footer-shown"></span>
+        <div class="footer-divider"></div>
+        <span id="footer-breakdown"></span>
+        <div class="topbar-spacer"></div>
+        <span>Rows per page</span>
+        <span class="value-chip" id="rows-per-page-chip">100</span>
+        <span id="footer-page"></span>
+        <button class="btn tertiary" id="footer-prev-btn" type="button">Previous</button>
+        <button class="btn tertiary" id="footer-next-btn" type="button">Next</button>
+      </div>
+    </div>
+
+    {% include "_filters_panel.html" %}
+    {% include "_drawer.html" %}
+  </div>
+</section>
