@@ -309,6 +309,7 @@ const QUICK_CHIPS = [
   ["all", "All"],
   ["missing", "Missing normalization"],
   ["eol", "Past EOL"],
+  ["eoas", "Past EOAS"],
   ["nodates", "No dates"],
   ["ambiguous", "Ambiguous"],
   ["changed", "Changed"],
@@ -324,6 +325,7 @@ function rowMatchesChip(row, chip) {
   switch (chip) {
     case "missing": return !String(row.normalized_os_detailed_name || "").trim() || !String(row.normalized_os || "").trim();
     case "eol": { const d = parseRowDate(row.eol_date); return d && d.getTime() < Date.now(); }
+    case "eoas": { const d = parseRowDate(row.eoas_date); return d && d.getTime() < Date.now(); }
     case "nodates": return !String(row.eol_date || "").trim() && !String(row.eoas_date || "").trim();
     case "ambiguous": return isAmbiguousRow(row);
     case "changed": return isDraft() && (addedSet.has(dedupeKey(row.os_string)) || editedSet.has(dedupeKey(row.os_string)));
@@ -361,7 +363,66 @@ function matchesSearch(row) {
 }
 
 function visibleRowsUnpaged() {
-  return currentRows().filter((row) => matchesSearch(row) && rowMatchesChip(row, state.chip) && matchesColumnFilters(row));
+  const filtered = currentRows().filter((row) => matchesSearch(row) && rowMatchesChip(row, state.chip) && matchesColumnFilters(row));
+  if (state.sort.key) filtered.sort((a, b) => compareRows(a, b, state.sort.key, state.sort.dir));
+  return filtered;
+}
+
+// ---------- Column sort ----------
+
+const SORTABLE_COLUMNS = [
+  { label: "OS string", key: "os_string" },
+  { label: "Normalized detailed name", key: "normalized_os_detailed_name" },
+  { label: "Normalized OS", key: "normalized_os" },
+  { label: "EOL date", key: "eol_date" },
+  { label: "EOL status", key: "eol_status" },
+  { label: "EOAS date", key: "eoas_date" },
+  { label: "EOAS status", key: "eoas_status" },
+];
+const DATE_SORT_KEYS = new Set(["eol_date", "eoas_date"]);
+
+function sortValue(row, key) {
+  const raw = row[key];
+  if (DATE_SORT_KEYS.has(key)) {
+    const d = parseRowDate(raw);
+    return d ? d.getTime() : null;
+  }
+  const s = String(raw || "").trim();
+  return s ? s.toLowerCase() : null;
+}
+
+/** Blank/unparseable values always sort last, regardless of direction --
+ * matches how the table already renders them ("none" chips at a glance
+ * read as "nothing to compare", not as the lowest possible value). */
+function compareRows(a, b, key, dir) {
+  const va = sortValue(a, key);
+  const vb = sortValue(b, key);
+  if (va === null && vb === null) return 0;
+  if (va === null) return 1;
+  if (vb === null) return -1;
+  const cmp = typeof va === "number" ? va - vb : (va < vb ? -1 : va > vb ? 1 : 0);
+  return dir === "asc" ? cmp : -cmp;
+}
+
+function sortIndicator(key) {
+  if (state.sort.key !== key) return "";
+  return state.sort.dir === "asc" ? " &#9650;" : " &#9660;";
+}
+
+function columnHeaderHtml(col) {
+  return `<span class="col-head sortable ${state.sort.key === col.key ? "active" : ""}" data-sort-key="${col.key}">${col.label}${sortIndicator(col.key)}</span>`;
+}
+
+function bindSortHeaders() {
+  el.tableHeaderRow.querySelectorAll("[data-sort-key]").forEach((headEl) => {
+    headEl.addEventListener("click", () => {
+      const key = headEl.dataset.sortKey;
+      if (state.sort.key !== key) state.sort = { key, dir: "asc" };
+      else if (state.sort.dir === "asc") state.sort = { key, dir: "desc" };
+      else state.sort = { key: null, dir: "asc" };
+      renderAll();
+    });
+  });
 }
 
 // ---------- Rendering ----------
@@ -452,18 +513,16 @@ function renderTable() {
 
   const filtered = visibleRowsUnpaged();
 
+  const columnHeadersHtml = SORTABLE_COLUMNS.map(columnHeaderHtml);
   if (isDraft()) {
     const allSelected = filtered.length > 0 && filtered.every((r) => state.selected.has(r.os_string));
     const headerCheckboxHtml = `<span class="row-checkbox ${allSelected ? "checked" : ""}" id="header-select-all" title="${allSelected ? "Deselect all" : "Select all filtered rows"}">${iconMarkup("check", { size: 10 })}</span>`;
-    const headerCols = [headerCheckboxHtml, "OS string", "Normalized detailed name", "Normalized OS", "EOL date", "EOL status", "EOAS date", "EOAS status"];
-    el.tableHeaderRow.innerHTML = headerCols
-      .map((label) => (label.startsWith("<span") ? label : `<span class="col-head">${label}</span>`))
-      .join("");
+    el.tableHeaderRow.innerHTML = [headerCheckboxHtml, ...columnHeadersHtml].join("");
     document.getElementById("header-select-all").addEventListener("click", () => toggleSelectAllFiltered(filtered));
   } else {
-    const headerCols = ["OS string", "Normalized detailed name", "Normalized OS", "EOL date", "EOL status", "EOAS date", "EOAS status"];
-    el.tableHeaderRow.innerHTML = headerCols.map((label) => `<span class="col-head">${label}</span>`).join("");
+    el.tableHeaderRow.innerHTML = columnHeadersHtml.join("");
   }
+  bindSortHeaders();
 
   const size = PAGE_SIZE_OPTIONS[pageSizeIndex];
   const totalPages = Math.max(1, Math.ceil(filtered.length / size));
@@ -640,7 +699,8 @@ async function* addOsPipeline(osStrings) {
         row.normalized_os_detailed_name = exact.normalized_os_detailed_name;
         row.normalized_os = exact.normalized_os;
       } else if (settings.ai_enabled) {
-        const [suggestion] = await api.normalizeSuggest([osString], allowedPairs, 85).then((r) => r.results).catch(() => [null]);
+        const threshold = settings.ai_confidence_threshold ?? 85;
+        const [suggestion] = await api.normalizeSuggest([osString], allowedPairs, threshold).then((r) => r.results).catch(() => [null]);
         if (suggestion) {
           row.normalized_os_detailed_name = suggestion.normalized_os_detailed_name;
           row.normalized_os = suggestion.normalized_os;

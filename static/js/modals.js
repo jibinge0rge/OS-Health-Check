@@ -52,6 +52,59 @@ export function closeModal() {
   activeModalEl = null;
 }
 
+/**
+ * Replaces window.prompt() with an in-app modal matching the rest of the
+ * UI's chrome. Resolves with the trimmed input value, or null if the user
+ * cancels via the Cancel button, X, Escape, or a backdrop click.
+ */
+export function promptModal({ eyebrow = "", title = "", label = "", placeholder = "", confirmLabel = "OK", initialValue = "" } = {}) {
+  return new Promise((resolve) => {
+    document.getElementById("prompt-eyebrow").textContent = eyebrow;
+    document.getElementById("prompt-title").textContent = title;
+    document.getElementById("prompt-label").textContent = label;
+    const input = document.getElementById("prompt-input");
+    input.placeholder = placeholder;
+    input.value = initialValue;
+    const confirmBtn = document.getElementById("prompt-confirm-btn");
+    confirmBtn.textContent = confirmLabel;
+
+    let settled = false;
+    const cleanup = () => {
+      confirmBtn.removeEventListener("click", onConfirm);
+      input.removeEventListener("keydown", onKeydown);
+    };
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    };
+    const onConfirm = () => {
+      const value = input.value.trim();
+      if (!value) {
+        input.focus();
+        return;
+      }
+      finish(value);
+      closeModal();
+    };
+    const onKeydown = (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        onConfirm();
+      }
+    };
+    confirmBtn.addEventListener("click", onConfirm);
+    input.addEventListener("keydown", onKeydown);
+
+    openModal("modal-prompt");
+    // Cancel / X / Escape / backdrop all route through closeModal(), which
+    // runs activeDetach -- reuse that hook so every dismissal path resolves.
+    activeDetach = () => finish(null);
+    setTimeout(() => input.focus(), 50);
+  });
+}
+
 let toastTimer = null;
 export function showToast(message) {
   const toast = document.getElementById("toast");

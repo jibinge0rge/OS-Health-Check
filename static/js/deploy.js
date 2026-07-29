@@ -1,7 +1,7 @@
-// Deploy screen: Azure Blob / AWS S3 / Google Cloud Storage, multi-profile.
+// Deploy screen: Azure Blob / AWS S3, multi-profile.
 
 import { api, streams } from "./api.js";
-import { openModal, closeModal, runProgress, showToast } from "./modals.js";
+import { openModal, promptModal, runProgress, showToast } from "./modals.js";
 
 const PROVIDERS = {
   azure: {
@@ -24,19 +24,10 @@ const PROVIDERS = {
     authLabel: "AWS CLI (aws configure)",
     get: api.getAwsSettings, put: api.putAwsSettings, uploadStream: streams.awsUpload,
   },
-  gcp: {
-    label: "Google Cloud Storage",
-    fields: [
-      { key: "bucket", label: "Bucket" },
-      { key: "blob_name", label: "Blob path" },
-    ],
-    authLabel: "gcloud CLI (gcloud auth login)",
-    get: api.getGcpSettings, put: api.putGcpSettings, uploadStream: streams.gcpUpload,
-  },
 };
 
 let activeProvider = "azure";
-let stores = { azure: { active_profile_id: "", profiles: [] }, aws: { active_profile_id: "", profiles: [] }, gcp: { active_profile_id: "", profiles: [] } };
+let stores = { azure: { active_profile_id: "", profiles: [] }, aws: { active_profile_id: "", profiles: [] } };
 let activeProfileId = "";
 
 export async function initDeploy() {
@@ -60,7 +51,6 @@ export async function initDeploy() {
 function renderProviderCards() {
   document.getElementById("provider-count-azure").textContent = countLabel(stores.azure);
   document.getElementById("provider-count-aws").textContent = countLabel(stores.aws);
-  document.getElementById("provider-count-gcp").textContent = countLabel(stores.gcp);
   document.querySelectorAll(".provider-card").forEach((card) => card.classList.toggle("active", card.dataset.provider === activeProvider));
 }
 
@@ -103,13 +93,20 @@ function renderProfileUI() {
   deleteBtn.title = hasProfile && store.profiles.length <= 1 ? "At least one profile must remain — edit or overwrite it instead." : "";
 }
 
-function createProfile() {
+async function createProfile() {
+  const provider = PROVIDERS[activeProvider];
+  const name = await promptModal({
+    eyebrow: "DEPLOY",
+    title: "New profile",
+    label: `${provider.label} profile name`,
+    placeholder: "prod-eu",
+    confirmLabel: "Create",
+  });
+  if (!name) return;
   const store = stores[activeProvider];
-  const name = prompt("Profile name (e.g. prod-eu)");
-  if (!name || !name.trim()) return;
   const id = `new-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-  const blank = { id, name: name.trim() };
-  PROVIDERS[activeProvider].fields.forEach((f) => { blank[f.key] = ""; });
+  const blank = { id, name };
+  provider.fields.forEach((f) => { blank[f.key] = ""; });
   store.profiles.push(blank);
   activeProfileId = id;
   renderProviderCards();
@@ -160,6 +157,8 @@ function uploadActiveProfile() {
   const bodyEl = document.getElementById("modal-deploy-upload-body");
   const footerEl = document.getElementById("modal-deploy-upload-footer");
   runProgress({
+    kind: `deploy-upload:${activeProvider}`,
+    label: `Upload to ${provider.label}`,
     bodyEl, footerEl,
     eventGenerator: provider.uploadStream(activeProfileId),
     onCancel: () => {},

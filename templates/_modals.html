@@ -146,6 +146,24 @@
     <div class="modal-footer" id="modal-deploy-upload-footer"></div>
   </div>
 
+  <div class="modal" id="modal-prompt" data-width="440" hidden>
+    <div class="modal-header">
+      <div>
+        <div class="modal-eyebrow" id="prompt-eyebrow"></div>
+        <h2 class="modal-title" id="prompt-title"></h2>
+      </div>
+      <button class="icon-btn modal-close" type="button" data-close-modal aria-label="Close"></button>
+    </div>
+    <div class="modal-body">
+      <label class="field-label" id="prompt-label"></label>
+      <input type="text" class="text-input" id="prompt-input" />
+    </div>
+    <div class="modal-footer">
+      <button class="btn" type="button" data-close-modal>Cancel</button>
+      <button class="btn primary" id="prompt-confirm-btn" type="button">OK</button>
+    </div>
+  </div>
+
 </div>
 
 <div class="toast" id="toast" hidden>

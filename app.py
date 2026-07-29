@@ -52,10 +52,15 @@ from vendor_lookups.vendor_lookup_service import (
     sync_source as vendor_sync_source,
 )
 from normalization_service import (
+    AI_MODEL_CHOICES,
     DEFAULT_AI_MATCH_PROMPT,
+    DEFAULT_AI_MODELS,
     DEFAULT_FUZZY_MATCH_THRESHOLD,
     detect_ambiguous_os_batch,
+    gemini_model_name,
     normalize_ai_provider,
+    openai_model_name,
+    openrouter_model_name,
     provider_api_key_configured,
     strip_ai_match_response_format,
     suggest_normalization_batch,
@@ -81,7 +86,6 @@ BACKUP_DIR = BASE_DIR / "_backup"
 CONFIG_DIR = BASE_DIR / "_config"
 AZURE_CONFIG_PATH = CONFIG_DIR / "azure.json"
 AWS_CONFIG_PATH = CONFIG_DIR / "aws.json"
-GCP_CONFIG_PATH = CONFIG_DIR / "gcp.json"
 APP_SETTINGS_PATH = CONFIG_DIR / "app_settings.json"
 CSV_HEADERS = [
     "os_string",
@@ -321,38 +325,6 @@ class AwsSettingsSaveRequest(BaseModel):
         return str(value or "").strip()
 
 
-class GcpProfile(BaseModel):
-    id: str = ""
-    name: str = ""
-    bucket: str = ""
-    blob_name: str = ""
-
-    @field_validator("id", "name", "bucket", "blob_name", mode="before")
-    @classmethod
-    def strip_optional_fields(cls, value: object) -> str:
-        return str(value or "").strip()
-
-
-class GcpSettingsStore(BaseModel):
-    active_profile_id: str = ""
-    profiles: list[GcpProfile] = Field(default_factory=list)
-
-    @field_validator("active_profile_id", mode="before")
-    @classmethod
-    def strip_active_profile_id(cls, value: object) -> str:
-        return str(value or "").strip()
-
-
-class GcpSettingsSaveRequest(BaseModel):
-    active_profile_id: str = ""
-    profiles: list[GcpProfile] = Field(default_factory=list)
-
-    @field_validator("active_profile_id", mode="before")
-    @classmethod
-    def strip_active_profile_id(cls, value: object) -> str:
-        return str(value or "").strip()
-
-
 class RowRefreshRequest(BaseModel):
     """Re-run EOL/EOAS lookup (endoflife.date, then the vendor cascade) for one row."""
 
@@ -377,11 +349,26 @@ class LookupValidateStreamRequest(LookupPayload):
     """Same body as /api/lookup/validate, just streamed for progress UI parity."""
 
 
+def _clean_ai_models(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    cleaned: dict[str, str] = {}
+    for provider in ("openai", "gemini", "openrouter"):
+        model = str(value.get(provider) or "").strip()
+        if model:
+            cleaned[provider] = model
+    return cleaned
+
+
 class AppSettings(BaseModel):
     ai_enabled: bool = False
     ai_provider: str = "openai"
     # Empty means use DEFAULT_AI_MATCH_PROMPT at match time.
     ai_match_prompt: str = ""
+    # Confidence cutoff (0-100) an AI match must meet to be accepted.
+    ai_confidence_threshold: int = 85
+    # Per-provider model override; missing/empty means use that provider's default.
+    ai_models: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("ai_provider", mode="before")
     @classmethod
@@ -395,18 +382,48 @@ class AppSettings(BaseModel):
             return ""
         return str(value).strip()
 
+    @field_validator("ai_confidence_threshold", mode="before")
+    @classmethod
+    def validate_ai_confidence_threshold(cls, value: object) -> int:
+        try:
+            threshold = int(value)
+        except (TypeError, ValueError):
+            threshold = 85
+        return max(50, min(100, threshold))
+
+    @field_validator("ai_models", mode="before")
+    @classmethod
+    def validate_ai_models(cls, value: object) -> dict[str, str]:
+        return _clean_ai_models(value)
+
 
 class AppSettingsUpdateRequest(BaseModel):
-    """Partial settings update. Omit ai_match_prompt to leave it unchanged."""
+    """Partial settings update. Omit a field to leave it unchanged."""
 
     ai_enabled: bool = False
     ai_provider: str = "openai"
     ai_match_prompt: str | None = None
+    ai_confidence_threshold: int | None = None
+    ai_models: dict[str, str] | None = None
 
     @field_validator("ai_provider", mode="before")
     @classmethod
     def validate_ai_provider(cls, value: object) -> str:
         return normalize_ai_provider(value)
+
+    @field_validator("ai_confidence_threshold")
+    @classmethod
+    def validate_ai_confidence_threshold(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        return max(50, min(100, int(value)))
+
+    @field_validator("ai_models", mode="before")
+    @classmethod
+    def validate_ai_models(cls, value: object) -> dict[str, str] | None:
+        if value is None:
+            return None
+        return _clean_ai_models(value)
 
 
 class AppSettingsResponse(BaseModel):
@@ -418,6 +435,10 @@ class AppSettingsResponse(BaseModel):
     openrouter_available: bool = False
     ai_match_prompt: str = ""
     default_ai_match_prompt: str = DEFAULT_AI_MATCH_PROMPT
+    ai_confidence_threshold: int = 85
+    ai_models: dict[str, str] = Field(default_factory=dict)
+    ai_model_choices: dict[str, list[str]] = Field(default_factory=dict)
+    default_ai_models: dict[str, str] = Field(default_factory=dict)
 
 
 AZURE_PROGRESS_RE = re.compile(r"(\d+(?:\.\d+)?)%")
@@ -873,80 +894,6 @@ def resolve_aws_profile(profile_id: str = "") -> AwsProfile:
     return profile
 
 
-def _new_gcp_profile_id() -> str:
-    return uuid.uuid4().hex
-
-
-def _normalize_gcp_store(payload: dict[str, object] | None) -> GcpSettingsStore:
-    if not isinstance(payload, dict):
-        return GcpSettingsStore()
-
-    raw_profiles = payload.get("profiles")
-    profiles: list[GcpProfile] = []
-    seen_ids: set[str] = set()
-    if isinstance(raw_profiles, list):
-        for item in raw_profiles:
-            if not isinstance(item, dict):
-                continue
-            profile_id = str(item.get("id") or "").strip() or _new_gcp_profile_id()
-            if profile_id in seen_ids:
-                profile_id = _new_gcp_profile_id()
-            seen_ids.add(profile_id)
-            name = str(item.get("name") or "").strip() or "Untitled"
-            profiles.append(
-                GcpProfile(
-                    id=profile_id,
-                    name=name,
-                    bucket=str(item.get("bucket") or "").strip(),
-                    blob_name=str(item.get("blob_name") or "").strip(),
-                )
-            )
-
-    active_profile_id = str(payload.get("active_profile_id") or "").strip()
-    if profiles:
-        valid_ids = {profile.id for profile in profiles}
-        if active_profile_id not in valid_ids:
-            active_profile_id = profiles[0].id
-    else:
-        active_profile_id = ""
-
-    return GcpSettingsStore(active_profile_id=active_profile_id, profiles=profiles)
-
-
-def load_gcp_settings_store() -> GcpSettingsStore:
-    if not GCP_CONFIG_PATH.exists():
-        return GcpSettingsStore()
-    try:
-        with GCP_CONFIG_PATH.open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, json.JSONDecodeError) as error:
-        raise HTTPException(status_code=500, detail="GCP settings file is invalid.") from error
-    return _normalize_gcp_store(payload)
-
-
-def save_gcp_settings_store(store: GcpSettingsStore) -> GcpSettingsStore:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    normalized = _normalize_gcp_store(store.model_dump())
-    with GCP_CONFIG_PATH.open("w", encoding="utf-8") as handle:
-        json.dump(normalized.model_dump(), handle, indent=2)
-        handle.write("\n")
-    return normalized
-
-
-def resolve_gcp_profile(profile_id: str = "") -> GcpProfile:
-    store = load_gcp_settings_store()
-    target_id = profile_id.strip() or store.active_profile_id
-    profile = next((item for item in store.profiles if item.id == target_id), None)
-    if profile is None and store.profiles:
-        profile = store.profiles[0]
-    if profile is None or not profile.bucket or not profile.blob_name:
-        raise HTTPException(
-            status_code=400,
-            detail="GCS settings are not configured. Save a profile first.",
-        )
-    return profile
-
-
 def load_app_settings() -> AppSettings:
     if not APP_SETTINGS_PATH.exists():
         return AppSettings()
@@ -972,6 +919,8 @@ def load_app_settings() -> AppSettings:
         ai_enabled=bool(payload.get("ai_enabled", False)),
         ai_provider=normalize_ai_provider(payload.get("ai_provider", "openai")),
         ai_match_prompt=cleaned_prompt,
+        ai_confidence_threshold=payload.get("ai_confidence_threshold", 85),
+        ai_models=payload.get("ai_models", {}),
     )
 
 
@@ -988,6 +937,11 @@ def app_settings_response() -> AppSettingsResponse:
     openai_available = openai_api_key_configured()
     gemini_available = gemini_api_key_configured()
     openrouter_available = openrouter_api_key_configured()
+    effective_models = {
+        "openai": openai_model_name(settings.ai_models.get("openai")),
+        "gemini": gemini_model_name(settings.ai_models.get("gemini")),
+        "openrouter": openrouter_model_name(settings.ai_models.get("openrouter")),
+    }
     return AppSettingsResponse(
         ai_enabled=settings.ai_enabled,
         ai_provider=settings.ai_provider,
@@ -997,6 +951,10 @@ def app_settings_response() -> AppSettingsResponse:
         openrouter_available=openrouter_available,
         ai_match_prompt=settings.ai_match_prompt,
         default_ai_match_prompt=DEFAULT_AI_MATCH_PROMPT,
+        ai_confidence_threshold=settings.ai_confidence_threshold,
+        ai_models=effective_models,
+        ai_model_choices=AI_MODEL_CHOICES,
+        default_ai_models=DEFAULT_AI_MODELS,
     )
 
 
@@ -1213,71 +1171,6 @@ async def aws_upload_events(profile: AwsProfile) -> AsyncIterator[str]:
                 "type": "error",
                 "message": (
                     f"AWS S3 upload failed with exit code {return_code}." if return_code is not None else "AWS S3 upload failed."
-                ),
-                "output": result_lines,
-            }
-        )
-    finally:
-        process = process_holder[0]
-        if process is not None and process.poll() is None:
-            process.kill()
-            process.wait()
-        worker.join(timeout=1)
-
-
-async def gcp_upload_events(profile: GcpProfile) -> AsyncIterator[str]:
-    if not DATA_PATH.exists():
-        yield sse_event({"type": "error", "message": "Data lookup CSV not found at _data/eol_lookup.csv."})
-        return
-
-    gcloud_path = shutil.which("gcloud")
-    if not gcloud_path:
-        yield sse_event(
-            {"type": "error", "message": "Google Cloud CLI (gcloud) is not installed or not available on PATH."}
-        )
-        return
-
-    destination = f"gs://{profile.bucket}/{profile.blob_name}"
-    command = [gcloud_path, "storage", "cp", str(DATA_PATH), destination]
-
-    yield sse_event({"type": "start", "message": f"Uploading _data/eol_lookup.csv to {destination}"})
-
-    output_queue: asyncio.Queue[str | None] = asyncio.Queue()
-    loop = asyncio.get_running_loop()
-    process_holder: list[subprocess.Popen[str] | None] = [None]
-    worker = threading.Thread(
-        target=_stream_az_upload_to_queue,
-        args=(command, str(BASE_DIR), output_queue, loop, process_holder),
-        daemon=True,
-    )
-    worker.start()
-
-    result_lines: list[str] = []
-    return_code: int | None = None
-    try:
-        while True:
-            item = await output_queue.get()
-            if item is None:
-                break
-            if item.startswith("__RETURN_CODE__:"):
-                return_code = int(item.split(":", 1)[1])
-                continue
-            if item.startswith("__ERROR__:"):
-                yield sse_event({"type": "error", "message": item.split(":", 1)[1], "output": result_lines})
-                return
-            if not item:
-                continue
-            result_lines.append(item)
-            yield sse_event({"type": "progress", "message": item, "percent": parse_azure_progress_line(item)})
-
-        if return_code == 0:
-            yield sse_event({"type": "complete", "message": "Google Cloud Storage upload completed successfully.", "output": result_lines})
-            return
-        yield sse_event(
-            {
-                "type": "error",
-                "message": (
-                    f"GCS upload failed with exit code {return_code}." if return_code is not None else "GCS upload failed."
                 ),
                 "output": result_lines,
             }
@@ -1690,10 +1583,18 @@ async def update_app_settings(payload: AppSettingsUpdateRequest) -> AppSettingsR
         prompt = strip_ai_match_response_format(payload.ai_match_prompt)
         if prompt == DEFAULT_AI_MATCH_PROMPT.strip():
             prompt = ""
+    threshold = current.ai_confidence_threshold if payload.ai_confidence_threshold is None else payload.ai_confidence_threshold
+    if payload.ai_models is None:
+        models = current.ai_models
+    else:
+        # Merge rather than replace so setting one provider's model doesn't drop the others.
+        models = {**current.ai_models, **payload.ai_models}
     merged = AppSettings(
         ai_enabled=payload.ai_enabled,
         ai_provider=normalize_ai_provider(payload.ai_provider or current.ai_provider),
         ai_match_prompt=prompt,
+        ai_confidence_threshold=threshold,
+        ai_models=models,
     )
     save_app_settings(merged)
     return app_settings_response()
@@ -1777,38 +1678,6 @@ async def upload_lookup_to_aws(profile_id: str = "") -> StreamingResponse:
     )
 
 
-@app.get("/api/gcp/settings")
-async def get_gcp_settings() -> GcpSettingsStore:
-    return load_gcp_settings_store()
-
-
-@app.put("/api/gcp/settings")
-async def update_gcp_settings(payload: GcpSettingsSaveRequest) -> GcpSettingsStore:
-    if not payload.profiles:
-        raise HTTPException(status_code=400, detail="Add at least one Google Cloud Storage profile before saving.")
-    for profile in payload.profiles:
-        if not profile.name:
-            raise HTTPException(status_code=400, detail="Each GCS profile needs a name.")
-        if not profile.bucket or not profile.blob_name:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Profile '{profile.name}' is incomplete. Fill bucket and blob path.",
-            )
-    return save_gcp_settings_store(
-        GcpSettingsStore(active_profile_id=payload.active_profile_id, profiles=payload.profiles)
-    )
-
-
-@app.post("/api/gcp/upload")
-async def upload_lookup_to_gcp(profile_id: str = "") -> StreamingResponse:
-    profile = resolve_gcp_profile(profile_id)
-    return StreamingResponse(
-        gcp_upload_events(profile),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
-    )
-
-
 @app.post("/api/normalize-suggest")
 async def normalize_suggest(payload: NormalizeSuggestRequest) -> dict[str, object]:
     if not payload.items:
@@ -1825,6 +1694,7 @@ async def normalize_suggest(payload: NormalizeSuggestRequest) -> dict[str, objec
         payload.fuzzy_match_threshold,
         settings.ai_provider,
         settings.ai_match_prompt,
+        settings.ai_models.get(settings.ai_provider),
     )
 
     results: list[NormalizeSuggestResult | None] = []
@@ -1851,6 +1721,7 @@ async def ambiguous_os_detect(payload: AmbiguousOsDetectRequest) -> dict[str, ob
         detect_ambiguous_os_batch,
         [item.os_string for item in payload.items],
         settings.ai_provider,
+        settings.ai_models.get(settings.ai_provider),
     )
     return {"results": results, "ai_provider": settings.ai_provider}
 

@@ -21,6 +21,23 @@ DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
 DEFAULT_OPENROUTER_MODEL = "openrouter/free"
 DEFAULT_FUZZY_MATCH_THRESHOLD = 95
 AiProvider = Literal["openai", "gemini", "openrouter"]
+
+# Curated suggestions shown in Settings; users may type any other model id
+# (OpenRouter in particular proxies far more models than we could enumerate).
+AI_MODEL_CHOICES: dict[str, list[str]] = {
+    "openai": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1"],
+    "gemini": ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-1.5-pro"],
+    "openrouter": [
+        "openrouter/free",
+        "meta-llama/llama-3.1-8b-instruct:free",
+        "google/gemini-2.0-flash-001",
+    ],
+}
+DEFAULT_AI_MODELS: dict[str, str] = {
+    "openai": DEFAULT_OPENAI_MODEL,
+    "gemini": DEFAULT_GEMINI_MODEL,
+    "openrouter": DEFAULT_OPENROUTER_MODEL,
+}
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 GEMINI_GENERATE_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -449,16 +466,16 @@ def provider_api_key_configured(provider: object) -> bool:
     return bool(openai_api_key())
 
 
-def openai_model_name() -> str:
-    return _clean(os.environ.get("OPENAI_MODEL")) or DEFAULT_OPENAI_MODEL
+def openai_model_name(override: object = None) -> str:
+    return _clean(override) or _clean(os.environ.get("OPENAI_MODEL")) or DEFAULT_OPENAI_MODEL
 
 
-def gemini_model_name() -> str:
-    return _clean(os.environ.get("GEMINI_MODEL")) or DEFAULT_GEMINI_MODEL
+def gemini_model_name(override: object = None) -> str:
+    return _clean(override) or _clean(os.environ.get("GEMINI_MODEL")) or DEFAULT_GEMINI_MODEL
 
 
-def openrouter_model_name() -> str:
-    return _clean(os.environ.get("OPENROUTER_MODEL")) or DEFAULT_OPENROUTER_MODEL
+def openrouter_model_name(override: object = None) -> str:
+    return _clean(override) or _clean(os.environ.get("OPENROUTER_MODEL")) or DEFAULT_OPENROUTER_MODEL
 
 
 def _extract_json_object(text: str) -> dict[str, Any] | None:
@@ -519,23 +536,25 @@ def _complete_json_openai_compatible(
     return _extract_json_object(content)
 
 
-def _complete_json_openai(system_prompt: str, user_prompt: str) -> dict[str, Any] | None:
+def _complete_json_openai(
+    system_prompt: str, user_prompt: str, model: object = None
+) -> dict[str, Any] | None:
     return _complete_json_openai_compatible(
         system_prompt,
         user_prompt,
         api_key=openai_api_key(),
-        model=openai_model_name(),
+        model=openai_model_name(model),
     )
 
 
 def _complete_json_openrouter(
-    system_prompt: str, user_prompt: str
+    system_prompt: str, user_prompt: str, model: object = None
 ) -> dict[str, Any] | None:
     return _complete_json_openai_compatible(
         system_prompt,
         user_prompt,
         api_key=openrouter_api_key(),
-        model=openrouter_model_name(),
+        model=openrouter_model_name(model),
         base_url=OPENROUTER_BASE_URL,
         default_headers={
             "HTTP-Referer": "https://github.com/local/os-health-check",
@@ -544,12 +563,14 @@ def _complete_json_openrouter(
     )
 
 
-def _complete_json_gemini(system_prompt: str, user_prompt: str) -> dict[str, Any] | None:
+def _complete_json_gemini(
+    system_prompt: str, user_prompt: str, model: object = None
+) -> dict[str, Any] | None:
     api_key = gemini_api_key()
     if not api_key:
         return None
 
-    model = gemini_model_name()
+    model = gemini_model_name(model)
     url = GEMINI_GENERATE_URL.format(model=model)
     payload = {
         "systemInstruction": {"parts": [{"text": system_prompt}]},
@@ -594,13 +615,14 @@ def complete_json(
     system_prompt: str,
     user_prompt: str,
     provider: object = "openai",
+    model: object = None,
 ) -> dict[str, Any] | None:
     selected = normalize_ai_provider(provider)
     if selected == "gemini":
-        return _complete_json_gemini(system_prompt, user_prompt)
+        return _complete_json_gemini(system_prompt, user_prompt, model)
     if selected == "openrouter":
-        return _complete_json_openrouter(system_prompt, user_prompt)
-    return _complete_json_openai(system_prompt, user_prompt)
+        return _complete_json_openrouter(system_prompt, user_prompt, model)
+    return _complete_json_openai(system_prompt, user_prompt, model)
 
 
 def _vendor_tags(value: object) -> set[str]:
@@ -740,6 +762,7 @@ def _pair_from_index(index: int | None, allowed_pairs: list[dict[str, str]]) -> 
 def detect_ambiguous_os_batch(
     os_strings: list[str],
     provider: object = "openai",
+    model: object = None,
 ) -> list[bool]:
     """Return True when an OS string lists multiple distinct products separated by '/'."""
     cleaned_strings = [_clean(value) for value in os_strings]
@@ -776,7 +799,7 @@ def detect_ambiguous_os_batch(
         'Respond with JSON: {"results":[{"item_index":0,"ambiguous":true}]}'
     )
     user_prompt = json.dumps({"items": indexed_items}, ensure_ascii=True)
-    payload = complete_json(system_prompt, user_prompt, selected)
+    payload = complete_json(system_prompt, user_prompt, selected, model)
     if not payload:
         return results
 
@@ -807,6 +830,7 @@ def suggest_normalization_batch(
     fuzzy_match_threshold: int = DEFAULT_FUZZY_MATCH_THRESHOLD,
     provider: object = "openai",
     match_prompt: object = None,
+    model: object = None,
 ) -> list[dict[str, str] | None]:
     threshold = max(50, min(100, int(fuzzy_match_threshold)))
     cleaned_strings = [_clean(value) for value in os_strings]
@@ -874,6 +898,7 @@ def suggest_normalization_batch(
                 ensure_ascii=True,
             ),
             selected,
+            model,
         )
         if not payload:
             continue

@@ -37,6 +37,7 @@ export const state = {
 
   search: "",
   chip: "all",
+  sort: { key: null, dir: "asc" },
   filterPanel: false,
   f: {
     os: { mode: "all", text: "" },

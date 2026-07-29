@@ -18,6 +18,7 @@
   animation: modal-in var(--motion) var(--ease);
   max-height: calc(100vh - 48px);
 }
+.modal[data-width="440"] { width: 440px; }
 .modal[data-width="560"] { width: 560px; }
 .modal[data-width="620"] { width: 620px; }
 @keyframes modal-in { from { opacity: 0; transform: scale(.98); } to { opacity: 1; transform: none; } }

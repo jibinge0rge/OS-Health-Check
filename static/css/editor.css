@@ -179,6 +179,9 @@
   color: var(--fg3);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.table-header-row .col-head.sortable { cursor: pointer; user-select: none; }
+.table-header-row .col-head.sortable:hover { color: var(--fg1); }
+.table-header-row .col-head.sortable.active { color: var(--brand); }
 .table-row {
   min-height: 32px;
   border-bottom: 1px solid var(--c-border-subtle);

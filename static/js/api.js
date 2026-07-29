@@ -50,13 +50,11 @@ export const api = {
   getSettings: () => json(`/api/settings`),
   putSettings: (payload) => put(`/api/settings`, payload),
 
-  // Deploy: Azure / AWS / GCP
+  // Deploy: Azure / AWS
   getAzureSettings: () => json(`/api/azure/settings`),
   putAzureSettings: (payload) => put(`/api/azure/settings`, payload),
   getAwsSettings: () => json(`/api/aws/settings`),
   putAwsSettings: (payload) => put(`/api/aws/settings`, payload),
-  getGcpSettings: () => json(`/api/gcp/settings`),
-  putGcpSettings: (payload) => put(`/api/gcp/settings`, payload),
 
   // Normalization / ambiguity (client-orchestrated Add-OS pipeline)
   normalizeSuggest: (items, allowedPairs, fuzzyThreshold) =>
@@ -128,5 +126,4 @@ export const streams = {
     streamEvents(`/api/vendor-lookups/${sourceId}/sync/stream`, payload ?? {}, opts),
   azureUpload: (profileId, opts) => streamEvents(`/api/azure/upload?profile_id=${encodeURIComponent(profileId || "")}`, {}, opts),
   awsUpload: (profileId, opts) => streamEvents(`/api/aws/upload?profile_id=${encodeURIComponent(profileId || "")}`, {}, opts),
-  gcpUpload: (profileId, opts) => streamEvents(`/api/gcp/upload?profile_id=${encodeURIComponent(profileId || "")}`, {}, opts),
 };

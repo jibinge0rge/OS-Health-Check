@@ -47,7 +47,20 @@
 .provider-chip-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .provider-chip { display: flex; flex-direction: column; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--c-border-strong); font-size: 11px; }
 .provider-chip.unavailable { color: var(--fg-dis); }
-.confidence-row, .density-row { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.provider-chip.active { border-color: var(--brand); background: var(--tint); color: var(--brand); }
+.model-row, .confidence-row, .density-row { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.model-input {
+  flex: 0 1 260px; min-width: 160px;
+  height: 26px; padding: 0 8px;
+  border-radius: 6px; border: 1px solid var(--c-border-strong);
+  background: var(--c-surface); color: var(--fg1); font-size: 12px;
+}
+.confidence-input {
+  width: 56px; height: 26px; padding: 0 8px;
+  border-radius: 6px; border: 1px solid var(--c-border-strong);
+  background: var(--c-surface); color: var(--fg1); font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
 
 .theme-options { display: flex; gap: 10px; margin-top: 10px; }
 .theme-option {
