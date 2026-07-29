@@ -49,18 +49,51 @@
 .provider-chip.unavailable { color: var(--fg-dis); }
 .provider-chip.active { border-color: var(--brand); background: var(--tint); color: var(--brand); }
 .model-row, .confidence-row, .density-row { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
-.model-input {
-  flex: 0 1 260px; min-width: 160px;
-  height: 26px; padding: 0 8px;
+
+.model-dropdown { position: relative; flex: 0 1 260px; min-width: 200px; }
+.model-dropdown-trigger {
+  width: 100%; height: 28px; padding: 0 10px;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
   border-radius: 6px; border: 1px solid var(--c-border-strong);
   background: var(--c-surface); color: var(--fg1); font-size: 12px;
 }
-.confidence-input {
-  width: 56px; height: 26px; padding: 0 8px;
-  border-radius: 6px; border: 1px solid var(--c-border-strong);
-  background: var(--c-surface); color: var(--fg1); font-size: 12px;
-  font-variant-numeric: tabular-nums;
+.model-dropdown-trigger:hover { border-color: var(--brand); }
+.model-dropdown-trigger .chevron { color: var(--fg3); font-size: 10px; }
+.model-dropdown-menu {
+  position: absolute; top: 32px; left: 0; z-index: 30;
+  width: 100%; min-width: 220px; max-height: 260px; overflow-y: auto;
+  background: var(--c-surface); border: 1px solid var(--c-border); border-radius: 8px;
+  box-shadow: var(--pop);
+  padding: 4px;
 }
+.model-option {
+  display: block; width: 100%; text-align: left;
+  padding: 6px 8px; border-radius: 6px; border: none; background: transparent;
+  color: var(--fg2); font-size: 12px;
+}
+.model-option:hover { background: var(--hover); }
+.model-option.active { color: var(--brand); font-weight: 600; }
+.model-option.add-custom { color: var(--fg3); border-top: 1px solid var(--c-border-subtle); margin-top: 4px; padding-top: 8px; }
+
+.confidence-slider {
+  flex: 0 1 200px; min-width: 120px;
+  -webkit-appearance: none; appearance: none;
+  height: 4px; border-radius: 4px;
+  background: var(--c-sunken);
+}
+.confidence-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--brand); border: 2px solid var(--c-surface);
+  box-shadow: 0 0 0 1px var(--brand);
+  cursor: pointer;
+}
+.confidence-slider::-moz-range-thumb {
+  width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--c-surface);
+  background: var(--brand); box-shadow: 0 0 0 1px var(--brand);
+  cursor: pointer;
+}
+.confidence-slider::-moz-range-track { height: 4px; border-radius: 4px; background: var(--c-sunken); }
 
 .theme-options { display: flex; gap: 10px; margin-top: 10px; }
 .theme-option {

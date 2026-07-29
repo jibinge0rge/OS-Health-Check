@@ -51,9 +51,10 @@ function renderActive(running) {
         </div>
         <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
         <div class="bg-task-log">${task.log.slice(-6).map((l) => escapeHtml(l)).join("<br>")}</div>
+        ${task.cancellable === false ? "" : `
         <div class="bg-task-actions">
           <button class="btn tertiary" data-cancel="${task.id}" type="button">Cancel</button>
-        </div>
+        </div>`}
       </div>`;
     })
     .join("");

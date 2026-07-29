@@ -14,11 +14,12 @@ async function json(url, opts) {
   return response.json();
 }
 
-function post(url, body) {
+function post(url, body, { signal } = {}) {
   return json(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body ?? {}),
+    signal,
   });
 }
 
@@ -42,7 +43,7 @@ export const api = {
   getDiff: (source = "draft") => json(`/api/lookup/diff?source=${encodeURIComponent(source)}`),
   getRowEvidence: (osString, source = "data") =>
     json(`/api/lookup/evidence?os_string=${encodeURIComponent(osString)}&source=${encodeURIComponent(source)}`),
-  refreshRow: (row) => post(`/api/lookup/row/refresh`, { row }),
+  refreshRow: (row, opts) => post(`/api/lookup/row/refresh`, { row }, opts),
   refreshRows: (rows) => post(`/api/lookup/rows/refresh`, { rows }),
   cancelRefreshJob: (jobId) => post(`/api/lookup/refresh/${jobId}/cancel`),
 
@@ -57,14 +58,14 @@ export const api = {
   putAwsSettings: (payload) => put(`/api/aws/settings`, payload),
 
   // Normalization / ambiguity (client-orchestrated Add-OS pipeline)
-  normalizeSuggest: (items, allowedPairs, fuzzyThreshold) =>
+  normalizeSuggest: (items, allowedPairs, fuzzyThreshold, opts) =>
     post(`/api/normalize-suggest`, {
       items: items.map((os_string) => ({ os_string })),
       allowed_pairs: allowedPairs,
       fuzzy_match_threshold: fuzzyThreshold,
-    }),
-  ambiguousOsDetect: (osStrings) =>
-    post(`/api/ambiguous-os-detect`, { items: osStrings.map((os_string) => ({ os_string })) }),
+    }, opts),
+  ambiguousOsDetect: (osStrings, opts) =>
+    post(`/api/ambiguous-os-detect`, { items: osStrings.map((os_string) => ({ os_string })) }, opts),
   eolLookup: (items) => post(`/api/eol-lookup`, { items }),
   vendorLookup: (items) => post(`/api/vendor-lookup`, { items }),
 
@@ -120,6 +121,8 @@ export async function* streamEvents(url, body, { signal } = {}) {
 export const streams = {
   refreshLookup: (rows, evidence, source, opts) =>
     streamEvents("/api/lookup/refresh/stream", { rows, evidence, source }, opts),
+  refreshRowsBatch: (rows, opts) =>
+    streamEvents("/api/lookup/rows/refresh/stream", { rows }, opts),
   validatePublish: (rows, evidence, backupSuffix, opts) =>
     streamEvents("/api/lookup/validate/stream", { rows, evidence, backup_suffix: backupSuffix }, opts),
   vendorSync: (sourceId, payload, opts) =>

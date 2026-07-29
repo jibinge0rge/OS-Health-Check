@@ -32,14 +32,20 @@
         <div class="provider-chip-row" id="ai-provider-chips"></div>
         <div class="model-row">
           <span class="settings-card-note">MODEL</span>
-          <input type="text" class="model-input" id="ai-model-input" list="ai-model-options" />
-          <datalist id="ai-model-options"></datalist>
+          <div class="model-dropdown" id="ai-model-dropdown">
+            <button type="button" class="model-dropdown-trigger" id="ai-model-trigger">
+              <span id="ai-model-trigger-label"></span>
+              <span class="chevron">&#9662;</span>
+            </button>
+            <div class="model-dropdown-menu" id="ai-model-menu" hidden></div>
+          </div>
           <button class="btn tertiary" id="ai-model-reset-btn" type="button">Reset to default</button>
         </div>
+        <p class="settings-card-note">Models come from <code>_config/ai_model_choices.json</code> — add one below to save it there for next time, or edit that file directly.</p>
         <div class="confidence-row">
           <span class="settings-card-note">CONFIDENCE CUTOFF</span>
-          <input type="number" class="confidence-input" id="ai-confidence-input" min="50" max="100" step="1" />
-          <span class="settings-card-note">%</span>
+          <input type="range" class="confidence-slider" id="ai-confidence-slider" min="50" max="100" step="1" />
+          <span class="value-chip" id="ai-confidence-value">85%</span>
         </div>
       </div>
       <div class="settings-card">

@@ -131,8 +131,9 @@ export function runProgress({
   onComplete,
   onError,
   backgroundLabel,
+  cancellable,
 }) {
-  const task = startTask({ kind, label, eventGenerator, onCancel, onComplete, onError });
+  const task = startTask({ kind, label, eventGenerator, onCancel, onComplete, onError, cancellable });
   attachProgressView(task, { bodyEl, footerEl, backgroundLabel });
   return task;
 }
@@ -162,13 +163,16 @@ export function attachProgressView(task, { bodyEl, footerEl, backgroundLabel = "
 
   function renderFooter() {
     if (task.status === "running") {
+      const cancelBtnHtml = task.cancellable === false ? "" : `<button class="btn" id="progress-cancel-btn" type="button">Cancel</button>`;
       footerEl.innerHTML = `
-        <button class="btn" id="progress-cancel-btn" type="button">Cancel</button>
+        ${cancelBtnHtml}
         <button class="btn" id="progress-bg-btn" type="button">${backgroundLabel}</button>`;
-      footerEl.querySelector("#progress-cancel-btn").onclick = () => {
-        cancelTask(task.id);
-        closeModal();
-      };
+      if (task.cancellable !== false) {
+        footerEl.querySelector("#progress-cancel-btn").onclick = () => {
+          cancelTask(task.id);
+          closeModal();
+        };
+      }
       footerEl.querySelector("#progress-bg-btn").onclick = () => closeModal();
     } else {
       footerEl.innerHTML = `<button class="btn primary" id="progress-close-btn" type="button">Close</button>`;

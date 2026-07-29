@@ -678,15 +678,23 @@ function openAddOsModal() {
   document.getElementById("add-confirm-btn").onclick = handleAddConfirm;
 }
 
-async function* addOsPipeline(osStrings) {
+async function* addOsPipeline(osStrings, { signal } = {}) {
+  // This pipeline has no server-side job to cancel -- it's a sequence of
+  // client-issued requests. Checked at every step so Cancel takes effect
+  // within one row/request instead of running the whole batch to completion.
+  if (signal?.aborted) { yield { type: "cancelled" }; return; }
+
   yield { type: "progress", stage: "Checking for ambiguous OS strings", processed: 0, total: 4 };
-  const ambiguousFlags = await api.ambiguousOsDetect(osStrings).then((r) => r.results).catch(() => osStrings.map(() => false));
+  const ambiguousFlags = await api.ambiguousOsDetect(osStrings, { signal }).then((r) => r.results).catch(() => osStrings.map(() => false));
+  if (signal?.aborted) { yield { type: "cancelled" }; return; }
 
   const allowedPairs = buildAllowedPairsFromDraft();
   const newRows = [];
   const settings = await api.getSettings().catch(() => ({ ai_enabled: false }));
+  if (signal?.aborted) { yield { type: "cancelled" }; return; }
 
   for (let i = 0; i < osStrings.length; i += 1) {
+    if (signal?.aborted) { yield { type: "cancelled" }; return; }
     const osString = osStrings[i];
     yield { type: "progress", stage: `Normalizing ${osString}`, processed: i, total: osStrings.length };
     const row = { os_string: osString, normalized_os_detailed_name: "", normalized_os: "", eol_date: "", eol_status: "", eoas_date: "", eoas_status: "" };
@@ -700,7 +708,7 @@ async function* addOsPipeline(osStrings) {
         row.normalized_os = exact.normalized_os;
       } else if (settings.ai_enabled) {
         const threshold = settings.ai_confidence_threshold ?? 85;
-        const [suggestion] = await api.normalizeSuggest([osString], allowedPairs, threshold).then((r) => r.results).catch(() => [null]);
+        const [suggestion] = await api.normalizeSuggest([osString], allowedPairs, threshold, { signal }).then((r) => r.results).catch(() => [null]);
         if (suggestion) {
           row.normalized_os_detailed_name = suggestion.normalized_os_detailed_name;
           row.normalized_os = suggestion.normalized_os;
@@ -709,17 +717,29 @@ async function* addOsPipeline(osStrings) {
     }
     newRows.push(row);
   }
+  if (signal?.aborted) { yield { type: "cancelled" }; return; }
 
-  yield { type: "progress", stage: "Looking up EOL/EOAS", processed: osStrings.length, total: osStrings.length + 1 };
+  // Batched + streamed server-side (chunks of 25) instead of one HTTP
+  // round trip per row -- a 1000-row add was previously ~1000 sequential
+  // requests with a single progress tick logged before the whole thing,
+  // so the bar sat at a misleading ~100% for however long that took.
   const evidenceByOs = {};
-  for (const row of newRows) {
-    if (row.normalized_os_detailed_name === "Ambiguous OS") continue;
-    try {
-      const result = await api.refreshRow(row);
-      Object.assign(row, result.row);
-      evidenceByOs[row.os_string] = result.evidence_entry;
-    } catch (_err) { /* leave lifecycle fields blank on lookup failure */ }
+  const lookupRows = newRows.filter((row) => row.normalized_os_detailed_name !== "Ambiguous OS");
+  if (lookupRows.length) {
+    for await (const event of streams.refreshRowsBatch(lookupRows, { signal })) {
+      if (event.type === "progress") {
+        yield { type: "progress", stage: "Looking up EOL/EOAS", processed: event.processed, total: event.total };
+      } else if (event.type === "complete") {
+        const byOs = new Map((event.rows || []).map((r) => [r.os_string, r]));
+        newRows.forEach((row) => {
+          const updated = byOs.get(row.os_string);
+          if (updated) Object.assign(row, updated);
+        });
+        Object.assign(evidenceByOs, event.evidence_by_os || {});
+      }
+    }
   }
+  if (signal?.aborted) { yield { type: "cancelled" }; return; }
 
   yield { type: "complete", rows: newRows, evidence: evidenceByOs, message: `Added ${newRows.length} row(s).` };
 }
@@ -762,12 +782,13 @@ async function handleAddConfirm() {
 
   const bodyEl = document.getElementById("modal-add-body");
   const footerEl = document.getElementById("modal-add-footer");
+  const controller = new AbortController();
   runProgress({
     kind: "add-os",
     label: "Add OS",
     bodyEl, footerEl,
-    eventGenerator: addOsPipeline(osStrings),
-    onCancel: () => {},
+    eventGenerator: addOsPipeline(osStrings, { signal: controller.signal }),
+    onCancel: () => controller.abort(),
     onComplete: async (event) => {
       state.draftRows = [...state.draftRows, ...event.rows];
       state.evidence.by_os = { ...(state.evidence.by_os || {}), ...event.evidence };
@@ -819,7 +840,11 @@ async function openValidateModal() {
       label: "Validate & publish",
       bodyEl, footerEl,
       eventGenerator: streams.validatePublish(state.draftRows, state.evidence, suffix),
-      onCancel: () => {},
+      // Backup + write + delete-draft each complete as one atomic file
+      // operation on the server -- there's no safe midpoint to actually
+      // stop at, so offering a Cancel button here would be a broken
+      // promise rather than a real one. No AbortController wiring on purpose.
+      cancellable: false,
       onComplete: async () => {
         await loadData();
         state.draftRows = [];

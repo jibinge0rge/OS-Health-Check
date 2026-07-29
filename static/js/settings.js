@@ -4,6 +4,19 @@ import { state, setTheme, setDensity } from "./state.js";
 import { api } from "./api.js";
 import { promptModal, showToast } from "./modals.js";
 
+// Bound once at module load (not per-render) so repeated renderAiTab() calls
+// never stack duplicate document listeners -- these look up the dropdown by
+// id each time they fire, so they stay correct across re-renders.
+document.addEventListener("click", (event) => {
+  const menu = document.getElementById("ai-model-menu");
+  if (menu && !menu.hidden && !event.target.closest("#ai-model-dropdown")) menu.hidden = true;
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  const menu = document.getElementById("ai-model-menu");
+  if (menu && !menu.hidden) menu.hidden = true;
+});
+
 export async function initSettings() {
   document.querySelectorAll("[data-settings-tab]").forEach((btn) => {
     btn.addEventListener("click", () => selectTab(btn.dataset.settingsTab));
@@ -86,10 +99,10 @@ async function renderAiTab() {
   const settings = await api.getSettings();
   const toggle = document.getElementById("ai-enabled-toggle");
   toggle.checked = settings.ai_enabled;
-  toggle.addEventListener("change", async () => {
+  toggle.onchange = async () => {
     await api.putSettings({ ai_enabled: toggle.checked, ai_provider: settings.ai_provider, ai_match_prompt: null });
     showToast(`AI match ${toggle.checked ? "enabled" : "disabled"}.`);
-  });
+  };
 
   const providerMeta = {
     openai: { label: "OpenAI", available: settings.openai_available },
@@ -111,14 +124,10 @@ async function renderAiTab() {
     });
   });
 
-  const modelInput = document.getElementById("ai-model-input");
-  const modelOptions = document.getElementById("ai-model-options");
   const activeProvider = settings.ai_provider;
   const activeModel = settings.ai_models?.[activeProvider] || settings.default_ai_models?.[activeProvider] || "";
-  modelInput.value = activeModel;
-  modelOptions.innerHTML = (settings.ai_model_choices?.[activeProvider] || [])
-    .map((m) => `<option value="${escapeHtml(m)}"></option>`)
-    .join("");
+  const catalog = settings.ai_model_choices?.[activeProvider] || [];
+
   const saveModel = async (value) => {
     const model = value.trim() || settings.default_ai_models?.[activeProvider] || "";
     await api.putSettings({
@@ -130,14 +139,47 @@ async function renderAiTab() {
     showToast(`${providerMeta[activeProvider].label} model set to ${model}.`);
     renderAiTab();
   };
-  modelInput.addEventListener("change", () => saveModel(modelInput.value));
+
+  const menuEl = document.getElementById("ai-model-menu");
+  document.getElementById("ai-model-trigger-label").textContent = activeModel;
+  menuEl.innerHTML = catalog
+    .map((m) => `<button type="button" class="model-option ${m === activeModel ? "active" : ""}" data-model="${escapeHtml(m)}">${escapeHtml(m)}</button>`)
+    .join("") + `<button type="button" class="model-option add-custom" id="ai-model-add-custom">+ Add custom model…</button>`;
+  menuEl.querySelectorAll("[data-model]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      menuEl.hidden = true;
+      if (btn.dataset.model !== activeModel) saveModel(btn.dataset.model);
+    });
+  });
+  document.getElementById("ai-model-add-custom").addEventListener("click", async () => {
+    menuEl.hidden = true;
+    const value = await promptModal({
+      eyebrow: "CONFIGURE AI",
+      title: "Add custom model",
+      label: `${providerMeta[activeProvider].label} model id`,
+      placeholder: "e.g. gpt-4.1",
+      confirmLabel: "Add",
+    });
+    if (!value) return;
+    saveModel(value);
+  });
+  document.getElementById("ai-model-trigger").onclick = () => { menuEl.hidden = !menuEl.hidden; };
   document.getElementById("ai-model-reset-btn").onclick = () => saveModel(settings.default_ai_models?.[activeProvider] || "");
 
-  const confidenceInput = document.getElementById("ai-confidence-input");
-  confidenceInput.value = settings.ai_confidence_threshold ?? 85;
-  confidenceInput.addEventListener("change", async () => {
-    const clamped = Math.max(50, Math.min(100, Number(confidenceInput.value) || 85));
-    confidenceInput.value = clamped;
+  const confidenceSlider = document.getElementById("ai-confidence-slider");
+  const confidenceValue = document.getElementById("ai-confidence-value");
+  const initialConfidence = settings.ai_confidence_threshold ?? 85;
+  confidenceSlider.value = initialConfidence;
+  confidenceValue.textContent = `${initialConfidence}%`;
+  // Live-update the label while dragging; only save once the user releases
+  // the thumb so scrubbing across the range doesn't fire a PUT per pixel.
+  confidenceSlider.oninput = () => {
+    confidenceValue.textContent = `${confidenceSlider.value}%`;
+  };
+  confidenceSlider.onchange = async () => {
+    const clamped = Math.max(50, Math.min(100, Number(confidenceSlider.value) || 85));
+    confidenceSlider.value = clamped;
+    confidenceValue.textContent = `${clamped}%`;
     await api.putSettings({
       ai_enabled: toggle.checked,
       ai_provider: settings.ai_provider,
@@ -145,7 +187,7 @@ async function renderAiTab() {
       ai_confidence_threshold: clamped,
     });
     showToast(`Confidence cutoff set to ${clamped}%.`);
-  });
+  };
 
   const promptArea = document.getElementById("ai-prompt-textarea");
   promptArea.value = settings.ai_match_prompt || settings.default_ai_match_prompt;

@@ -156,12 +156,16 @@ function uploadActiveProfile() {
 
   const bodyEl = document.getElementById("modal-deploy-upload-body");
   const footerEl = document.getElementById("modal-deploy-upload-footer");
+  // No server-side job registry for uploads -- cancel by aborting the
+  // underlying request. The CLI subprocess is killed server-side once the
+  // stream's finally block runs on disconnect (see azure/aws_upload_events).
+  const controller = new AbortController();
   runProgress({
     kind: `deploy-upload:${activeProvider}`,
     label: `Upload to ${provider.label}`,
     bodyEl, footerEl,
-    eventGenerator: provider.uploadStream(activeProfileId),
-    onCancel: () => {},
+    eventGenerator: provider.uploadStream(activeProfileId, { signal: controller.signal }),
+    onCancel: () => controller.abort(),
     onComplete: () => showToast(`Uploaded to ${provider.label}.`),
     onError: (event) => showToast(`Upload failed: ${event.message || "unknown error"}`),
   });

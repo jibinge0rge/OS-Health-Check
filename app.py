@@ -87,6 +87,7 @@ CONFIG_DIR = BASE_DIR / "_config"
 AZURE_CONFIG_PATH = CONFIG_DIR / "azure.json"
 AWS_CONFIG_PATH = CONFIG_DIR / "aws.json"
 APP_SETTINGS_PATH = CONFIG_DIR / "app_settings.json"
+AI_MODEL_CHOICES_PATH = CONFIG_DIR / "ai_model_choices.json"
 CSV_HEADERS = [
     "os_string",
     "normalized_os_detailed_name",
@@ -932,6 +933,51 @@ def save_app_settings(settings: AppSettings) -> AppSettings:
     return settings
 
 
+def load_ai_model_choices() -> dict[str, list[str]]:
+    """The selectable model catalog per provider, editable at
+    _config/ai_model_choices.json without touching code. Falls back to the
+    built-in defaults if the file is missing or malformed, and always keeps
+    those defaults present so a bad edit can't delete the last known model."""
+    stored: dict[str, list[str]] = {}
+    if AI_MODEL_CHOICES_PATH.exists():
+        try:
+            with AI_MODEL_CHOICES_PATH.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            if isinstance(payload, dict):
+                stored = payload
+        except (OSError, json.JSONDecodeError):
+            stored = {}
+
+    result: dict[str, list[str]] = {}
+    for provider, defaults in AI_MODEL_CHOICES.items():
+        raw = stored.get(provider)
+        cleaned = [str(v).strip() for v in raw if str(v or "").strip()] if isinstance(raw, list) else []
+        result[provider] = list(dict.fromkeys(cleaned + defaults))
+    return result
+
+
+def save_ai_model_choices(choices: dict[str, list[str]]) -> None:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    with AI_MODEL_CHOICES_PATH.open("w", encoding="utf-8") as handle:
+        json.dump(choices, handle, indent=2)
+        handle.write("\n")
+
+
+def remember_custom_ai_model(provider: str, model: str) -> None:
+    """Adds a model an admin typed in Settings to the persistent catalog so
+    it shows up as a normal option next time, instead of vanishing once the
+    session that typed it ends."""
+    selected = normalize_ai_provider(provider)
+    model = str(model or "").strip()
+    if not model:
+        return
+    choices = load_ai_model_choices()
+    if model in choices.get(selected, []):
+        return
+    choices.setdefault(selected, []).append(model)
+    save_ai_model_choices(choices)
+
+
 def app_settings_response() -> AppSettingsResponse:
     settings = load_app_settings()
     openai_available = openai_api_key_configured()
@@ -953,7 +999,7 @@ def app_settings_response() -> AppSettingsResponse:
         default_ai_match_prompt=DEFAULT_AI_MATCH_PROMPT,
         ai_confidence_threshold=settings.ai_confidence_threshold,
         ai_models=effective_models,
-        ai_model_choices=AI_MODEL_CHOICES,
+        ai_model_choices=load_ai_model_choices(),
         default_ai_models=DEFAULT_AI_MODELS,
     )
 
@@ -1294,6 +1340,32 @@ async def lookup_refresh_events(
     )
 
 
+async def lookup_rows_refresh_events(rows: list[dict]) -> AsyncIterator[str]:
+    """Chunked-progress variant of POST /api/lookup/rows/refresh -- same
+    lifecycle lookup, streamed so a large batch (e.g. the Add-OS pipeline's
+    final step) reports real per-chunk progress instead of one long silent
+    wait. Unlike lookup_refresh_events this never writes to Data/Draft --
+    the caller owns merging these rows into whatever rowset it's building."""
+    total = len(rows)
+    evidence_by_os: dict[str, object] = {}
+    processed = 0
+
+    for start in range(0, total, LOOKUP_REFRESH_CHUNK_SIZE):
+        chunk = rows[start : start + LOOKUP_REFRESH_CHUNK_SIZE]
+        await asyncio.to_thread(refresh_rows_lifecycle_chunk, chunk, evidence_by_os)
+        processed += len(chunk)
+        yield sse_event(
+            {
+                "type": "progress",
+                "stage": "Looking up EOL/EOAS",
+                "processed": processed,
+                "total": total,
+            }
+        )
+
+    yield sse_event({"type": "complete", "rows": rows, "evidence_by_os": evidence_by_os})
+
+
 async def vendor_lookup_sync_events(
     source_id: str,
     options: dict[str, object] | None,
@@ -1465,6 +1537,19 @@ async def refresh_lookup_rows(payload: RowsRefreshRequest) -> dict[str, object]:
     return {"rows": rows, "evidence_by_os": evidence_by_os}
 
 
+@app.post("/api/lookup/rows/refresh/stream")
+async def refresh_lookup_rows_stream(payload: RowsRefreshRequest) -> StreamingResponse:
+    """Streamed, non-persisting variant of the endpoint above -- large
+    batches (Add-OS pipeline, bulk selection refresh) get real per-chunk
+    progress instead of one long silent wait with no feedback."""
+    rows = [item.model_dump() for item in payload.rows]
+    return StreamingResponse(
+        lookup_rows_refresh_events(rows),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.post("/api/lookup/refresh/stream")
 async def refresh_lookup_stream(payload: LookupRefreshStreamRequest) -> StreamingResponse:
     if LOOKUP_REFRESH_LOCK.locked():
@@ -1589,6 +1674,10 @@ async def update_app_settings(payload: AppSettingsUpdateRequest) -> AppSettingsR
     else:
         # Merge rather than replace so setting one provider's model doesn't drop the others.
         models = {**current.ai_models, **payload.ai_models}
+        # A model typed in Settings becomes a normal catalog entry from now on,
+        # not just a one-off override for this setting.
+        for provider, model in payload.ai_models.items():
+            remember_custom_ai_model(provider, model)
     merged = AppSettings(
         ai_enabled=payload.ai_enabled,
         ai_provider=normalize_ai_provider(payload.ai_provider or current.ai_provider),

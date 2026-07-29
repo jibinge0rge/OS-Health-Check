@@ -83,7 +83,7 @@ for (const record of loadHistory()) {
  * endpoints and the client-orchestrated Add-OS pipeline both emit).
  * Returns the task object immediately; it updates in place as events arrive.
  */
-export function startTask({ kind, label, eventGenerator, onCancel, onComplete, onError }) {
+export function startTask({ kind, label, eventGenerator, onCancel, onComplete, onError, cancellable = true }) {
   const task = {
     id: newTaskId(),
     kind,
@@ -99,6 +99,7 @@ export function startTask({ kind, label, eventGenerator, onCancel, onComplete, o
     finishedAt: null,
     error: null,
     unread: false,
+    cancellable,
     onCancel: () => onCancel?.(task.jobId),
   };
   tasks.unshift(task);
@@ -156,6 +157,18 @@ export function startTask({ kind, label, eventGenerator, onCancel, onComplete, o
         notify();
       }
     } catch (error) {
+      // A cancelled AbortController-backed stream (e.g. deploy upload)
+      // surfaces here as a rejected fetch, not a "cancelled" SSE event --
+      // treat it the same way so the UI doesn't report a cancel as a failure.
+      if (error?.name === "AbortError") {
+        task.status = "cancelled";
+        task.stage = "Cancelled.";
+        task.finishedAt = Date.now();
+        task.log.push("Cancelled.");
+        saveHistory();
+        notify();
+        return;
+      }
       task.status = "error";
       task.stage = "Failed.";
       task.finishedAt = Date.now();
@@ -174,7 +187,7 @@ export function startTask({ kind, label, eventGenerator, onCancel, onComplete, o
 
 export function cancelTask(id) {
   const task = getTask(id);
-  if (!task || task.status !== "running") return;
+  if (!task || task.status !== "running" || task.cancellable === false) return;
   task.onCancel?.();
 }
 
