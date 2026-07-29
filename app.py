@@ -56,6 +56,7 @@ from normalization_service import (
     DEFAULT_AI_MATCH_PROMPT,
     DEFAULT_AI_MODELS,
     DEFAULT_FUZZY_MATCH_THRESHOLD,
+    collapse_consecutive_duplicate_words,
     detect_ambiguous_os_batch,
     gemini_model_name,
     normalize_ai_provider,
@@ -1244,9 +1245,9 @@ def _apply_lifecycle_result(row: dict, result: dict, evidence_by_os: dict) -> No
     )
     filled_normalized = not str(row.get("normalized_os") or "").strip() and result.get("normalized_os")
     if filled_detailed:
-        row["normalized_os_detailed_name"] = str(result.get("normalized_os_detailed_name"))
+        row["normalized_os_detailed_name"] = collapse_consecutive_duplicate_words(result.get("normalized_os_detailed_name"))
     if filled_normalized:
-        row["normalized_os"] = str(result.get("normalized_os"))
+        row["normalized_os"] = collapse_consecutive_duplicate_words(result.get("normalized_os"))
 
     if not os_key:
         return

@@ -236,6 +236,20 @@ def _normalize_for_match(value: object) -> str:
     return re.sub(r"\s+", " ", normalized)
 
 
+def collapse_consecutive_duplicate_words(value: object) -> str:
+    """'Apple macOS macOS 26 (Tahoe)' -> 'Apple macOS 26 (Tahoe)' -- collapses
+    a word repeated immediately next to itself (case-insensitive). Mirrors
+    collapseConsecutiveDuplicateWords in static/js/editor.js; the two must
+    agree on what counts as a duplicate since both feed the same fields."""
+    words = _clean(value).split()
+    out: list[str] = []
+    for word in words:
+        if out and out[-1].lower() == word.lower():
+            continue
+        out.append(word)
+    return " ".join(out)
+
+
 def _tokenize(value: object) -> list[str]:
     normalized = _normalize_for_match(value)
     return normalized.split(" ") if normalized else []

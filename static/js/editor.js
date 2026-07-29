@@ -704,14 +704,14 @@ async function* addOsPipeline(osStrings, { signal } = {}) {
     } else {
       const exact = allowedPairs.find((p) => p.__key === dedupeKey(collapseConsecutiveDuplicateWords(osString)));
       if (exact) {
-        row.normalized_os_detailed_name = exact.normalized_os_detailed_name;
-        row.normalized_os = exact.normalized_os;
+        row.normalized_os_detailed_name = collapseConsecutiveDuplicateWords(exact.normalized_os_detailed_name);
+        row.normalized_os = collapseConsecutiveDuplicateWords(exact.normalized_os);
       } else if (settings.ai_enabled) {
         const threshold = settings.ai_confidence_threshold ?? 85;
         const [suggestion] = await api.normalizeSuggest([osString], allowedPairs, threshold, { signal }).then((r) => r.results).catch(() => [null]);
         if (suggestion) {
-          row.normalized_os_detailed_name = suggestion.normalized_os_detailed_name;
-          row.normalized_os = suggestion.normalized_os;
+          row.normalized_os_detailed_name = collapseConsecutiveDuplicateWords(suggestion.normalized_os_detailed_name);
+          row.normalized_os = collapseConsecutiveDuplicateWords(suggestion.normalized_os);
         }
       }
     }
