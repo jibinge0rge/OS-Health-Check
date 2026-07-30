@@ -98,6 +98,7 @@ async function loadData() {
   state.evidence = data.evidence;
   state.draftExists = data.draft_exists;
   state.publishedAt = data.published_at;
+  state.dataRevision = data.data_revision ?? 0;
   dataByOs = new Map(state.dataRows.map((row) => [dedupeKey(row.os_string), row]));
   el.railRowCount.textContent = String(state.dataRows.length);
   el.publishedAtMeta.textContent = state.publishedAt
@@ -127,10 +128,19 @@ async function switchSource(target) {
       const draft = await api.getLookup("draft");
       state.draftRows = draft.rows;
       state.evidence = draft.evidence;
+      state.draftBasedOnRevision = draft.based_on_revision ?? 0;
     } else {
-      state.draftRows = state.dataRows.map((row) => ({ ...row }));
-      await persistDraft();
+      // Fork from a fresh fetch of Data, not whatever the browser's
+      // in-memory copy happens to be -- that stale copy could already be
+      // older than Data's current on-disk state. This same fetch also
+      // becomes the publish-time merge base, so it must be exactly what
+      // Data was at the instant the draft was created, not re-derived
+      // from disk later (which would race against concurrent publishes).
+      const fresh = await api.getLookup("data");
+      state.draftRows = fresh.rows.map((row) => ({ ...row }));
+      await persistDraft({ baseRows: fresh.rows, baseEvidence: fresh.evidence });
       state.draftExists = true;
+      state.draftBasedOnRevision = fresh.data_revision ?? 0;
     }
     if (state.chip === "all") state.chip = "changed";
   } else {
@@ -167,8 +177,8 @@ function scheduleAutosave() {
   saveTimer = setTimeout(persistDraft, 800);
 }
 
-async function persistDraft() {
-  await api.saveLookup(state.draftRows, state.evidence, "draft");
+async function persistDraft(baseOptions = {}) {
+  await api.saveLookup(state.draftRows, state.evidence, "draft", baseOptions);
   setState({ dirty: false });
   // The diff (Changed chip, NEW/EDITED flags) is computed server-side from
   // the saved draft file, so it can only be refreshed once the save above
@@ -815,6 +825,23 @@ document.getElementById("modal-add").addEventListener("click", (event) => {
 
 // ---------- Validate & publish modal ----------
 
+/** Short human-readable summary of one side of a conflict, for the
+ * resolver list. `side` is {row, evidence} (or {rows, evidence} for
+ * ambiguous_duplicate), or null when that side deleted the row. */
+function summarizeConflictSide(side, kind) {
+  if (!side) return "(deleted)";
+  if (kind === "ambiguous_duplicate") {
+    const count = (side.rows || []).length;
+    return `${count} row(s)`;
+  }
+  const row = side.row;
+  if (!row) return "(deleted)";
+  const name = row.normalized_os || row.normalized_os_detailed_name || "(no normalized name)";
+  const eol = row.eol_date ? row.eol_date : "no EOL date";
+  const eoas = row.eoas_date ? row.eoas_date : "no EOAS date";
+  return `${name} — EOL ${eol}, EOAS ${eoas}`;
+}
+
 async function openValidateModal() {
   if (hasActive("publish")) {
     showToast("A publish is already running — see Background tasks.");
@@ -824,22 +851,88 @@ async function openValidateModal() {
     showToast("A refresh is still running — wait for it to finish before publishing.");
     return;
   }
-  const d = await api.getDiff("draft").catch(() => ({ added_count: 0, edited_count: 0, unresolved: 0 }));
+
+  openModal("modal-validate");
+  const resolverEl = document.getElementById("conflict-resolver");
+  const backupField = document.getElementById("backup-suffix-input");
+  const confirmBtn = document.getElementById("validate-confirm-btn");
+  resolverEl.hidden = true;
+  confirmBtn.disabled = true;
+  confirmBtn.textContent = "Checking…";
+  backupField.value = "";
+
+  const [d, conflictCheck] = await Promise.all([
+    api.getDiff("draft").catch(() => ({ added_count: 0, edited_count: 0, unresolved: 0 })),
+    api.checkPublishConflicts(state.draftRows, state.evidence).catch(() => ({ conflicts: [] })),
+  ]);
   document.getElementById("kpi-new").textContent = String(d.added_count ?? d.added?.length ?? 0);
   document.getElementById("kpi-edited").textContent = String(d.edited_count ?? d.edited?.length ?? 0);
   document.getElementById("kpi-unresolved").textContent = String(d.unresolved ?? 0);
-  document.getElementById("backup-suffix-input").value = "";
-  openModal("modal-validate");
+
+  const conflicts = conflictCheck.conflicts || [];
+  // Default every conflict to "theirs" -- the already-published side is
+  // usually the fresher one (e.g. two environments both ran Refresh
+  // EOL/EOAS and published at different times; whichever landed first is
+  // presumed more current).
+  const resolutions = Object.fromEntries(conflicts.map((c) => [c.os_string, "theirs"]));
+
+  function updateConfirmState() {
+    const allResolved = conflicts.every((c) => resolutions[c.os_string] === "mine" || resolutions[c.os_string] === "theirs");
+    confirmBtn.disabled = conflicts.length > 0 && !allResolved;
+    confirmBtn.textContent = conflicts.length > 0 ? "Resolve & publish" : "Validate and publish";
+  }
+
+  if (conflicts.length) {
+    resolverEl.hidden = false;
+    document.getElementById("conflict-count-note").textContent =
+      `${conflicts.length} row(s) changed both here and in Data since you started this draft — pick which version to keep.`;
+
+    const listEl = document.getElementById("conflict-list");
+    listEl.innerHTML = conflicts
+      .map(
+        (c, i) => `
+        <div class="conflict-row">
+          <div class="conflict-os">${escapeHtml(c.os_string)}</div>
+          <label class="conflict-option">
+            <input type="radio" name="conflict-${i}" value="mine" data-os="${escapeHtml(c.os_string)}" />
+            Keep mine: ${escapeHtml(summarizeConflictSide(c.mine, c.kind))}
+          </label>
+          <label class="conflict-option">
+            <input type="radio" name="conflict-${i}" value="theirs" data-os="${escapeHtml(c.os_string)}" checked />
+            Keep theirs: ${escapeHtml(summarizeConflictSide(c.theirs, c.kind))}
+          </label>
+        </div>`
+      )
+      .join("");
+    listEl.querySelectorAll("input[type=radio]").forEach((input) => {
+      input.addEventListener("change", () => {
+        resolutions[input.dataset.os] = input.value;
+        updateConfirmState();
+      });
+    });
+    document.getElementById("conflict-apply-mine").onclick = () => {
+      conflicts.forEach((c) => { resolutions[c.os_string] = "mine"; });
+      listEl.querySelectorAll('input[value="mine"]').forEach((el) => { el.checked = true; });
+      updateConfirmState();
+    };
+    document.getElementById("conflict-apply-theirs").onclick = () => {
+      conflicts.forEach((c) => { resolutions[c.os_string] = "theirs"; });
+      listEl.querySelectorAll('input[value="theirs"]').forEach((el) => { el.checked = true; });
+      updateConfirmState();
+    };
+  }
+  updateConfirmState();
 
   const bodyEl = document.getElementById("modal-validate-body");
   const footerEl = document.getElementById("modal-validate-footer");
-  document.getElementById("validate-confirm-btn").onclick = () => {
-    const suffix = document.getElementById("backup-suffix-input").value.trim();
+  confirmBtn.onclick = () => {
+    const suffix = backupField.value.trim();
+    resolverEl.hidden = true;
     runProgress({
       kind: "publish",
       label: "Validate & publish",
       bodyEl, footerEl,
-      eventGenerator: streams.validatePublish(state.draftRows, state.evidence, suffix),
+      eventGenerator: streams.validatePublish(state.draftRows, state.evidence, suffix, resolutions),
       // Backup + write + delete-draft each complete as one atomic file
       // operation on the server -- there's no safe midpoint to actually
       // stop at, so offering a Cancel button here would be a broken
@@ -891,8 +984,12 @@ function openRevertDraftModal() {
     const dataSnapshot = await api.getLookup("data");
     state.draftRows = dataSnapshot.rows.map((row) => ({ ...row }));
     state.evidence = dataSnapshot.evidence;
+    state.draftBasedOnRevision = dataSnapshot.data_revision ?? 0;
     clearSelection();
-    await persistDraft();
+    // Revert re-syncs the draft to current Data, so the merge base must
+    // reset to this same snapshot too -- otherwise a later publish would
+    // still diff against the draft's original (now stale) starting point.
+    await persistDraft({ baseRows: dataSnapshot.rows, baseEvidence: dataSnapshot.evidence, resetBase: true });
     await recomputeDiff();
     renderAll();
     closeModal();

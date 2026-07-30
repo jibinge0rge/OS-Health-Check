@@ -34,10 +34,15 @@ function put(url, body) {
 export const api = {
   // Lookup (Data / Draft)
   getLookup: (source = "data") => json(`/api/lookup?source=${encodeURIComponent(source)}`),
-  saveLookup: (rows, evidence, source = "draft") =>
-    post(`/api/lookup?source=${encodeURIComponent(source)}`, { rows, evidence, backup_suffix: "" }),
-  validateLookup: (rows, evidence, backupSuffix = "") =>
-    post(`/api/lookup/validate`, { rows, evidence, backup_suffix: backupSuffix }),
+  saveLookup: (rows, evidence, source = "draft", { baseRows, baseEvidence, resetBase = false } = {}) =>
+    post(`/api/lookup?source=${encodeURIComponent(source)}`, {
+      rows, evidence, backup_suffix: "",
+      base_rows: baseRows, base_evidence: baseEvidence, reset_base: resetBase,
+    }),
+  validateLookup: (rows, evidence, backupSuffix = "", conflictResolutions = {}) =>
+    post(`/api/lookup/validate`, { rows, evidence, backup_suffix: backupSuffix, conflict_resolutions: conflictResolutions }),
+  checkPublishConflicts: (rows, evidence) =>
+    post(`/api/lookup/validate/check`, { rows, evidence }),
   deleteDraft: () => json(`/api/lookup/draft`, { method: "DELETE" }),
   downloadUrl: (source = "data") => `/api/lookup/download?source=${encodeURIComponent(source)}`,
   getDiff: (source = "draft") => json(`/api/lookup/diff?source=${encodeURIComponent(source)}`),
@@ -123,8 +128,12 @@ export const streams = {
     streamEvents("/api/lookup/refresh/stream", { rows, evidence, source }, opts),
   refreshRowsBatch: (rows, opts) =>
     streamEvents("/api/lookup/rows/refresh/stream", { rows }, opts),
-  validatePublish: (rows, evidence, backupSuffix, opts) =>
-    streamEvents("/api/lookup/validate/stream", { rows, evidence, backup_suffix: backupSuffix }, opts),
+  validatePublish: (rows, evidence, backupSuffix, conflictResolutions, opts) =>
+    streamEvents(
+      "/api/lookup/validate/stream",
+      { rows, evidence, backup_suffix: backupSuffix, conflict_resolutions: conflictResolutions || {} },
+      opts
+    ),
   vendorSync: (sourceId, payload, opts) =>
     streamEvents(`/api/vendor-lookups/${sourceId}/sync/stream`, payload ?? {}, opts),
   azureUpload: (profileId, opts) => streamEvents(`/api/azure/upload?profile_id=${encodeURIComponent(profileId || "")}`, {}, opts),

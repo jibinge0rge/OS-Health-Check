@@ -140,6 +140,23 @@ export function startTask({ kind, label, eventGenerator, onCancel, onComplete, o
           saveHistory();
           notify();
           return;
+        } else if (event.type === "conflict") {
+          // Publish found rows changed both here and in Data since the
+          // pre-check ran (or the pre-check was skipped/failed) -- rare
+          // enough that surfacing it as a plain error is an acceptable
+          // fallback; the common path resolves conflicts before this
+          // ever starts a task (see openValidateModal).
+          task.status = "error";
+          task.stage = "Failed.";
+          task.finishedAt = Date.now();
+          task.unread = true;
+          task.error = `${(event.conflicts || []).length} row(s) changed both here and in Data since you last checked. Re-open Validate & Publish to resolve them.`;
+          task.log.push(task.error);
+          saveHistory();
+          notify();
+          onError?.({ message: task.error, conflicts: event.conflicts });
+          notify();
+          return;
         } else if (event.type === "error") {
           task.status = "error";
           task.stage = "Failed.";
