@@ -1,0 +1,81 @@
+<section class="screen" id="screen-settings" hidden>
+  <div class="settings-wrap">
+    <h1 class="screen-title">Settings</h1>
+    <div class="tab-strip">
+      <button class="tab-item active" data-settings-tab="vendor" type="button">Vendor lookups</button>
+      <button class="tab-item" data-settings-tab="prompt" type="button">Configure AI</button>
+      <button class="tab-item" data-settings-tab="appearance" type="button">Appearance</button>
+    </div>
+
+    <div class="settings-tab" id="settings-tab-vendor">
+      <div class="refresh-order-strip">
+        <span class="refresh-order-label">REFRESH ORDER</span>
+        <span class="chip-arrow chip-active">endoflife.date</span>
+        <span class="chip-arrow">→ eosl</span>
+        <span class="chip-arrow">→ junos</span>
+        <span class="chip-arrow">→ suse</span>
+        <span class="chip-arrow">→ layer23-switch</span>
+        <span class="chip-arrow">→ router-switch</span>
+      </div>
+      <div id="settings-vendor-cards"></div>
+    </div>
+
+    <div class="settings-tab" id="settings-tab-prompt" hidden>
+      <div class="settings-card">
+        <div class="settings-card-row">
+          <div>
+            <div class="settings-card-title">AI match</div>
+            <p class="settings-card-note">Runs only when fuzzy matching fails. Off by default — no AI calls happen until you enable it.</p>
+          </div>
+          <label class="toggle"><input type="checkbox" id="ai-enabled-toggle" /><span class="toggle-track"><span class="toggle-knob"></span></span></label>
+        </div>
+        <div class="provider-chip-row" id="ai-provider-chips"></div>
+        <div class="model-row">
+          <span class="settings-card-note">MODEL</span>
+          <div class="model-dropdown" id="ai-model-dropdown">
+            <button type="button" class="model-dropdown-trigger" id="ai-model-trigger">
+              <span id="ai-model-trigger-label"></span>
+              <span class="chevron">&#9662;</span>
+            </button>
+            <div class="model-dropdown-menu" id="ai-model-menu" hidden></div>
+          </div>
+          <button class="btn tertiary" id="ai-model-reset-btn" type="button">Reset to default</button>
+        </div>
+        <p class="settings-card-note">Models come from <code>_config/ai_model_choices.json</code> — add one below to save it there for next time, or edit that file directly.</p>
+        <div class="confidence-row">
+          <span class="settings-card-note">CONFIDENCE CUTOFF</span>
+          <input type="range" class="confidence-slider" id="ai-confidence-slider" min="50" max="100" step="1" />
+          <span class="value-chip" id="ai-confidence-value">85%</span>
+        </div>
+      </div>
+      <div class="settings-card">
+        <div class="settings-card-title">AI match system prompt</div>
+        <p class="settings-card-note">{threshold} is replaced with the confidence cutoff above. Output-format rules are appended by the app and are not editable here.</p>
+        <textarea id="ai-prompt-textarea" class="mono-textarea"></textarea>
+        <div class="settings-card-actions">
+          <button class="btn primary" id="ai-prompt-save-btn" type="button">Save</button>
+          <button class="btn" id="ai-prompt-reset-btn" type="button">Reset to default</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-tab" id="settings-tab-appearance" hidden>
+      <div class="settings-card">
+        <div class="settings-card-title">Theme</div>
+        <p class="settings-card-note">Applies to this browser only.</p>
+        <div class="theme-options">
+          <button class="theme-option" data-theme-option="light" type="button">
+            <span class="theme-swatch" style="background:#FFFFFF"></span> Light
+          </button>
+          <button class="theme-option" data-theme-option="dark" type="button">
+            <span class="theme-swatch" style="background:#161618"></span> Dark
+          </button>
+        </div>
+        <div class="density-row">
+          <span class="settings-card-note">ROW DENSITY</span>
+          <span class="value-chip" id="density-value-chip">Compact</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>

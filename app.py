@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime
@@ -51,15 +52,27 @@ from vendor_lookups.vendor_lookup_service import (
     sync_source as vendor_sync_source,
 )
 from normalization_service import (
+    AI_MODEL_CHOICES,
     DEFAULT_AI_MATCH_PROMPT,
+    DEFAULT_AI_MODELS,
     DEFAULT_FUZZY_MATCH_THRESHOLD,
+    collapse_consecutive_duplicate_words,
     detect_ambiguous_os_batch,
+    gemini_model_name,
     normalize_ai_provider,
+    openai_model_name,
+    openrouter_model_name,
     provider_api_key_configured,
     strip_ai_match_response_format,
     suggest_normalization_batch,
 )
 from os_import_service import extract_distinct_os_values, inspect_os_import_file
+from lookup_extras import (
+    build_eol_evidence_slot,
+    build_evidence_entries,
+    compute_lookup_diff,
+    row_matched_by,
+)
 
 
 load_dotenv()
@@ -73,7 +86,9 @@ DRAFT_EVIDENCE_PATH = BASE_DIR / "_draft" / "eol_lookup_evidence.json"
 BACKUP_DIR = BASE_DIR / "_backup"
 CONFIG_DIR = BASE_DIR / "_config"
 AZURE_CONFIG_PATH = CONFIG_DIR / "azure.json"
+AWS_CONFIG_PATH = CONFIG_DIR / "aws.json"
 APP_SETTINGS_PATH = CONFIG_DIR / "app_settings.json"
+AI_MODEL_CHOICES_PATH = CONFIG_DIR / "ai_model_choices.json"
 CSV_HEADERS = [
     "os_string",
     "normalized_os_detailed_name",
@@ -83,10 +98,37 @@ CSV_HEADERS = [
     "eoas_date",
     "eoas_status",
 ]
+STATIC_DIR = BASE_DIR / "static"
+
+
+def static_v(rel_path: str) -> str:
+    """Cache-busting query param derived from a static asset's own mtime, so
+    editing one CSS/JS file busts the browser cache for just that file --
+    no server restart needed, and untouched assets keep caching normally."""
+    path = STATIC_DIR / rel_path
+    try:
+        return str(int(path.stat().st_mtime))
+    except OSError:
+        return str(int(time.time()))
+
 
 app = FastAPI(title="OS Health Check")
-app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+templates.env.globals["static_v"] = static_v
+
+
+@app.middleware("http")
+async def no_cache_static_assets(request: Request, call_next):
+    """Static JS/CSS are plain files with no build/hash step, and JS module
+    imports (e.g. `import ... from './modals.js'`) don't inherit the entry
+    script's cache-busting query param -- so a stale cached module can keep
+    getting served long after the file changed. Never cache /static/* rather
+    than debug that per file; these assets are small and low-traffic."""
+    response = await call_next(request)
+    if request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return response
 
 # Serialize vendor scrape runs so only one hits a remote source at a time.
 VENDOR_SYNC_LOCK = asyncio.Lock()
@@ -102,6 +144,11 @@ VALID_VENDOR_SOURCES = {
 # In-flight vendor sync jobs (job_id -> cancel event) so the Stop button can
 # reach a background scrape that's already streaming to a client.
 ACTIVE_VENDOR_SYNC_JOBS: dict[str, threading.Event] = {}
+
+# Serialize/track "Refresh EOL/EOAS" streaming jobs separately from vendor
+# scrapes so a bulk lookup refresh doesn't queue behind a vendor DB sync.
+LOOKUP_REFRESH_LOCK = asyncio.Lock()
+ACTIVE_LOOKUP_REFRESH_JOBS: dict[str, threading.Event] = {}
 
 
 class LookupRow(BaseModel):
@@ -246,11 +293,84 @@ class AzureSettingsSaveRequest(BaseModel):
     def strip_active_profile_id(cls, value: object) -> str:
         return str(value or "").strip()
 
+
+class AwsProfile(BaseModel):
+    id: str = ""
+    name: str = ""
+    bucket: str = ""
+    region: str = ""
+    key: str = ""
+
+    @field_validator("id", "name", "bucket", "region", "key", mode="before")
+    @classmethod
+    def strip_optional_fields(cls, value: object) -> str:
+        return str(value or "").strip()
+
+
+class AwsSettingsStore(BaseModel):
+    active_profile_id: str = ""
+    profiles: list[AwsProfile] = Field(default_factory=list)
+
+    @field_validator("active_profile_id", mode="before")
+    @classmethod
+    def strip_active_profile_id(cls, value: object) -> str:
+        return str(value or "").strip()
+
+
+class AwsSettingsSaveRequest(BaseModel):
+    active_profile_id: str = ""
+    profiles: list[AwsProfile] = Field(default_factory=list)
+
+    @field_validator("active_profile_id", mode="before")
+    @classmethod
+    def strip_active_profile_id(cls, value: object) -> str:
+        return str(value or "").strip()
+
+
+class RowRefreshRequest(BaseModel):
+    """Re-run EOL/EOAS lookup (endoflife.date, then the vendor cascade) for one row."""
+
+    row: LookupRow
+
+
+class RowsRefreshRequest(BaseModel):
+    """Bulk variant of RowRefreshRequest for the selection's Refresh lifecycle action."""
+
+    rows: list[LookupRow] = Field(default_factory=list)
+
+
+class LookupRefreshStreamRequest(BaseModel):
+    """Whole-table 'Refresh EOL/EOAS' with streamed progress. Persists on completion."""
+
+    rows: list[LookupRow] = Field(default_factory=list)
+    evidence: dict[str, object] = Field(default_factory=dict)
+    source: str = "draft"
+
+
+class LookupValidateStreamRequest(LookupPayload):
+    """Same body as /api/lookup/validate, just streamed for progress UI parity."""
+
+
+def _clean_ai_models(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    cleaned: dict[str, str] = {}
+    for provider in ("openai", "gemini", "openrouter"):
+        model = str(value.get(provider) or "").strip()
+        if model:
+            cleaned[provider] = model
+    return cleaned
+
+
 class AppSettings(BaseModel):
     ai_enabled: bool = False
     ai_provider: str = "openai"
     # Empty means use DEFAULT_AI_MATCH_PROMPT at match time.
     ai_match_prompt: str = ""
+    # Confidence cutoff (0-100) an AI match must meet to be accepted.
+    ai_confidence_threshold: int = 85
+    # Per-provider model override; missing/empty means use that provider's default.
+    ai_models: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("ai_provider", mode="before")
     @classmethod
@@ -264,18 +384,48 @@ class AppSettings(BaseModel):
             return ""
         return str(value).strip()
 
+    @field_validator("ai_confidence_threshold", mode="before")
+    @classmethod
+    def validate_ai_confidence_threshold(cls, value: object) -> int:
+        try:
+            threshold = int(value)
+        except (TypeError, ValueError):
+            threshold = 85
+        return max(50, min(100, threshold))
+
+    @field_validator("ai_models", mode="before")
+    @classmethod
+    def validate_ai_models(cls, value: object) -> dict[str, str]:
+        return _clean_ai_models(value)
+
 
 class AppSettingsUpdateRequest(BaseModel):
-    """Partial settings update. Omit ai_match_prompt to leave it unchanged."""
+    """Partial settings update. Omit a field to leave it unchanged."""
 
     ai_enabled: bool = False
     ai_provider: str = "openai"
     ai_match_prompt: str | None = None
+    ai_confidence_threshold: int | None = None
+    ai_models: dict[str, str] | None = None
 
     @field_validator("ai_provider", mode="before")
     @classmethod
     def validate_ai_provider(cls, value: object) -> str:
         return normalize_ai_provider(value)
+
+    @field_validator("ai_confidence_threshold")
+    @classmethod
+    def validate_ai_confidence_threshold(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        return max(50, min(100, int(value)))
+
+    @field_validator("ai_models", mode="before")
+    @classmethod
+    def validate_ai_models(cls, value: object) -> dict[str, str] | None:
+        if value is None:
+            return None
+        return _clean_ai_models(value)
 
 
 class AppSettingsResponse(BaseModel):
@@ -287,6 +437,10 @@ class AppSettingsResponse(BaseModel):
     openrouter_available: bool = False
     ai_match_prompt: str = ""
     default_ai_match_prompt: str = DEFAULT_AI_MATCH_PROMPT
+    ai_confidence_threshold: int = 85
+    ai_models: dict[str, str] = Field(default_factory=dict)
+    ai_model_choices: dict[str, list[str]] = Field(default_factory=dict)
+    default_ai_models: dict[str, str] = Field(default_factory=dict)
 
 
 AZURE_PROGRESS_RE = re.compile(r"(\d+(?:\.\d+)?)%")
@@ -651,6 +805,97 @@ def require_azure_settings() -> AzureUploadRequest:
         blob_name=settings.blob_name,
     )
 
+
+def resolve_azure_profile(profile_id: str = "") -> AzureUploadRequest:
+    """Like require_azure_settings, but can target a non-active profile by id."""
+    if not profile_id:
+        return require_azure_settings()
+    store = load_azure_settings_store()
+    profile = next((item for item in store.profiles if item.id == profile_id), None)
+    if profile is None or not profile.account_name or not profile.container_name or not profile.blob_name:
+        raise HTTPException(status_code=400, detail="That Azure profile is not configured.")
+    return AzureUploadRequest(
+        account_name=profile.account_name,
+        container_name=profile.container_name,
+        blob_name=profile.blob_name,
+    )
+
+
+def _new_aws_profile_id() -> str:
+    return uuid.uuid4().hex
+
+
+def _normalize_aws_store(payload: dict[str, object] | None) -> AwsSettingsStore:
+    if not isinstance(payload, dict):
+        return AwsSettingsStore()
+
+    raw_profiles = payload.get("profiles")
+    profiles: list[AwsProfile] = []
+    seen_ids: set[str] = set()
+    if isinstance(raw_profiles, list):
+        for item in raw_profiles:
+            if not isinstance(item, dict):
+                continue
+            profile_id = str(item.get("id") or "").strip() or _new_aws_profile_id()
+            if profile_id in seen_ids:
+                profile_id = _new_aws_profile_id()
+            seen_ids.add(profile_id)
+            name = str(item.get("name") or "").strip() or "Untitled"
+            profiles.append(
+                AwsProfile(
+                    id=profile_id,
+                    name=name,
+                    bucket=str(item.get("bucket") or "").strip(),
+                    region=str(item.get("region") or "").strip(),
+                    key=str(item.get("key") or "").strip(),
+                )
+            )
+
+    active_profile_id = str(payload.get("active_profile_id") or "").strip()
+    if profiles:
+        valid_ids = {profile.id for profile in profiles}
+        if active_profile_id not in valid_ids:
+            active_profile_id = profiles[0].id
+    else:
+        active_profile_id = ""
+
+    return AwsSettingsStore(active_profile_id=active_profile_id, profiles=profiles)
+
+
+def load_aws_settings_store() -> AwsSettingsStore:
+    if not AWS_CONFIG_PATH.exists():
+        return AwsSettingsStore()
+    try:
+        with AWS_CONFIG_PATH.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError) as error:
+        raise HTTPException(status_code=500, detail="AWS settings file is invalid.") from error
+    return _normalize_aws_store(payload)
+
+
+def save_aws_settings_store(store: AwsSettingsStore) -> AwsSettingsStore:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    normalized = _normalize_aws_store(store.model_dump())
+    with AWS_CONFIG_PATH.open("w", encoding="utf-8") as handle:
+        json.dump(normalized.model_dump(), handle, indent=2)
+        handle.write("\n")
+    return normalized
+
+
+def resolve_aws_profile(profile_id: str = "") -> AwsProfile:
+    store = load_aws_settings_store()
+    target_id = profile_id.strip() or store.active_profile_id
+    profile = next((item for item in store.profiles if item.id == target_id), None)
+    if profile is None and store.profiles:
+        profile = store.profiles[0]
+    if profile is None or not profile.bucket or not profile.key:
+        raise HTTPException(
+            status_code=400,
+            detail="AWS settings are not configured. Save a profile first.",
+        )
+    return profile
+
+
 def load_app_settings() -> AppSettings:
     if not APP_SETTINGS_PATH.exists():
         return AppSettings()
@@ -676,6 +921,8 @@ def load_app_settings() -> AppSettings:
         ai_enabled=bool(payload.get("ai_enabled", False)),
         ai_provider=normalize_ai_provider(payload.get("ai_provider", "openai")),
         ai_match_prompt=cleaned_prompt,
+        ai_confidence_threshold=payload.get("ai_confidence_threshold", 85),
+        ai_models=payload.get("ai_models", {}),
     )
 
 
@@ -687,11 +934,61 @@ def save_app_settings(settings: AppSettings) -> AppSettings:
     return settings
 
 
+def load_ai_model_choices() -> dict[str, list[str]]:
+    """The selectable model catalog per provider, editable at
+    _config/ai_model_choices.json without touching code. Falls back to the
+    built-in defaults if the file is missing or malformed, and always keeps
+    those defaults present so a bad edit can't delete the last known model."""
+    stored: dict[str, list[str]] = {}
+    if AI_MODEL_CHOICES_PATH.exists():
+        try:
+            with AI_MODEL_CHOICES_PATH.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            if isinstance(payload, dict):
+                stored = payload
+        except (OSError, json.JSONDecodeError):
+            stored = {}
+
+    result: dict[str, list[str]] = {}
+    for provider, defaults in AI_MODEL_CHOICES.items():
+        raw = stored.get(provider)
+        cleaned = [str(v).strip() for v in raw if str(v or "").strip()] if isinstance(raw, list) else []
+        result[provider] = list(dict.fromkeys(cleaned + defaults))
+    return result
+
+
+def save_ai_model_choices(choices: dict[str, list[str]]) -> None:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    with AI_MODEL_CHOICES_PATH.open("w", encoding="utf-8") as handle:
+        json.dump(choices, handle, indent=2)
+        handle.write("\n")
+
+
+def remember_custom_ai_model(provider: str, model: str) -> None:
+    """Adds a model an admin typed in Settings to the persistent catalog so
+    it shows up as a normal option next time, instead of vanishing once the
+    session that typed it ends."""
+    selected = normalize_ai_provider(provider)
+    model = str(model or "").strip()
+    if not model:
+        return
+    choices = load_ai_model_choices()
+    if model in choices.get(selected, []):
+        return
+    choices.setdefault(selected, []).append(model)
+    save_ai_model_choices(choices)
+
+
 def app_settings_response() -> AppSettingsResponse:
     settings = load_app_settings()
     openai_available = openai_api_key_configured()
     gemini_available = gemini_api_key_configured()
     openrouter_available = openrouter_api_key_configured()
+    effective_models = {
+        "openai": openai_model_name(settings.ai_models.get("openai")),
+        "gemini": gemini_model_name(settings.ai_models.get("gemini")),
+        "openrouter": openrouter_model_name(settings.ai_models.get("openrouter")),
+    }
     return AppSettingsResponse(
         ai_enabled=settings.ai_enabled,
         ai_provider=settings.ai_provider,
@@ -701,6 +998,10 @@ def app_settings_response() -> AppSettingsResponse:
         openrouter_available=openrouter_available,
         ai_match_prompt=settings.ai_match_prompt,
         default_ai_match_prompt=DEFAULT_AI_MATCH_PROMPT,
+        ai_confidence_threshold=settings.ai_confidence_threshold,
+        ai_models=effective_models,
+        ai_model_choices=load_ai_model_choices(),
+        default_ai_models=DEFAULT_AI_MODELS,
     )
 
 
@@ -862,6 +1163,210 @@ async def azure_upload_events(payload: AzureUploadRequest) -> AsyncIterator[str]
         worker.join(timeout=1)
 
 
+async def aws_upload_events(profile: AwsProfile) -> AsyncIterator[str]:
+    if not DATA_PATH.exists():
+        yield sse_event({"type": "error", "message": "Data lookup CSV not found at _data/eol_lookup.csv."})
+        return
+
+    aws_path = shutil.which("aws")
+    if not aws_path:
+        yield sse_event(
+            {"type": "error", "message": "AWS CLI (aws) is not installed or not available on PATH."}
+        )
+        return
+
+    destination = f"s3://{profile.bucket}/{profile.key}"
+    command = [aws_path, "s3", "cp", str(DATA_PATH), destination]
+    if profile.region:
+        command.extend(["--region", profile.region])
+
+    yield sse_event({"type": "start", "message": f"Uploading _data/eol_lookup.csv to {destination}"})
+
+    output_queue: asyncio.Queue[str | None] = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+    process_holder: list[subprocess.Popen[str] | None] = [None]
+    worker = threading.Thread(
+        target=_stream_az_upload_to_queue,
+        args=(command, str(BASE_DIR), output_queue, loop, process_holder),
+        daemon=True,
+    )
+    worker.start()
+
+    result_lines: list[str] = []
+    return_code: int | None = None
+    try:
+        while True:
+            item = await output_queue.get()
+            if item is None:
+                break
+            if item.startswith("__RETURN_CODE__:"):
+                return_code = int(item.split(":", 1)[1])
+                continue
+            if item.startswith("__ERROR__:"):
+                yield sse_event({"type": "error", "message": item.split(":", 1)[1], "output": result_lines})
+                return
+            if not item:
+                continue
+            result_lines.append(item)
+            yield sse_event({"type": "progress", "message": item, "percent": parse_azure_progress_line(item)})
+
+        if return_code == 0:
+            yield sse_event({"type": "complete", "message": "AWS S3 upload completed successfully.", "output": result_lines})
+            return
+        yield sse_event(
+            {
+                "type": "error",
+                "message": (
+                    f"AWS S3 upload failed with exit code {return_code}." if return_code is not None else "AWS S3 upload failed."
+                ),
+                "output": result_lines,
+            }
+        )
+    finally:
+        process = process_holder[0]
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait()
+        worker.join(timeout=1)
+
+
+LOOKUP_REFRESH_CHUNK_SIZE = 25
+
+
+def _apply_lifecycle_result(row: dict, result: dict, evidence_by_os: dict) -> None:
+    os_key = str(row.get("os_string") or "").strip()
+    row["eol_date"] = str(result.get("eol_date") or "")
+    row["eol_status"] = str(result.get("eol_status") or "")
+    row["eoas_date"] = str(result.get("eoas_date") or "")
+    row["eoas_status"] = str(result.get("eoas_status") or "")
+
+    filled_detailed = not str(row.get("normalized_os_detailed_name") or "").strip() and result.get(
+        "normalized_os_detailed_name"
+    )
+    filled_normalized = not str(row.get("normalized_os") or "").strip() and result.get("normalized_os")
+    if filled_detailed:
+        row["normalized_os_detailed_name"] = collapse_consecutive_duplicate_words(result.get("normalized_os_detailed_name"))
+    if filled_normalized:
+        row["normalized_os"] = collapse_consecutive_duplicate_words(result.get("normalized_os"))
+
+    if not os_key:
+        return
+    entry = evidence_by_os.setdefault(os_key, {})
+    entry["eol"] = build_eol_evidence_slot(result)
+    if filled_detailed:
+        entry["detailed"] = dict(entry["eol"], method=entry["eol"]["method"])
+    if filled_normalized:
+        entry["normalized"] = dict(entry["eol"], method=entry["eol"]["method"])
+
+
+def _row_has_lifecycle_data(row: dict) -> bool:
+    return bool(str(row.get("eol_date") or "").strip() or str(row.get("eoas_date") or "").strip())
+
+
+def refresh_rows_lifecycle_chunk(rows: list[dict], evidence_by_os: dict) -> None:
+    """Synchronous worker: one chunk through endoflife.date, then the vendor
+    cascade for whatever is still unresolved. Meant to run inside
+    asyncio.to_thread per chunk so the caller can yield progress between
+    chunks."""
+    eol_items = [
+        {
+            "os_string": row.get("os_string", ""),
+            "normalized_os_detailed_name": row.get("normalized_os_detailed_name", ""),
+            "normalized_os": row.get("normalized_os", ""),
+        }
+        for row in rows
+    ]
+    eol_results = lookup_os_eol_batch(eol_items)
+    still_unresolved: list[dict] = []
+    for row, result in zip(rows, eol_results):
+        _apply_lifecycle_result(row, result, evidence_by_os)
+        if not _row_has_lifecycle_data(row):
+            still_unresolved.append(row)
+
+    if not still_unresolved:
+        return
+
+    vendor_items = [
+        {
+            "os_string": row.get("os_string", ""),
+            "normalized_os_detailed_name": row.get("normalized_os_detailed_name", ""),
+            "normalized_os": row.get("normalized_os", ""),
+        }
+        for row in still_unresolved
+    ]
+    vendor_results = lookup_vendor_batch(vendor_items)
+    for row, result in zip(still_unresolved, vendor_results):
+        if _row_has_lifecycle_data({"eol_date": result.get("eol_date"), "eoas_date": result.get("eoas_date")}):
+            _apply_lifecycle_result(row, result, evidence_by_os)
+
+
+async def lookup_refresh_events(
+    rows: list[dict],
+    evidence: dict[str, object],
+    source: str,
+    cancel_event: threading.Event,
+) -> AsyncIterator[str]:
+    total = len(rows)
+    evidence_by_os = dict((normalize_evidence_payload(evidence).get("by_os") or {}))
+    processed = 0
+
+    for start in range(0, total, LOOKUP_REFRESH_CHUNK_SIZE):
+        if cancel_event.is_set():
+            yield sse_event({"type": "cancelled", "processed": processed, "total": total})
+            return
+        chunk = rows[start : start + LOOKUP_REFRESH_CHUNK_SIZE]
+        await asyncio.to_thread(refresh_rows_lifecycle_chunk, chunk, evidence_by_os)
+        processed += len(chunk)
+        yield sse_event(
+            {
+                "type": "progress",
+                "stage": "Refreshing EOL/EOAS",
+                "processed": processed,
+                "total": total,
+            }
+        )
+
+    lookup_rows = [LookupRow(**row) for row in rows]
+    save_rows(lookup_rows, source)
+    saved_evidence = save_evidence(
+        prune_evidence_to_rows({"by_os": evidence_by_os, "updated_at": ""}, lookup_rows), source
+    )
+    yield sse_event(
+        {
+            "type": "complete",
+            "rows": rows,
+            "evidence": saved_evidence,
+            "source": source,
+        }
+    )
+
+
+async def lookup_rows_refresh_events(rows: list[dict]) -> AsyncIterator[str]:
+    """Chunked-progress variant of POST /api/lookup/rows/refresh -- same
+    lifecycle lookup, streamed so a large batch (e.g. the Add-OS pipeline's
+    final step) reports real per-chunk progress instead of one long silent
+    wait. Unlike lookup_refresh_events this never writes to Data/Draft --
+    the caller owns merging these rows into whatever rowset it's building."""
+    total = len(rows)
+    evidence_by_os: dict[str, object] = {}
+    processed = 0
+
+    for start in range(0, total, LOOKUP_REFRESH_CHUNK_SIZE):
+        chunk = rows[start : start + LOOKUP_REFRESH_CHUNK_SIZE]
+        await asyncio.to_thread(refresh_rows_lifecycle_chunk, chunk, evidence_by_os)
+        processed += len(chunk)
+        yield sse_event(
+            {
+                "type": "progress",
+                "stage": "Looking up EOL/EOAS",
+                "processed": processed,
+                "total": total,
+            }
+        )
+
+    yield sse_event({"type": "complete", "rows": rows, "evidence_by_os": evidence_by_os})
+
+
 async def vendor_lookup_sync_events(
     source_id: str,
     options: dict[str, object] | None,
@@ -936,14 +1441,47 @@ async def index(request: Request) -> HTMLResponse:
     )
 
 
+def _published_at() -> str:
+    if not DATA_PATH.exists():
+        return ""
+    return datetime.fromtimestamp(DATA_PATH.stat().st_mtime).isoformat(timespec="seconds")
+
+
 @app.get("/api/lookup")
 async def get_lookup(source: str = "data") -> dict[str, object]:
+    rows = load_rows(source)
+    evidence = load_evidence(source)
+    by_os = evidence.get("by_os") if isinstance(evidence.get("by_os"), dict) else {}
+    for row in rows:
+        row["matched_by"] = row_matched_by(by_os.get(str(row.get("os_string") or "").strip()))
     return {
         "headers": CSV_HEADERS,
-        "rows": load_rows(source),
+        "rows": rows,
         "source": source,
-        "evidence": load_evidence(source),
+        "evidence": evidence,
+        "published_at": _published_at(),
+        "draft_exists": DRAFT_PATH.exists(),
     }
+
+
+@app.get("/api/lookup/evidence")
+async def get_lookup_row_evidence(os_string: str, source: str = "data") -> dict[str, object]:
+    evidence = load_evidence(source)
+    by_os = evidence.get("by_os") if isinstance(evidence.get("by_os"), dict) else {}
+    rows = load_rows(source)
+    row = next((item for item in rows if item.get("os_string") == os_string), None)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Row not found for that os_string.")
+    return build_evidence_entries(by_os.get(os_string.strip()), row)
+
+
+@app.get("/api/lookup/diff")
+async def get_lookup_diff(source: str = "draft") -> dict[str, object]:
+    if not lookup_path(source).exists():
+        return {"added": [], "edited": [], "deleted": [], "unresolved": 0, "added_count": 0, "edited_count": 0, "deleted_count": 0}
+    data_rows = load_rows("data") if DATA_PATH.exists() else []
+    draft_rows = load_rows(source)
+    return compute_lookup_diff(data_rows, draft_rows)
 
 
 @app.post("/api/lookup")
@@ -979,6 +1517,118 @@ async def validate_lookup(payload: LookupPayload) -> dict[str, object]:
         "evidence_backup_path": str(evidence_backup_path) if evidence_backup_path else "",
         "evidence": evidence,
     }
+
+
+@app.post("/api/lookup/row/refresh")
+async def refresh_lookup_row(payload: RowRefreshRequest) -> dict[str, object]:
+    row = payload.row.model_dump()
+    evidence_by_os: dict[str, object] = {}
+    await asyncio.to_thread(refresh_rows_lifecycle_chunk, [row], evidence_by_os)
+    os_key = str(row.get("os_string") or "").strip()
+    return {"row": row, "evidence_entry": evidence_by_os.get(os_key, {})}
+
+
+@app.post("/api/lookup/rows/refresh")
+async def refresh_lookup_rows(payload: RowsRefreshRequest) -> dict[str, object]:
+    rows = [item.model_dump() for item in payload.rows]
+    evidence_by_os: dict[str, object] = {}
+    for start in range(0, len(rows), LOOKUP_REFRESH_CHUNK_SIZE):
+        chunk = rows[start : start + LOOKUP_REFRESH_CHUNK_SIZE]
+        await asyncio.to_thread(refresh_rows_lifecycle_chunk, chunk, evidence_by_os)
+    return {"rows": rows, "evidence_by_os": evidence_by_os}
+
+
+@app.post("/api/lookup/rows/refresh/stream")
+async def refresh_lookup_rows_stream(payload: RowsRefreshRequest) -> StreamingResponse:
+    """Streamed, non-persisting variant of the endpoint above -- large
+    batches (Add-OS pipeline, bulk selection refresh) get real per-chunk
+    progress instead of one long silent wait with no feedback."""
+    rows = [item.model_dump() for item in payload.rows]
+    return StreamingResponse(
+        lookup_rows_refresh_events(rows),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/api/lookup/refresh/stream")
+async def refresh_lookup_stream(payload: LookupRefreshStreamRequest) -> StreamingResponse:
+    if LOOKUP_REFRESH_LOCK.locked():
+        raise HTTPException(
+            status_code=409,
+            detail="A lookup refresh is already running. Please wait for it to finish.",
+        )
+
+    async def events() -> AsyncIterator[str]:
+        job_id = uuid.uuid4().hex
+        cancel_event = threading.Event()
+        ACTIVE_LOOKUP_REFRESH_JOBS[job_id] = cancel_event
+        try:
+            yield sse_event({"type": "started", "job_id": job_id})
+            async with LOOKUP_REFRESH_LOCK:
+                rows = [row.model_dump() for row in payload.rows]
+                async for event in lookup_refresh_events(
+                    rows, payload.evidence, payload.source, cancel_event
+                ):
+                    yield event
+        finally:
+            ACTIVE_LOOKUP_REFRESH_JOBS.pop(job_id, None)
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/api/lookup/refresh/{job_id}/cancel")
+async def refresh_lookup_cancel(job_id: str) -> dict[str, object]:
+    cancel_event = ACTIVE_LOOKUP_REFRESH_JOBS.get(job_id)
+    if cancel_event is None:
+        raise HTTPException(status_code=404, detail="Refresh job not found. It may have already finished.")
+    cancel_event.set()
+    return {"cancelling": True, "job_id": job_id}
+
+
+@app.post("/api/lookup/validate/stream")
+async def validate_lookup_stream(payload: LookupValidateStreamRequest) -> StreamingResponse:
+    async def events() -> AsyncIterator[str]:
+        yield sse_event({"type": "started"})
+        yield sse_event({"type": "progress", "stage": "Backing up data/eol_lookup.csv", "processed": 0, "total": 3})
+        suffix = sanitize_backup_suffix(payload.backup_suffix)
+        backup_path = await asyncio.to_thread(backup_data_file, suffix)
+        evidence_backup_path = await asyncio.to_thread(backup_data_evidence, suffix)
+
+        yield sse_event({"type": "progress", "stage": "Writing draft over Data", "processed": 1, "total": 3})
+        await asyncio.to_thread(save_rows, payload.rows, "data")
+        evidence = await asyncio.to_thread(
+            save_evidence, prune_evidence_to_rows(payload.evidence, payload.rows), "data"
+        )
+
+        yield sse_event({"type": "progress", "stage": "Deleting draft", "processed": 2, "total": 3})
+        if DRAFT_PATH.exists():
+            DRAFT_PATH.unlink()
+        delete_evidence("draft")
+
+        yield sse_event(
+            {
+                "type": "complete",
+                "validated": True,
+                "row_count": len(payload.rows),
+                "source": "data",
+                "draft_deleted": True,
+                "backup_suffix": suffix,
+                "backup_path": str(backup_path) if backup_path else "",
+                "evidence_backup_path": str(evidence_backup_path) if evidence_backup_path else "",
+                "evidence": evidence,
+            }
+        )
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/api/lookup/download")
@@ -1019,10 +1669,22 @@ async def update_app_settings(payload: AppSettingsUpdateRequest) -> AppSettingsR
         prompt = strip_ai_match_response_format(payload.ai_match_prompt)
         if prompt == DEFAULT_AI_MATCH_PROMPT.strip():
             prompt = ""
+    threshold = current.ai_confidence_threshold if payload.ai_confidence_threshold is None else payload.ai_confidence_threshold
+    if payload.ai_models is None:
+        models = current.ai_models
+    else:
+        # Merge rather than replace so setting one provider's model doesn't drop the others.
+        models = {**current.ai_models, **payload.ai_models}
+        # A model typed in Settings becomes a normal catalog entry from now on,
+        # not just a one-off override for this setting.
+        for provider, model in payload.ai_models.items():
+            remember_custom_ai_model(provider, model)
     merged = AppSettings(
         ai_enabled=payload.ai_enabled,
         ai_provider=normalize_ai_provider(payload.ai_provider or current.ai_provider),
         ai_match_prompt=prompt,
+        ai_confidence_threshold=threshold,
+        ai_models=models,
     )
     save_app_settings(merged)
     return app_settings_response()
@@ -1061,8 +1723,8 @@ async def update_azure_settings(payload: AzureSettingsSaveRequest) -> AzureSetti
     )
 
 @app.post("/api/azure/upload")
-async def upload_lookup_to_azure() -> StreamingResponse:
-    payload = require_azure_settings()
+async def upload_lookup_to_azure(profile_id: str = "") -> StreamingResponse:
+    payload = resolve_azure_profile(profile_id)
     return StreamingResponse(
         azure_upload_events(payload),
         media_type="text/event-stream",
@@ -1071,6 +1733,38 @@ async def upload_lookup_to_azure() -> StreamingResponse:
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },
+    )
+
+
+@app.get("/api/aws/settings")
+async def get_aws_settings() -> AwsSettingsStore:
+    return load_aws_settings_store()
+
+
+@app.put("/api/aws/settings")
+async def update_aws_settings(payload: AwsSettingsSaveRequest) -> AwsSettingsStore:
+    if not payload.profiles:
+        raise HTTPException(status_code=400, detail="Add at least one AWS profile before saving.")
+    for profile in payload.profiles:
+        if not profile.name:
+            raise HTTPException(status_code=400, detail="Each AWS profile needs a name.")
+        if not profile.bucket or not profile.key:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Profile '{profile.name}' is incomplete. Fill bucket and key.",
+            )
+    return save_aws_settings_store(
+        AwsSettingsStore(active_profile_id=payload.active_profile_id, profiles=payload.profiles)
+    )
+
+
+@app.post("/api/aws/upload")
+async def upload_lookup_to_aws(profile_id: str = "") -> StreamingResponse:
+    profile = resolve_aws_profile(profile_id)
+    return StreamingResponse(
+        aws_upload_events(profile),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )
 
 
@@ -1090,6 +1784,7 @@ async def normalize_suggest(payload: NormalizeSuggestRequest) -> dict[str, objec
         payload.fuzzy_match_threshold,
         settings.ai_provider,
         settings.ai_match_prompt,
+        settings.ai_models.get(settings.ai_provider),
     )
 
     results: list[NormalizeSuggestResult | None] = []
@@ -1116,6 +1811,7 @@ async def ambiguous_os_detect(payload: AmbiguousOsDetectRequest) -> dict[str, ob
         detect_ambiguous_os_batch,
         [item.os_string for item in payload.items],
         settings.ai_provider,
+        settings.ai_models.get(settings.ai_provider),
     )
     return {"results": results, "ai_provider": settings.ai_provider}
 

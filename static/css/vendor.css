@@ -1,0 +1,38 @@
+/* Vendor lookups screen. */
+
+#screen-vendor { overflow: hidden; }
+.vendor-header { flex: none; padding: 14px 16px 12px; background: var(--c-surface); border-bottom: 1px solid var(--c-border); }
+.vendor-header-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.vendor-meta { font-size: 11px; color: var(--fg3); white-space: nowrap; }
+.vendor-source-picker { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.vendor-source-picker .field-label { margin: 0; }
+.vendor-source-picker .select-input { width: auto; min-width: 220px; height: 30px; font-size: 12px; }
+.vendor-source-status { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--fg3); }
+.vendor-source-status .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--fg-dis); }
+.vendor-source-status .status-dot.enabled { background: var(--success-dot); }
+
+.vendor-table-wrap { flex: 1 1 auto; overflow: auto; background: var(--c-surface); }
+.vendor-table-head, .vendor-row {
+  display: grid;
+  /* Product/Release are fr-based so they always fill 100% of the available
+     width at any resolution -- no fixed cap, no shrink-to-fit, they just
+     scale with the screen. */
+  grid-template-columns: minmax(180px, 1.2fr) minmax(160px, 1.1fr) 130px 130px 130px 110px;
+  gap: 12px;
+}
+.vendor-table-head {
+  position: sticky; top: 0; z-index: 5;
+  background: var(--c-raised);
+  padding: 8px 16px;
+  font: 600 10px/14px var(--font-sans); letter-spacing: .06em; text-transform: uppercase;
+  color: var(--fg3);
+  border-bottom: 1px solid var(--c-border);
+}
+.vendor-row { padding: 8px 16px; font-size: 12px; border-bottom: 1px solid var(--c-border-subtle); align-items: center; }
+.vendor-row .tabular { font-variant-numeric: tabular-nums; }
+.vendor-supported-chip {
+  display: inline-flex; width: fit-content;
+  padding: 1px 7px; border-radius: 4px; font: 500 11px/16px var(--font-sans);
+}
+.vendor-supported-chip.yes { color: var(--success); background: var(--success-bg); }
+.vendor-supported-chip.no { color: var(--danger); background: var(--danger-bg); }

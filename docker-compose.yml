@@ -9,6 +9,11 @@
 #
 # The repo is bind-mounted so host/git changes reload live when UVICORN_RELOAD=true.
 # Vendor lookup caches live in PostgreSQL (named volume), not SQLite files.
+#
+# DATABASE_URL has no default here — set it in .env (it's picked up via
+# env_file below). Point it at the bundled `db` service, e.g.
+#   DATABASE_URL=postgresql://oshealth:oshealth@db:5432/oshealth
+# or at any other reachable Postgres instance.
 
 services:
   db:
@@ -54,7 +59,6 @@ services:
       POSTGRES_USER: "${POSTGRES_USER:-oshealth}"
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-oshealth}"
       POSTGRES_DB: "${POSTGRES_DB:-oshealth}"
-      DATABASE_URL: "${DATABASE_URL:-postgresql://oshealth:oshealth@db:5432/oshealth}"
     volumes:
       - ./:/app
     healthcheck:

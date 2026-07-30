@@ -1,0 +1,33 @@
+<section class="screen" id="screen-deploy" hidden>
+  <div class="deploy-wrap">
+    <h1 class="screen-title">Deploy published lookup</h1>
+    <p class="screen-note">Uploads the validated Data file. Drafts cannot be deployed.</p>
+
+    <div class="provider-cards">
+      <button class="provider-card" data-provider="azure" type="button">
+        <span class="provider-card-name">Azure Blob</span>
+        <span class="provider-card-sub" id="provider-count-azure">0 profiles</span>
+      </button>
+      <button class="provider-card" data-provider="aws" type="button">
+        <span class="provider-card-name">AWS S3</span>
+        <span class="provider-card-sub" id="provider-count-aws">0 profiles</span>
+      </button>
+    </div>
+
+    <div class="profile-card" id="deploy-profile-card">
+      <div class="profile-pill-row">
+        <span class="settings-card-note">PROFILES</span>
+        <div class="profile-pills" id="profile-pills"></div>
+        <button class="btn tertiary dashed" id="new-profile-btn" type="button">+ New profile</button>
+      </div>
+      <div class="profile-name" id="profile-active-name"></div>
+      <div class="profile-fields" id="profile-fields"></div>
+      <div class="profile-actions">
+        <button class="btn primary" id="profile-upload-btn" type="button">Upload</button>
+        <button class="btn" id="profile-save-btn" type="button">Save profile</button>
+        <div class="topbar-spacer"></div>
+        <button class="btn danger" id="profile-delete-btn" type="button">Delete profile</button>
+      </div>
+    </div>
+  </div>
+</section>

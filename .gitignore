@@ -12,3 +12,4 @@ _config/
 .claude/
 _draft/
 .pytest_cache/
+_data/*_sync.json

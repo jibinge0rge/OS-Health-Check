@@ -1,0 +1,99 @@
+/* Design tokens — see design_handoff_os_health_check_ux/README.md "Design tokens".
+   Light is default; [data-theme="dark"] on <html> overrides. Both required. */
+
+:root {
+  --c-app: #F7F9FC;
+  --c-surface: #FFFFFF;
+  --c-raised: #F5F5F5;
+  --c-sunken: #EDEDF0;
+  --c-border: #E6E6E6;
+  --c-border-strong: #CFCFCF;
+  --c-border-subtle: #F0F0F0;
+  --fg1: #101010;
+  --fg2: #282828;
+  --fg3: #6E6E6E;
+  --fg-dis: #9CA3AF;
+  --hover: rgba(0, 0, 0, .04);
+  --tint: rgba(99, 96, 216, .08);
+  --pop: 0 8px 24px rgba(16, 16, 16, .08);
+  --scrim: rgba(16, 16, 16, .4);
+  --icon-filter: none;
+
+  /* Fixed / theme-independent */
+  --brand: #6360D8;
+  --brand-hover: #504BB8;
+  --on-brand: #F0F0FC;
+  --topbar-bg: #131313;
+  --topbar-border: #2E2E2E;
+  --topbar-fg: #F5F5F6;
+  --topbar-fg2: #D1D1D1;
+  --topbar-meta: #9A9A9A;
+  --danger: #D12329;
+  --danger-border: #EB8E90;
+  --danger-bg: rgba(209, 35, 41, .1);
+  --warning: #D98B1D;
+  --warning-border: #E9C46A;
+  --warning-bg: rgba(217, 139, 29, .1);
+  --success: #1A7549;
+  --success-dot: #31A56D;
+  --success-bg: rgba(26, 117, 73, .1);
+  --notif-dot: #D12329;
+
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --ease: cubic-bezier(.2, .8, .2, 1);
+  --motion: 150ms;
+}
+
+:root[data-theme="dark"] {
+  --c-app: #0E0E10;
+  --c-surface: #161618;
+  --c-raised: #1C1C1F;
+  --c-sunken: #101012;
+  --c-border: #2A2A2E;
+  --c-border-strong: #3A3A40;
+  --c-border-subtle: #232326;
+  --fg1: #F5F5F6;
+  --fg2: #D6D6D9;
+  --fg3: #96969C;
+  --fg-dis: #5C5C63;
+  --hover: rgba(255, 255, 255, .05);
+  --tint: rgba(99, 96, 216, .16);
+  --pop: 0 8px 24px rgba(0, 0, 0, .5);
+  --scrim: rgba(0, 0, 0, .6);
+  --icon-filter: invert(1) brightness(1.9) saturate(.7);
+  --danger-bg: rgba(209, 35, 41, .16);
+  --warning-bg: rgba(217, 139, 29, .16);
+  --success-bg: rgba(26, 117, 73, .18);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-theme="dark"]) {
+    --c-app: #0E0E10;
+    --c-surface: #161618;
+    --c-raised: #1C1C1F;
+    --c-sunken: #101012;
+    --c-border: #2A2A2E;
+    --c-border-strong: #3A3A40;
+    --c-border-subtle: #232326;
+    --fg1: #F5F5F6;
+    --fg2: #D6D6D9;
+    --fg3: #96969C;
+    --fg-dis: #5C5C63;
+    --hover: rgba(255, 255, 255, .05);
+    --tint: rgba(99, 96, 216, .16);
+    --pop: 0 8px 24px rgba(0, 0, 0, .5);
+    --scrim: rgba(0, 0, 0, .6);
+    --icon-filter: invert(1) brightness(1.9) saturate(.7);
+    --danger-bg: rgba(209, 35, 41, .16);
+    --warning-bg: rgba(217, 139, 29, .16);
+    --success-bg: rgba(26, 117, 73, .18);
+  }
+}
+
+:root:not([data-theme="dark"]) {
+  --danger-bg: rgba(209, 35, 41, .1);
+  --warning-bg: rgba(217, 139, 29, .1);
+  --success-bg: rgba(26, 117, 73, .1);
+}

@@ -1,0 +1,69 @@
+<aside class="side-panel" id="filters-panel" hidden>
+  <div class="side-panel-header">
+    <span class="side-panel-title">Column filters</span>
+    <button class="btn tertiary" id="filters-clear-btn" type="button">Clear</button>
+    <button class="icon-btn" id="filters-collapse-btn" type="button" aria-label="Close column filters"></button>
+  </div>
+  <div class="side-panel-body" id="filters-panel-body">
+
+    <div class="filter-section" data-filter-field="os">
+      <div class="filter-section-label">OS string</div>
+      <div class="filter-mode-chips" data-modes="all,contains,excludes,equals,empty,not_empty"></div>
+      <input type="text" class="text-input small" data-filter-text placeholder="Contains…" />
+    </div>
+
+    <div class="filter-section" data-filter-field="detailed">
+      <div class="filter-section-label">Normalized detailed name</div>
+      <div class="filter-mode-chips" data-modes="all,contains,excludes,equals,empty,not_empty"></div>
+      <input type="text" class="text-input small" data-filter-text placeholder="Contains…" />
+    </div>
+
+    <div class="filter-section" data-filter-field="norm">
+      <div class="filter-section-label">Normalized OS</div>
+      <div class="filter-mode-chips" data-modes="all,contains,excludes,equals,empty,not_empty"></div>
+      <input type="text" class="text-input small" data-filter-text placeholder="Contains…" />
+    </div>
+
+    <div class="filter-section" data-filter-field="eol">
+      <div class="filter-section-label">EOL date</div>
+      <div class="filter-mode-chips" data-modes="all,passed,upcoming,empty,not_empty"></div>
+      <div class="date-range-row">
+        <input type="date" class="text-input small" data-filter-from />
+        <span>–</span>
+        <input type="date" class="text-input small" data-filter-to />
+      </div>
+      <div class="status-row">
+        <span class="settings-card-note">Status</span>
+        <select class="select-input" data-filter-status>
+          <option value="any">any</option>
+          <option value="true">True</option>
+          <option value="false">False</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="filter-section" data-filter-field="eoas">
+      <div class="filter-section-label">EOAS date</div>
+      <div class="filter-mode-chips" data-modes="all,passed,upcoming,empty,not_empty"></div>
+      <div class="date-range-row">
+        <input type="date" class="text-input small" data-filter-from />
+        <span>–</span>
+        <input type="date" class="text-input small" data-filter-to />
+      </div>
+      <div class="status-row">
+        <span class="settings-card-note">Status</span>
+        <select class="select-input" data-filter-status>
+          <option value="any">any</option>
+          <option value="true">True</option>
+          <option value="false">False</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="filter-section" data-filter-field="src">
+      <div class="filter-section-label">Matched by</div>
+      <div class="filter-mode-chips single-select" id="matched-by-chips"></div>
+    </div>
+
+  </div>
+</aside>
