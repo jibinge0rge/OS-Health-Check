@@ -92,7 +92,7 @@ Click **Column filters** to open the panel:
 
 - **OS string**, **Normalized detailed name**, **Normalized OS** — each has a mode (All / Contains / Excludes / Equals / Empty / Not empty) and a text box.
 - **EOL date**, **EOAS date** — each has a mode (All / Passed / Upcoming / Empty / Not empty), a From–To date range, and a status filter (Any / True / False).
-- **Matched by** — a single-select chip row: All, endoflife.date, Fuzzy, AI, eosl.date, Juniper Junos, SUSE Lifecycle, Manual, Ambiguous, No match.
+- **Matched by** — a single-select chip row: All, endoflife.date, Fuzzy, AI, eosl.date, Microsoft Lifecycle, Juniper Junos, SUSE Lifecycle, Manual, Ambiguous, No match.
 
 Changing any filter clears your current row selection. **Clear** resets everything in the panel at once.
 
@@ -189,7 +189,7 @@ Sorting and filtering compose freely — apply a quick chip or column filter fir
 **How dates are chosen (per row):**
 
 1. **endoflife.date** API first
-2. If that misses → enabled **Vendor Lookups** in fixed order: eosl → junos → suse → layer23-switch → router-switch
+2. If that misses → enabled **Vendor Lookups** in fixed order: eosl → microsoft-lifecycle → junos → suse → layer23-switch → router-switch
 3. If still missing → copy from another row with the same normalized pair, when possible
 4. Otherwise leave blank
 
@@ -250,7 +250,7 @@ Open **Background tasks** from the rail to see everything currently running (**A
 Read-only browser for the local lifecycle caches used as Refresh's fallback. It does **not** write into your lookup — only **Refresh EOL/EOAS** applies dates to rows.
 
 1. Open **Vendor lookups**.
-2. Choose a **Source**: eosl.date, Juniper Junos, SUSE Lifecycle, Layer23-Switch EOL, or Router-Switch EOL.
+2. Choose a **Source**: eosl.date, Microsoft Lifecycle, Juniper Junos, SUSE Lifecycle, Layer23-Switch EOL, or Router-Switch EOL.
 3. Search and filter the table the same way as the main editor.
 4. Click **Update** to re-scrape and rebuild that source's local database — this runs as a background task too, so you can navigate away and check back later.
 5. For Layer23-Switch / Router-Switch, pick which manufacturers to pull before updating (these can be large — full syncs can take a while).
@@ -267,10 +267,10 @@ Open **Settings** from the rail. Three tabs:
 
 Controls the local sources used **after** endoflife.date during Refresh.
 
-- The refresh-order strip shows the fixed sequence: endoflife.date → eosl → junos → suse → layer23-switch → router-switch.
+- The refresh-order strip shows the fixed sequence: endoflife.date → eosl → microsoft-lifecycle → junos → suse → layer23-switch → router-switch.
 - Toggle each source on or off.
 - For keyword-gated sources, edit **family keywords** (add one via the **+ Add keyword** button, remove with the × on a keyword chip).
-- **eosl** has no keyword gate (runs whenever enabled).
+- **eosl** and **Microsoft Lifecycle** have no keyword gate (run whenever enabled).
 - **Layer23-Switch** and **Router-Switch** are **off by default** (large hardware catalogs).
 
 ### Configure AI

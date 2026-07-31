@@ -196,12 +196,32 @@ async function persistDraft(baseOptions = {}) {
  * adjacent repeats collapse; "Windows Server 2012 Windows" is untouched
  * since the two "Windows" aren't next to each other. */
 function collapseConsecutiveDuplicateWords(text) {
-  const words = String(text || "").trim().split(/\s+/);
+  // Collapses a word OR multi-word phrase repeated immediately next to
+  // itself (case-insensitive), preferring the longest repeated run at each
+  // position. Mirrors collapse_consecutive_duplicate_words in
+  // normalization_service.py -- the two must agree on what counts as a
+  // duplicate since both feed the same fields.
+  const words = String(text || "").trim().split(/\s+/).filter(Boolean);
+  const n = words.length;
   const out = [];
-  for (const word of words) {
-    const prev = out[out.length - 1];
-    if (prev && prev.toLowerCase() === word.toLowerCase()) continue;
-    out.push(word);
+  let i = 0;
+  while (i < n) {
+    let runLen = 0;
+    for (let length = Math.floor((n - i) / 2); length > 0; length -= 1) {
+      const first = words.slice(i, i + length).map((w) => w.toLowerCase());
+      const second = words.slice(i + length, i + 2 * length).map((w) => w.toLowerCase());
+      if (first.length === second.length && first.every((w, idx) => w === second[idx])) {
+        runLen = length;
+        break;
+      }
+    }
+    if (runLen) {
+      out.push(...words.slice(i, i + runLen));
+      i += 2 * runLen;
+    } else {
+      out.push(words[i]);
+      i += 1;
+    }
   }
   return out.join(" ");
 }

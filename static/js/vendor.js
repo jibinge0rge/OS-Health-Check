@@ -2,6 +2,7 @@
 // databases. Never say "cache" in any UI copy here (design rule).
 
 import { api, streams } from "./api.js";
+import { iconMarkup } from "./icons.js";
 import { openModal, runProgress, showToast } from "./modals.js";
 import { getTasks, waitForTask } from "./tasks.js";
 
@@ -12,11 +13,19 @@ let activeSourceId = "eosl";
 let allRows = [];
 let page = 1;
 let pageSizeIndex = 1;
+let searchQuery = "";
 
 export async function initVendor() {
   sources = await api.vendorSources().then((r) => r.sources).catch(() => []);
   renderSourcePicker();
   await selectSource(activeSourceId);
+
+  document.getElementById("vendor-search-icon").innerHTML = iconMarkup("search", { size: 14 });
+  document.getElementById("vendor-search-input").addEventListener("input", (event) => {
+    searchQuery = event.target.value;
+    page = 1;
+    renderPage();
+  });
 
   document.getElementById("vendor-source-select").addEventListener("change", (event) => selectSource(event.target.value));
   document.getElementById("vendor-update-all-btn").addEventListener("click", () => openUpdateModal(null));
@@ -56,6 +65,10 @@ async function selectSource(sourceId) {
   document.getElementById("vendor-update-source-label").textContent =
     sources.find((s) => s.id === sourceId)?.label || sourceId;
 
+  searchQuery = "";
+  const searchInput = document.getElementById("vendor-search-input");
+  if (searchInput) searchInput.value = "";
+
   const body = document.getElementById("vendor-table-body");
   let rows = [];
   let status = {};
@@ -79,13 +92,20 @@ async function selectSource(sourceId) {
   renderPage();
 }
 
+function matchesSearch(row) {
+  const q = searchQuery.trim().toLowerCase();
+  if (!q) return true;
+  return [row.product, row.release].some((v) => String(v || "").toLowerCase().includes(q));
+}
+
 function renderPage() {
   const body = document.getElementById("vendor-table-body");
+  const filteredRows = allRows.filter(matchesSearch);
   const size = PAGE_SIZE_OPTIONS[pageSizeIndex];
-  const totalPages = Math.max(1, Math.ceil(allRows.length / size));
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / size));
   if (page > totalPages) page = totalPages;
   const start = (page - 1) * size;
-  const pageRows = allRows.slice(start, start + size);
+  const pageRows = filteredRows.slice(start, start + size);
 
   body.innerHTML = pageRows
     .map(
@@ -102,7 +122,7 @@ function renderPage() {
     .join("");
 
   const shownCount = pageRows.length ? `${start + 1}–${start + pageRows.length}` : "0";
-  document.getElementById("vendor-footer-shown").textContent = `${shownCount} of ${allRows.length} shown`;
+  document.getElementById("vendor-footer-shown").textContent = `${shownCount} of ${filteredRows.length} shown`;
   document.getElementById("vendor-footer-page").textContent = `Page ${page} of ${totalPages}`;
   document.getElementById("vendor-footer-prev-btn").disabled = page <= 1;
   document.getElementById("vendor-footer-next-btn").disabled = page >= totalPages;

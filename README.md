@@ -8,7 +8,7 @@ Use it to:
 
 - Browse, filter, sort, and search the published lookup
 - Add one or many OS strings with fuzzy (and optional AI) matching
-- Refresh EOL / EOAS dates from [endoflife.date](https://endoflife.date), then from local **Vendor Lookups** ([eosl.date](https://eosl.date), [Juniper Junos](https://support.juniper.net/support/eol/software/junos/), [SUSE lifecycle](https://www.suse.com/lifecycle/), [Layer23-Switch EOL](https://www.layer23-switch.com/eol-eosl-tool/), [Router-Switch EOL](https://www.router-switch.com/eol-eosl-checker/))
+- Refresh EOL / EOAS dates from [endoflife.date](https://endoflife.date), then from local **Vendor Lookups** ([eosl.date](https://eosl.date), [Microsoft Lifecycle](https://learn.microsoft.com/en-us/lifecycle/products/), [Juniper Junos](https://support.juniper.net/support/eol/software/junos/), [SUSE lifecycle](https://www.suse.com/lifecycle/), [Layer23-Switch EOL](https://www.layer23-switch.com/eol-eosl-tool/), [Router-Switch EOL](https://www.router-switch.com/eol-eosl-checker/))
 - Track every long-running operation (refresh, add, publish, vendor sync, cloud upload) in a **Background tasks** screen — cancel it, or navigate away and keep editing while it runs
 - Keep a per-row **evidence** trail of how each value was filled
 - Edit safely in a **Draft**, then **Validate & publish** into **Data** — publish never silently overwrites a colleague's already-published changes; see [Publish safety](#publish-safety-conflict-resolution--staleness) below
@@ -295,6 +295,7 @@ OS-Health-Check/
 │   ├── vendor_settings.py       # Persistent enable/keywords for vendor Refresh
 │   ├── vendor_lookup_service.py # Registry + routed vendor fallback lookup
 │   ├── eosl_service.py          # eosl.date scraper (OS only)
+│   ├── microsoft_lifecycle_service.py  # learn.microsoft.com/lifecycle JSON API scraper
 │   ├── junos_service.py         # Juniper Junos Dates & Milestones scraper
 │   ├── suse_service.py          # SUSE lifecycle scraper
 │   ├── layer23_switch_service.py  # Layer23-Switch EOL/EOSL scraper
@@ -349,7 +350,7 @@ OS-Health-Check/
 └── _backup/                      # Timestamped backups on publish (file mode)
 ```
 
-Vendor lookup scrapes are stored in PostgreSQL (schemas: `eosl`, `junos`, `suse`, `layer23_switch`, `router_switch`) whenever `DATABASE_URL` is set; the lookup data itself only moves into its own `lookup` schema (`rows`, `evidence`, `meta`, `backups` tables) when `LOOKUP_DB_ENABLED=true` is also set — otherwise it stays in `_data/` files even with `DATABASE_URL` present. Re-run **Vendor Lookups → Update** after a fresh deploy to populate the vendor schemas.
+Vendor lookup scrapes are stored in PostgreSQL (schemas: `eosl`, `microsoft_lifecycle`, `junos`, `suse`, `layer23_switch`, `router_switch`) whenever `DATABASE_URL` is set; the lookup data itself only moves into its own `lookup` schema (`rows`, `evidence`, `meta`, `backups` tables) when `LOOKUP_DB_ENABLED=true` is also set — otherwise it stays in `_data/` files even with `DATABASE_URL` present. Re-run **Vendor Lookups → Update** after a fresh deploy to populate the vendor schemas.
 
 ---
 
@@ -427,16 +428,17 @@ flowchart TD
 
 ## EOL / EOAS refresh flow
 
-**Refresh EOL/EOAS** fills dates per row in this order. **endoflife.date is always first** (not configurable). Local Vendor Lookups follow a fixed order: **eosl → junos → suse → layer23-switch → router-switch**. Specialists (junos / suse / layer23-switch / router-switch) only run when **enabled** and their **family keywords** match. eosl has no keyword gate. Enable flags and keywords are edited under **Settings → Vendor lookups** and stored in `_data/vendor_lookup_settings.json` (Layer23-Switch and Router-Switch are **disabled by default**).
+**Refresh EOL/EOAS** fills dates per row in this order. **endoflife.date is always first** (not configurable). Local Vendor Lookups follow a fixed order: **eosl → microsoft-lifecycle → junos → suse → layer23-switch → router-switch**. Specialists (junos / suse / layer23-switch / router-switch) only run when **enabled** and their **family keywords** match. eosl and microsoft-lifecycle have no keyword gate — they're general fallbacks gated only by product-name resolution. Enable flags and keywords are edited under **Settings → Vendor lookups** and stored in `_data/vendor_lookup_settings.json` (Layer23-Switch and Router-Switch are **disabled by default**).
 
 Refresh **only re-queries lifecycle sources — it does not re-run fuzzy/AI normalization**. It sends whatever `normalized_os_detailed_name` / `normalized_os` a row already has (or the raw `os_string` if those are blank) into the lifecycle lookup; it never calls the matching pipeline that Add OS uses. If a row's normalized fields are wrong, fix them by hand, use **Same as OS**, or re-add the row through Add OS.
 
 ### Per-row decision order
 
-1. **endoflife.date API** — always tried first (same query preference as below). Release matching is **conservative**: no version (or only bitness / `SP3`-style pack digits used alone as a version) → **no match** (never guess the latest release); bare major like `11` does not pick `11.4`; only a strong version hit populates dates/names. Train matching compares **numeric** dotted segments (`17.09.08` → API release `17.9`; `11.4` → `11`). (SUSE Vendor Lookup still understands `11 SP3` as a full release identity.)
+1. **endoflife.date API** — always tried first (same query preference as below). Release matching is **conservative**: no version (or only bitness / `SP3`-style pack digits used alone as a version) → **no match** (never guess the latest release); bare major like `11` does not pick `11.4`; only a strong version hit populates dates/names. Train matching compares **numeric** dotted segments (`17.09.08` → API release `17.9`; `11.4` → `11`). (SUSE Vendor Lookup still understands `11 SP3` as a full release identity.) Also scored against each release's `latest.name` (Windows' raw NT build, e.g. `10.0.28000`, since the release `name`/`label` is a marketing slug that never contains it). When a build is shared by multiple Windows editions/channels (IoT LTS, Enterprise, Enterprise LTSC, consumer), an edition word in the OS string (`Enterprise`, `(E)`, `IoT`) narrows to that edition first; any remaining tie (or no edition named) takes the **earliest** EOL/EOAS among the tied releases — never the longest possible support window.
 2. **If the API returned dates/status** → write them (evidence `api` / `eol`). **Stop.** Vendor DBs are **not** consulted.
 3. **If the API missed (or failed)** → call **Vendor Lookups** in fixed order:
    - **eosl** (if enabled) → evidence `eosl`
+   - **microsoft-lifecycle** (if enabled) → evidence `microsoft-lifecycle`
    - **junos** (if enabled **and** keywords match) → evidence `junos`
    - **suse** (if enabled **and** keywords match) → evidence `suse`
    - **layer23-switch** (if enabled **and** keywords match; off by default) → evidence `layer23-switch`
@@ -454,12 +456,12 @@ Whenever a lifecycle source hands back its own canonical name and a row's normal
 
 ### When are vendor caches checked?
 
-| Situation | eosl | Junos | SUSE | Layer23-Switch | Router-Switch |
-|-----------|------|-------|------|----------------|---------------|
-| API hit | No | No | No | No | No |
-| API miss + source enabled | Yes (2nd) | If keywords match (3rd) | If keywords match (4th) | If enabled+keywords (5th; off by default) | If enabled+keywords (6th; off by default) |
-| Source disabled in Settings | No | No | No | No | No |
-| Update scrape only | No write | No write | No write | No write | No write |
+| Situation | eosl | Microsoft Lifecycle | Junos | SUSE | Layer23-Switch | Router-Switch |
+|-----------|------|----------------------|-------|------|----------------|---------------|
+| API hit | No | No | No | No | No | No |
+| API miss + source enabled | Yes (2nd) | Yes (3rd) | If keywords match (4th) | If keywords match (5th) | If enabled+keywords (6th; off by default) | If enabled+keywords (7th; off by default) |
+| Source disabled in Settings | No | No | No | No | No | No |
+| Update scrape only | No write | No write | No write | No write | No write | No write |
 
 Example: `SUSE Linux 11 SP3` → API miss → eosl miss → SUSE keywords match → SUSE DB → evidence `suse`.
 
@@ -474,10 +476,11 @@ Umbrella for **offline** lifecycle scrapes used as the Refresh fallback above. T
 | Source | Origin | Postgres schema | Date mapping | Used on Refresh when… |
 |--------|--------|-----------------|--------------|------------------------|
 | **eosl.date** | [eosl.date](https://eosl.date) OS category | `eosl` | EOAS = earliest support date, EOL = latest | API missed **and** source enabled (2nd) |
-| **Juniper Junos** | [Junos Dates & Milestones](https://support.juniper.net/support/eol/software/junos/) | `junos` | **EOE → `eol_date`**, **EOS → `eoas_date`**, FRS → released | API+eosl miss, enabled, keywords match (3rd) |
-| **SUSE Lifecycle** | [suse.com/lifecycle](https://www.suse.com/lifecycle/) | `suse` | **General Ends → `eol_date`**, **LTSS Ends → `eoas_date`**, FCS → released | prior miss, enabled, keywords match (4th) |
-| **Layer23-Switch EOL** | [layer23-switch.com EOL tool](https://www.layer23-switch.com/eol-eosl-tool/) | `layer23_switch` | **EOL Announcement → `eol_date`**, **EOSL → `eoas_date`**, EOS → released | prior miss, enabled, keywords match (5th; **off by default**) |
-| **Router-Switch EOL** | [router-switch.com EOL checker](https://www.router-switch.com/eol-eosl-checker/) | `router_switch` | **EOL Announcement → `eol_date`**, **EOSL → `eoas_date`**, EOS → released | prior miss, enabled, keywords match (6th; **off by default**) |
+| **Microsoft Lifecycle** | [learn.microsoft.com/lifecycle/products](https://learn.microsoft.com/en-us/lifecycle/products/) | `microsoft_lifecycle` | API `end` → `eol_date` (single date only; `eoas_date` blank) | API+eosl miss, enabled (3rd) |
+| **Juniper Junos** | [Junos Dates & Milestones](https://support.juniper.net/support/eol/software/junos/) | `junos` | **EOE → `eol_date`**, **EOS → `eoas_date`**, FRS → released | prior miss, enabled, keywords match (4th) |
+| **SUSE Lifecycle** | [suse.com/lifecycle](https://www.suse.com/lifecycle/) | `suse` | **General Ends → `eol_date`**, **LTSS Ends → `eoas_date`**, FCS → released | prior miss, enabled, keywords match (5th) |
+| **Layer23-Switch EOL** | [layer23-switch.com EOL tool](https://www.layer23-switch.com/eol-eosl-tool/) | `layer23_switch` | **EOL Announcement → `eol_date`**, **EOSL → `eoas_date`**, EOS → released | prior miss, enabled, keywords match (6th; **off by default**) |
+| **Router-Switch EOL** | [router-switch.com EOL checker](https://www.router-switch.com/eol-eosl-checker/) | `router_switch` | **EOL Announcement → `eol_date`**, **EOSL → `eoas_date`**, EOS → released | prior miss, enabled, keywords match (7th; **off by default**) |
 
 Per-source enable + family keywords are edited under **Settings → Vendor lookups** and saved to `_data/vendor_lookup_settings.json`. Each **Update** runs as a cancellable background task (`vendor-sync:{source}`).
 
@@ -486,6 +489,13 @@ Per-source enable + family keywords are edited under **Settings → Vendor looku
 - Support-column labels vary; any non-metadata date column feeds earliest/latest EOAS/EOL.
 - Strong product **and** release score required; vague `Other … Linux` / bitness / `N.x` false matches are rejected.
 - Requests are throttled; scrapes are serialized server-side.
+
+### Microsoft Lifecycle notes
+
+- Backed by the JSON API behind [learn.microsoft.com/lifecycle/products](https://learn.microsoft.com/en-us/lifecycle/products/) (`/api/contentbrowser/search/lifecycles`), not HTML scraping — paginated at the API's max `$top=30` per page (~800 products, ~28 requests).
+- Product family (Windows, Office, SQL Server, Visual Studio, Dynamics, Azure, .NET, System Center, Microsoft Servers, Internet Explorer, Microsoft Edge, Microsoft 365, Silverlight, Expression, Customer Care Framework, Connected Services Framework) → local `product`; each named product (e.g. `SQL Server 2025`) → local `release`.
+- The API's `end` already matches the Extended End Date shown on each product's own lifecycle page, so it is used directly as `eol_date`; only one date is available per product, so `eoas_date` is left blank.
+- No keyword gate (like eosl) — resolution relies on matching a specific Microsoft product name/version, then the same vendor-compatibility check every source uses.
 
 ### Junos notes
 
@@ -547,9 +557,9 @@ Shape:
 }
 ```
 
-Proof methods include: `fuzzy`, `ai`, `fuzzy+ai`, `eol` / `api`, `eosl`, `junos`, `suse`, `layer23-switch`, `router-switch`, `lookup-fallback`, `ambiguous`, `manual`, `none`.
+Proof methods include: `fuzzy`, `ai`, `fuzzy+ai`, `eol` / `api`, `eosl`, `microsoft-lifecycle`, `junos`, `suse`, `layer23-switch`, `router-switch`, `lookup-fallback`, `ambiguous`, `manual`, `none`.
 
-The row detail drawer's **Matched by** field, and the column filters panel's **Matched by** chip row, group these into: `All`, `endoflife.date`, `Fuzzy`, `AI`, `eosl.date`, `Juniper Junos`, `SUSE Lifecycle`, `Manual`, `Ambiguous`, `No match`.
+The row detail drawer's **Matched by** field, and the column filters panel's **Matched by** chip row, group these into: `All`, `endoflife.date`, `Fuzzy`, `AI`, `eosl.date`, `Microsoft Lifecycle`, `Juniper Junos`, `SUSE Lifecycle`, `Manual`, `Ambiguous`, `No match`.
 
 ---
 

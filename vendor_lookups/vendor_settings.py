@@ -1,7 +1,8 @@
 """Persistent Vendor Lookup Refresh settings (enable flags + family keywords).
 
 endoflife.date is always first and is not configured here.
-Local fallback order is fixed: eosl → junos → suse → layer23-switch → router-switch.
+Local fallback order is fixed:
+eosl → microsoft-lifecycle → junos → suse → layer23-switch → router-switch.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from typing import Any
 # Fixed Refresh order after endoflife.date (not user-configurable).
 VENDOR_FALLBACK_ORDER: tuple[str, ...] = (
     "eosl",
+    "microsoft-lifecycle",
     "junos",
     "suse",
     "layer23-switch",
@@ -27,6 +29,12 @@ _DEFAULT_SOURCES: dict[str, dict[str, Any]] = {
     "eosl": {
         "enabled": True,
         # Empty keywords → always eligible when enabled (general fallback).
+        "keywords": [],
+    },
+    "microsoft-lifecycle": {
+        "enabled": True,
+        # Empty keywords → always eligible when enabled (general fallback);
+        # product-name resolution + vendors_compatible() already gate matches.
         "keywords": [],
     },
     "junos": {

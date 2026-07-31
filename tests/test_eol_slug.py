@@ -5,8 +5,10 @@ from __future__ import annotations
 import unittest
 
 from eol_service import (
+    build_normalization_from_product,
     build_slug_index,
     extract_version_hints,
+    join_labels,
     pick_release,
     resolve_product_slug,
 )
@@ -144,6 +146,211 @@ class ResolveProductSlugTests(unittest.TestCase):
             extract_version_hints("Palo Alto Networks PAN-OS 11.1.13-h3"),
         )
         self.assertEqual(picked_11_1.get("name"), "11.1")
+
+    def test_windows_build_number_matches_via_latest_name(self) -> None:
+        """A raw NT build (e.g. from ``winver``/WMI) only appears in
+        ``latest.name`` — the release ``name``/``label`` is a marketing slug
+        (``11-26h1-e`` / "11 26H1 (E)") that never contains it."""
+        releases = [
+            {
+                "name": "11-26h1-e",
+                "label": "11 26H1 (E)",
+                "latest": {"name": "10.0.28000"},
+            },
+            {
+                "name": "11-24h2-e",
+                "label": "11 24H2 (E)",
+                "latest": {"name": "10.0.26100"},
+            },
+            {
+                "name": "10-22h2",
+                "label": "10 22H2",
+                "latest": {"name": "10.0.19045"},
+            },
+        ]
+
+        picked = pick_release(releases, extract_version_hints("Windows 10.0.28000"))
+        self.assertEqual(picked.get("name"), "11-26h1-e")
+
+        picked_10 = pick_release(releases, extract_version_hints("Windows 10.0.19045"))
+        self.assertEqual(picked_10.get("name"), "10-22h2")
+
+        # A bare major (no build) must still refuse to guess a specific release.
+        self.assertEqual(pick_release(releases, extract_version_hints("Windows 10")), {})
+
+    @staticmethod
+    def _windows_24h2_shared_build_releases() -> list[dict[str, object]]:
+        """Build 10.0.26100 shared by four Windows 11 24H2 editions/channels
+        (IoT LTS, Enterprise LTS, Enterprise, consumer "W") with different
+        support windows."""
+        return [
+            {
+                "name": "11-24h2-iot-lts",
+                "label": "11 24H2 IoT (LTS)",
+                "isEoas": False,
+                "eoasFrom": "2029-10-09",
+                "isEol": False,
+                "eolFrom": "2034-10-10",
+                "latest": {"name": "10.0.26100"},
+            },
+            {
+                "name": "11-24h2-e-lts",
+                "label": "11 24H2 (E) (LTS)",
+                "isEoas": False,
+                "eoasFrom": "2029-10-09",
+                "isEol": False,
+                "eolFrom": "2029-10-09",
+                "latest": {"name": "10.0.26100"},
+            },
+            {
+                "name": "11-24h2-e",
+                "label": "11 24H2 (E)",
+                "isEoas": False,
+                "eoasFrom": "2027-10-12",
+                "isEol": False,
+                "eolFrom": "2027-10-12",
+                "latest": {"name": "10.0.26100"},
+            },
+            {
+                "name": "11-24h2-w",
+                "label": "11 24H2 (W)",
+                "isEoas": False,
+                "eoasFrom": "2026-10-13",
+                "isEol": False,
+                "eolFrom": "2026-10-13",
+                "latest": {"name": "10.0.26100"},
+            },
+        ]
+
+    def test_windows_shared_build_picks_earliest_eol_eoas(self) -> None:
+        """Since the build alone can't tell the editions apart, and the OS
+        string names no edition, the conservative choice is the earliest
+        EOL/EOAS among all the tied releases."""
+        releases = self._windows_24h2_shared_build_releases()
+
+        picked = pick_release(releases, extract_version_hints("Windows 10.0.26100"))
+        self.assertEqual(picked.get("name"), "11-24h2-w")
+        self.assertEqual(picked.get("eolFrom"), "2026-10-13")
+        self.assertEqual(picked.get("eoasFrom"), "2026-10-13")
+
+    def test_windows_edition_hint_narrows_before_taking_minimum(self) -> None:
+        """An OS string naming an edition (Enterprise/(E)/IoT) must narrow the
+        tied candidates to that edition first -- only falling back to
+        "take the minimum" among whichever of that edition remain tied."""
+        releases = self._windows_24h2_shared_build_releases()
+        hints = extract_version_hints("Windows 10.0.26100")
+
+        # "Enterprise" matches both (E) and (E) (LTS) -- take the min of those two.
+        enterprise = pick_release(releases, hints, os_text="Windows 11 Enterprise 10.0.26100")
+        self.assertEqual(enterprise.get("name"), "11-24h2-e")
+        self.assertEqual(enterprise.get("eolFrom"), "2027-10-12")
+
+        # Literal "(E)" is equivalent to the word "Enterprise".
+        literal_e = pick_release(releases, hints, os_text="Windows 11 (E) 10.0.26100")
+        self.assertEqual(literal_e.get("name"), "11-24h2-e")
+
+        # IoT is unambiguous on its own -- exactly one release matches.
+        iot = pick_release(releases, hints, os_text="Windows 11 IoT 10.0.26100")
+        self.assertEqual(iot.get("name"), "11-24h2-iot-lts")
+
+        # IoT + Enterprise together (real Windows IoT Enterprise LTSC naming)
+        # -- IoT is the more specific signal and wins.
+        iot_enterprise = pick_release(
+            releases, hints, os_text="Windows 11 IoT Enterprise LTSC 10.0.26100"
+        )
+        self.assertEqual(iot_enterprise.get("name"), "11-24h2-iot-lts")
+
+    def test_windows_edition_hint_with_no_matching_label_falls_back(self) -> None:
+        """An edition keyword that matches none of the tied releases must not
+        eliminate the whole candidate set -- fall back to the full tie-break."""
+        releases = [
+            {"name": "a", "label": "A (W)", "eolFrom": "2026-01-01", "eoasFrom": "2026-01-01",
+             "latest": {"name": "1.2.3"}},
+            {"name": "b", "label": "B (W)", "eolFrom": "2027-01-01", "eoasFrom": "2027-01-01",
+             "latest": {"name": "1.2.3"}},
+        ]
+        picked = pick_release(
+            releases, extract_version_hints("1.2.3"), os_text="Enterprise 1.2.3"
+        )
+        self.assertEqual(picked.get("name"), "a")
+        self.assertEqual(picked.get("eolFrom"), "2026-01-01")
+
+    def test_tie_break_takes_min_across_mismatched_eol_eoas(self) -> None:
+        """When the tied releases' earliest EOL and earliest EOAS come from
+        different releases, each date is still the minimum across all ties
+        (not just copied whole from a single "winning" release)."""
+        releases = [
+            {"name": "a", "label": "A", "eoasFrom": "2025-01-01", "eolFrom": "2028-01-01",
+             "latest": {"name": "1.2.3"}},
+            {"name": "b", "label": "B", "eoasFrom": "2025-06-01", "eolFrom": "2027-01-01",
+             "latest": {"name": "1.2.3"}},
+        ]
+        picked = pick_release(releases, extract_version_hints("1.2.3"))
+        self.assertEqual(picked.get("eoasFrom"), "2025-01-01")
+        self.assertEqual(picked.get("eolFrom"), "2027-01-01")
+
+    def test_windows_normalized_os_uses_label_not_slug(self) -> None:
+        """release.name ("10-22h2") is an internal slug, never presentable —
+        normalized_os must use release.label ("10 22H2") like the detailed
+        name already does, not the raw slug."""
+        product_result = {"label": "Microsoft Windows"}
+        release = {"name": "10-22h2", "label": "10 22H2"}
+        normalization = build_normalization_from_product(product_result, release)
+        self.assertEqual(normalization["normalized_os"], "Microsoft Windows 10 22H2")
+        self.assertEqual(normalization["normalized_os_detailed_name"], "Microsoft Windows 10 22H2")
+
+    def test_clean_version_names_are_unaffected(self) -> None:
+        """A product whose release.name is already a plain version (Ubuntu's
+        "24.04") should keep using it for the short normalized_os form."""
+        product_result = {"label": "Ubuntu"}
+        release = {"name": "24.04", "label": "24.04 'Noble Numbat' (LTS)"}
+        normalization = build_normalization_from_product(product_result, release)
+        self.assertEqual(normalization["normalized_os"], "Ubuntu 24.04")
+        self.assertEqual(
+            normalization["normalized_os_detailed_name"],
+            "Ubuntu 24.04 'Noble Numbat' (LTS)",
+        )
+
+    def test_join_labels_collapses_overlapping_phrase(self) -> None:
+        """Windows Server's release label already embeds "Windows Server"
+        (not just a whole-string prefix like AlmaLinux) -- concatenating
+        naively would repeat the phrase."""
+        self.assertEqual(
+            join_labels("Microsoft Windows Server", "Windows Server 2019 (LTSC)"),
+            "Microsoft Windows Server 2019 (LTSC)",
+        )
+        self.assertEqual(
+            join_labels("Microsoft Windows Server", "Windows Server 23H2 AC"),
+            "Microsoft Windows Server 23H2 AC",
+        )
+        # Single-word overlap (the original supported case) still works.
+        self.assertEqual(
+            join_labels("Apple macOS", "macOS 26 (Tahoe)"),
+            "Apple macOS 26 (Tahoe)",
+        )
+
+    def test_join_labels_whole_string_prefix_unaffected(self) -> None:
+        """Whole-string prefix containment (the original two fast paths)
+        must keep working exactly as before."""
+        self.assertEqual(join_labels("AlmaLinux OS", "AlmaLinux OS 9"), "AlmaLinux OS 9")
+        self.assertEqual(
+            join_labels("Red Hat Enterprise Linux 9", "Red Hat"),
+            "Red Hat Enterprise Linux 9",
+        )
+
+    def test_join_labels_no_overlap_falls_back_to_concatenation(self) -> None:
+        self.assertEqual(join_labels("Ubuntu", "24.04 'Noble Numbat' (LTS)"), "Ubuntu 24.04 'Noble Numbat' (LTS)")
+        self.assertEqual(join_labels("Microsoft Windows", "11 26H1 (E)"), "Microsoft Windows 11 26H1 (E)")
+
+    def test_windows_server_normalized_os_no_duplicate_phrase(self) -> None:
+        product_result = {"label": "Microsoft Windows Server"}
+        release = {"name": "23h2-ac", "label": "Windows Server 23H2 AC"}
+        normalization = build_normalization_from_product(product_result, release)
+        self.assertEqual(normalization["normalized_os"], "Microsoft Windows Server 23H2 AC")
+        self.assertEqual(
+            normalization["normalized_os_detailed_name"], "Microsoft Windows Server 23H2 AC"
+        )
+        self.assertNotIn("Server Windows Server", normalization["normalized_os"])
 
 
 if __name__ == "__main__":

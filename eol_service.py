@@ -213,11 +213,33 @@ def get_valid_slugs() -> frozenset[str]:
     return frozenset(product["name"] for product in get_product_catalog())
 
 
+def _merge_overlapping_words(first: str, second: str) -> str:
+    """Merge two strings, collapsing a trailing run of ``first`` that
+    duplicates a leading run of ``second`` (word-boundary, case-insensitive).
+
+    e.g. ``Microsoft Windows Server`` + ``Windows Server 2019 (LTSC)``
+    -> ``Microsoft Windows Server 2019 (LTSC)`` (not a naive concatenation,
+    which would repeat "Windows Server").
+    """
+    first_words = first.split()
+    second_words = second.split()
+    max_overlap = min(len(first_words), len(second_words))
+    for overlap in range(max_overlap, 0, -1):
+        tail = [w.lower() for w in first_words[-overlap:]]
+        head = [w.lower() for w in second_words[:overlap]]
+        if tail == head:
+            return " ".join(first_words[: len(first_words) - overlap] + second_words)
+    return f"{first} {second}"
+
+
 def join_labels(*parts: object) -> str:
-    """Join product/release labels without duplicating a shared product prefix.
+    """Join product/release labels without duplicating an overlapping phrase.
 
     endoflife.date sometimes returns release labels that already include the
-    product name (e.g. product 'AlmaLinux OS' + release 'AlmaLinux OS 9').
+    product name, either as a whole-string prefix (product 'AlmaLinux OS' +
+    release 'AlmaLinux OS 9') or as an internal run rather than a prefix
+    (product 'Microsoft Windows Server' + release 'Windows Server 2019
+    (LTSC)' -- "Windows Server" would otherwise repeat).
     """
     cleaned = [part for part in (_clean(value) for value in parts) if part]
     if not cleaned:
@@ -232,7 +254,7 @@ def join_labels(*parts: object) -> str:
         elif lower_result == lower_part or lower_result.startswith(f"{lower_part} "):
             continue
         else:
-            result = f"{result} {part}"
+            result = _merge_overlapping_words(result, part)
     return result
 
 
@@ -317,24 +339,125 @@ def _release_score(release_name: str, hint: str) -> int:
     return score_release_against_hint(release_name, hint)
 
 
-def pick_release(releases: list[dict[str, Any]], hints: list[str]) -> dict[str, Any]:
+def _release_latest_name(release: dict[str, Any]) -> str:
+    """The release's ``latest.name`` (e.g. Windows' raw NT build number).
+
+    Some products' release ``name``/``label`` is a marketing slug that never
+    contains the version string inventory tools actually report (Windows'
+    ``11-26h1-e`` release reports build ``10.0.28000`` in ``latest.name``).
+    """
+    latest = release.get("latest")
+    if isinstance(latest, dict):
+        return str(latest.get("name") or "")
+    return ""
+
+
+# Edition/channel hints in an OS string -> the release-label substring that
+# edition implies. Checked in order: IoT is the more specific signal when
+# both IoT and Enterprise appear together (e.g. "Windows 11 IoT Enterprise
+# LTSC"), so it's matched first.
+_EDITION_LABEL_HINTS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\biot\b", re.I), "iot"),
+    (re.compile(r"\benterprise\b|\(e\)", re.I), "(e)"),
+)
+
+
+def _edition_label_substring(os_text: str) -> str | None:
+    """The release-label substring an OS string's edition/channel implies.
+
+    e.g. an ``os_string`` containing "Enterprise" (or literal "(E)") should
+    prefer a release whose label contains "(E)" over the "(W)" consumer
+    channel when a build number is otherwise shared by both.
+    """
+    text = str(os_text or "")
+    for pattern, label_substring in _EDITION_LABEL_HINTS:
+        if pattern.search(text):
+            return label_substring
+    return None
+
+
+def _conservative_release(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    """Multiple releases tied on match strength (e.g. several Windows editions
+    -- IoT LTS / Enterprise LTS / Enterprise / consumer "W" -- share one
+    ``latest.name`` build) and we can't tell which the OS actually is.
+    Assume the worst case: the earliest EOL/EOAS date among the tied
+    releases, so support never looks longer than it might actually be.
+    """
+    if len(candidates) == 1:
+        return candidates[0]
+
+    def sort_key(release: dict[str, Any]) -> tuple[str, str]:
+        eol = str(release.get("eolFrom") or "")
+        eoas = str(release.get("eoasFrom") or "")
+        # Releases with no date at all sort last (never picked as the base
+        # over one that actually reports a worst-case date).
+        return (eol or "9999-99-99", eoas or "9999-99-99")
+
+    merged = dict(min(candidates, key=sort_key))
+    eol_dates = [str(r["eolFrom"]) for r in candidates if r.get("eolFrom")]
+    eoas_dates = [str(r["eoasFrom"]) for r in candidates if r.get("eoasFrom")]
+    if eol_dates:
+        merged["eolFrom"] = min(eol_dates)
+    if eoas_dates:
+        merged["eoasFrom"] = min(eoas_dates)
+    merged["isEol"] = any(bool(r.get("isEol")) for r in candidates)
+    merged["isEoas"] = any(bool(r.get("isEoas")) for r in candidates)
+    return merged
+
+
+def pick_release(
+    releases: list[dict[str, Any]],
+    hints: list[str],
+    os_text: str = "",
+) -> dict[str, Any]:
     """Pick a release only when version evidence is strong.
 
     - No version hints → no match (never guess the first/latest release).
     - Best score must be >= ``_MIN_RELEASE_SCORE``.
+    - Scored against both ``release.name`` and ``release.latest.name`` — a hint
+      that only matches the latest build (not the release slug) still counts.
+    - Multiple releases tied for the best score (one build shared by several
+      editions/channels): if ``os_text`` names an edition (Enterprise/(E)/IoT),
+      narrow to releases whose label matches it first. Any remaining tie (or
+      no edition named at all) falls back to a conservative merge: earliest
+      EOL/EOAS among the tied releases.
     """
     if not releases or not hints:
         return {}
 
-    best_release: dict[str, Any] = {}
     best_score = 0
+    best_candidates: list[dict[str, Any]] = []
     for release in releases:
         release_name = str(release.get("name", "") or "")
-        score = max((_release_score(release_name, hint) for hint in hints), default=0)
+        candidates = [release_name]
+        latest_name = _release_latest_name(release)
+        if latest_name:
+            candidates.append(latest_name)
+        score = max(
+            (_release_score(name, hint) for name in candidates for hint in hints),
+            default=0,
+        )
         if score > best_score:
             best_score = score
-            best_release = release
-    return best_release if best_score >= _MIN_RELEASE_SCORE else {}
+            best_candidates = [release]
+        elif score == best_score and score > 0:
+            best_candidates.append(release)
+
+    if best_score < _MIN_RELEASE_SCORE or not best_candidates:
+        return {}
+
+    if len(best_candidates) > 1:
+        edition_substring = _edition_label_substring(os_text)
+        if edition_substring:
+            edition_matches = [
+                release
+                for release in best_candidates
+                if edition_substring in str(release.get("label") or "").lower()
+            ]
+            if edition_matches:
+                best_candidates = edition_matches
+
+    return _conservative_release(best_candidates)
 
 
 def fetch_product(slug: str) -> dict[str, Any]:
@@ -392,13 +515,33 @@ def iso_date_to_epoch(iso_value: Any) -> str:
         return ""
 
 
+# A clean, presentable version identifier (Ubuntu "24.04", RHEL "9", ...).
+_CLEAN_VERSION_NAME_RE = re.compile(r"^\d+(?:\.\d+)*$")
+
+
+def _presentable_release_name(release: dict[str, Any]) -> str:
+    """The release identifier to show in ``normalized_os``.
+
+    Most products' ``name`` is already a clean version (Ubuntu ``24.04``,
+    RHEL ``9``) and reads fine on its own. Some products (Windows: ``11-26h1-e``,
+    ``10-22h2``, ``7-sp1``) use an internal hyphenated slug for ``name`` that
+    is never meant to be shown — ``label`` (``11 26H1 (E)``, ``10 22H2``,
+    ``7 SP1``) is the presentable form there, so fall back to it whenever
+    ``name`` isn't a plain dotted version number.
+    """
+    name = _clean(release.get("name"))
+    if _CLEAN_VERSION_NAME_RE.match(name):
+        return name
+    return _clean(release.get("label")) or name
+
+
 def build_normalization_from_product(
     product_result: dict[str, Any],
     release: dict[str, Any],
 ) -> dict[str, str]:
     product_label = _clean(product_result.get("label"))
     release_label = _clean(release.get("label"))
-    release_name = _clean(release.get("name"))
+    release_name = _presentable_release_name(release)
 
     return {
         "normalized_os_detailed_name": join_labels(product_label, release_label),
@@ -463,7 +606,11 @@ def lookup_os_eol(
         empty_result["api_note"] = "No releases found in endoflife.date product data"
         return empty_result
 
-    selected_release = pick_release(releases, extract_version_hints(cleaned_name))
+    selected_release = pick_release(
+        releases,
+        extract_version_hints(cleaned_name),
+        os_text=f"{os_string} {cleaned_name}",
+    )
     if not selected_release:
         empty_result["api_note"] = "No matching release found in endoflife.date product data"
         return empty_result

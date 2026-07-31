@@ -7,8 +7,8 @@ exists in `_data/eol_lookup_evidence.json` / `_draft/eol_lookup_evidence.json`
 already used client-side in templates/index.html's
 `describeNormalizationMethod` (manual, loaded, none, fuzzy, ai, fuzzy+ai, eol,
 ambiguous) plus the vendor source ids used as `proof.eol.method` when a vendor
-cascade lookup resolved the row (eosl, junos, suse, layer23-switch,
-router-switch) or "api" for the primary endoflife.date lookup.
+cascade lookup resolved the row (eosl, microsoft-lifecycle, junos, suse,
+layer23-switch, router-switch) or "api" for the primary endoflife.date lookup.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ CSV_HEADERS = [
 _METHOD_TO_MATCHED_BY = {
     "api": "endoflife.date",
     "eosl": "eosl.date",
+    "microsoft-lifecycle": "Microsoft Lifecycle",
     "junos": "Juniper Junos",
     "suse": "SUSE Lifecycle",
     "layer23-switch": "Layer23-Switch EOL",
@@ -47,6 +48,7 @@ MATCHED_BY_CHIPS = [
     "Fuzzy",
     "AI",
     "eosl.date",
+    "Microsoft Lifecycle",
     "Juniper Junos",
     "SUSE Lifecycle",
     "Manual",

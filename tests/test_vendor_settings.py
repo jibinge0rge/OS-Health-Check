@@ -23,7 +23,14 @@ class VendorSettingsTests(unittest.TestCase):
     def test_fallback_order_fixed(self) -> None:
         self.assertEqual(
             list(VENDOR_FALLBACK_ORDER),
-            ["eosl", "junos", "suse", "layer23-switch", "router-switch"],
+            [
+                "eosl",
+                "microsoft-lifecycle",
+                "junos",
+                "suse",
+                "layer23-switch",
+                "router-switch",
+            ],
         )
 
     def test_defaults_hardware_sources_disabled(self) -> None:
@@ -31,6 +38,7 @@ class VendorSettingsTests(unittest.TestCase):
             path = Path(tmp) / "vendor_lookup_settings.json"
             settings = load_settings(path)
             self.assertTrue(source_is_enabled("eosl", settings))
+            self.assertTrue(source_is_enabled("microsoft-lifecycle", settings))
             self.assertTrue(source_is_enabled("junos", settings))
             self.assertTrue(source_is_enabled("suse", settings))
             self.assertFalse(source_is_enabled("layer23-switch", settings))
@@ -126,6 +134,7 @@ class VendorLookupBatchOrderTests(unittest.TestCase):
                 {
                     "sources": {
                         "eosl": {"enabled": True, "keywords": []},
+                        "microsoft-lifecycle": {"enabled": False, "keywords": []},
                         "junos": {"enabled": True, "keywords": ["junos", "juniper"]},
                         "suse": {"enabled": True, "keywords": ["suse"]},
                         "layer23-switch": {"enabled": False, "keywords": ["cisco"]},
@@ -198,6 +207,7 @@ class VendorLookupBatchOrderTests(unittest.TestCase):
                 {
                     "sources": {
                         "eosl": {"enabled": True, "keywords": []},
+                        "microsoft-lifecycle": {"enabled": False, "keywords": []},
                         "junos": {"enabled": True, "keywords": ["junos"]},
                         "suse": {"enabled": True, "keywords": ["suse"]},
                         "layer23-switch": {"enabled": False, "keywords": ["cisco", "ios xe"]},
@@ -281,6 +291,7 @@ class VendorLookupBatchOrderTests(unittest.TestCase):
                 {
                     "sources": {
                         "eosl": {"enabled": True, "keywords": []},
+                        "microsoft-lifecycle": {"enabled": False, "keywords": []},
                         "junos": {"enabled": True, "keywords": ["junos"]},
                         "suse": {"enabled": True, "keywords": ["suse"]},
                         "layer23-switch": {"enabled": True, "keywords": ["cisco"]},

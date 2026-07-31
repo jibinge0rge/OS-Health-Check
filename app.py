@@ -164,6 +164,7 @@ VENDOR_SYNC_LOCK = asyncio.Lock()
 EOSL_SYNC_LOCK = VENDOR_SYNC_LOCK
 VALID_VENDOR_SOURCES = {
     "eosl",
+    "microsoft-lifecycle",
     "junos",
     "suse",
     "layer23-switch",
@@ -2410,7 +2411,8 @@ async def vendor_lookup_sync_cancel(job_id: str) -> dict[str, object]:
 
 @app.post("/api/vendor-lookup")
 async def vendor_lookup(payload: EolLookupBatchRequest) -> dict[str, object]:
-    """Local vendor fallback after endoflife.date (eosl → junos → suse → layer23-switch → router-switch)."""
+    """Local vendor fallback after endoflife.date
+    (eosl → microsoft-lifecycle → junos → suse → layer23-switch → router-switch)."""
     results = await asyncio.to_thread(
         lookup_vendor_batch,
         [item.model_dump() for item in payload.items],

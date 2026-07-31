@@ -237,16 +237,31 @@ def _normalize_for_match(value: object) -> str:
 
 
 def collapse_consecutive_duplicate_words(value: object) -> str:
-    """'Apple macOS macOS 26 (Tahoe)' -> 'Apple macOS 26 (Tahoe)' -- collapses
-    a word repeated immediately next to itself (case-insensitive). Mirrors
+    """'Apple macOS macOS 26 (Tahoe)' -> 'Apple macOS 26 (Tahoe)' and
+    'Microsoft Windows Server Windows Server 2019 (LTSC)' ->
+    'Microsoft Windows Server 2019 (LTSC)' -- collapses a word OR multi-word
+    phrase repeated immediately next to itself (case-insensitive), preferring
+    the longest repeated run at each position. Mirrors
     collapseConsecutiveDuplicateWords in static/js/editor.js; the two must
     agree on what counts as a duplicate since both feed the same fields."""
     words = _clean(value).split()
+    n = len(words)
     out: list[str] = []
-    for word in words:
-        if out and out[-1].lower() == word.lower():
-            continue
-        out.append(word)
+    i = 0
+    while i < n:
+        run_len = 0
+        for length in range((n - i) // 2, 0, -1):
+            first = [w.lower() for w in words[i : i + length]]
+            second = [w.lower() for w in words[i + length : i + 2 * length]]
+            if first == second:
+                run_len = length
+                break
+        if run_len:
+            out.extend(words[i : i + run_len])
+            i += 2 * run_len
+        else:
+            out.append(words[i])
+            i += 1
     return " ".join(out)
 
 

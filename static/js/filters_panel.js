@@ -15,7 +15,7 @@ const DATE_MODES = [
   ["empty", "Empty"], ["not_empty", "Not empty"],
 ];
 const MATCHED_BY_CHIPS = [
-  "All", "endoflife.date", "Fuzzy", "AI", "eosl.date",
+  "All", "endoflife.date", "Fuzzy", "AI", "eosl.date", "Microsoft Lifecycle",
   "Juniper Junos", "SUSE Lifecycle", "Manual", "Ambiguous", "No match",
 ];
 
