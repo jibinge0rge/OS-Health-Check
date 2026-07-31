@@ -150,19 +150,34 @@ function openUpdateModal(sourceId) {
   const footerEl = document.getElementById("modal-vendor-update-footer");
   document.getElementById("vendor-update-confirm-btn").onclick = async () => {
     const targets = isAll ? sources.map((s) => s.id) : [sourceId];
+    let batchCancelled = false;
     for (const id of targets) {
+      if (batchCancelled) break;
       const label = `Update ${sources.find((s) => s.id === id)?.label || id}`;
       const task = runProgress({
         kind: `vendor-sync:${id}`,
         label,
         bodyEl, footerEl,
         eventGenerator: streams.vendorSync(id, {}),
-        onCancel: (jobId) => jobId && api.vendorSyncCancel(jobId).catch(() => {}),
+        // Cancel is a user action on the whole batch, not just this source --
+        // stop the loop instead of silently starting the next update. (The
+        // modal itself closes as soon as Cancel is clicked -- see
+        // attachProgressView -- so without this, every remaining source
+        // would run invisibly and need cancelling one by one from
+        // Background tasks.) Deliberately no inline .catch() here -- tasks.js's
+        // cancelTask() awaits this to know whether the cancel actually
+        // landed, re-enabling the Cancel button if it rejects.
+        onCancel: (jobId) => {
+          batchCancelled = true;
+          return jobId ? api.vendorSyncCancel(jobId) : undefined;
+        },
         onComplete: () => showToast(`${sources.find((s) => s.id === id)?.label || id} updated.`),
         onError: (event) => showToast(`Update failed: ${event.message || "unknown error"}`),
       });
-      await waitForTask(task.id);
+      const finished = await waitForTask(task.id);
+      if (finished?.status === "cancelled") batchCancelled = true;
     }
+    if (batchCancelled && isAll) showToast("Update all cancelled.");
     await selectSource(activeSourceId);
   };
 }

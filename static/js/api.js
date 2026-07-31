@@ -49,7 +49,6 @@ export const api = {
   getRowEvidence: (osString, source = "data") =>
     json(`/api/lookup/evidence?os_string=${encodeURIComponent(osString)}&source=${encodeURIComponent(source)}`),
   refreshRow: (row, opts) => post(`/api/lookup/row/refresh`, { row }, opts),
-  refreshRows: (rows) => post(`/api/lookup/rows/refresh`, { rows }),
   cancelRefreshJob: (jobId) => post(`/api/lookup/refresh/${jobId}/cancel`),
 
   // Settings

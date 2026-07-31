@@ -13,6 +13,8 @@ layer23-switch, router-switch) or "api" for the primary endoflife.date lookup.
 
 from __future__ import annotations
 
+from normalization_service import AMBIGUOUS_OS
+
 CSV_HEADERS = [
     "os_string",
     "normalized_os_detailed_name",
@@ -22,6 +24,18 @@ CSV_HEADERS = [
     "eoas_date",
     "eoas_status",
 ]
+
+
+def is_ambiguous_row(row: dict) -> bool:
+    """True when a row is marked Ambiguous OS (its OS value contains '/',
+    so it could be more than one product) -- such a row must never receive
+    EOL/EOAS enrichment. There's no way to know which of the ambiguous
+    candidates a fetched date would even belong to, and querying a lifecycle
+    source with the literal text "Ambiguous OS" has produced real false
+    positives (e.g. matching an unrelated product by coincidental version
+    number overlap once the lookup falls back to the raw OS string)."""
+    return str(row.get("normalized_os_detailed_name") or "").strip().casefold() == AMBIGUOUS_OS
+
 
 # Chip set from the design README's Column filters -> Matched by section.
 # Vendor sources without a dedicated chip (layer23-switch, router-switch)
@@ -40,6 +54,15 @@ _METHOD_TO_MATCHED_BY = {
     "fuzzy+ai": "AI",
     "manual": "Manual",
     "ambiguous": "Ambiguous",
+    # Retired method: no current code path writes this anymore (dates were
+    # once copied from another row sharing the same normalized pair instead
+    # of resolving from a real source). Old evidence still carries it, so it
+    # must still classify as *something* other than "No match" -- that would
+    # claim there's no recorded match at all, when there plainly is one
+    # (see _method_summary's "lookup-fallback" branch for the recorded
+    # fallbackFrom row). "Fuzzy" is the closest existing category: derived
+    # from another matching row rather than a live vendor/API source.
+    "lookup-fallback": "Fuzzy",
 }
 
 MATCHED_BY_CHIPS = [
@@ -70,22 +93,55 @@ _METHOD_SUMMARIES = {
 }
 
 
+def _matched_record_note(slot: dict) -> str:
+    """' -- matched "X" (query: "Y")' suffix naming exactly which vendor/API
+    record a lookup resolved to, so the evidence detail isn't just "filled
+    from eosl.date" with no way to tell which of its products/releases that
+    means. Blank when the slot has neither a release label/slug nor the
+    query text (e.g. an older evidence entry recorded before these fields
+    existed)."""
+    release_label = str(slot.get("releaseLabel") or "").strip()
+    product_slug = str(slot.get("productSlug") or "").strip()
+    query_used = str(slot.get("queryUsed") or "").strip()
+    record = release_label or product_slug
+
+    parts = []
+    if record:
+        parts.append(f'matched "{record}"')
+    if query_used:
+        parts.append(f'query: "{query_used}"')
+    if not parts:
+        return ""
+    return " -- " + ", ".join(parts)
+
+
 def _method_summary(method: str, slot: dict) -> str:
     if method in _METHOD_SUMMARIES:
         return _METHOD_SUMMARIES[method]
     if method in {"fuzzy", "ai", "fuzzy+ai"}:
         score = slot.get("score")
         score_note = f" Match score {score}%." if score is not None else ""
+        matched_pair = str(slot.get("queryUsed") or "").strip()
+        pair_note = f' Matched existing pair for "{matched_pair}".' if matched_pair else ""
         if method == "ai":
-            return f"AI chose an existing normalized pair.{score_note}"
+            return f"AI chose an existing normalized pair.{score_note}{pair_note}"
         if method == "fuzzy+ai":
-            return f"Fuzzy found a candidate and AI confirmed it.{score_note}"
-        return f"Fuzzy matched an existing lookup entry.{score_note}"
+            return f"Fuzzy found a candidate and AI confirmed it.{score_note}{pair_note}"
+        return f"Fuzzy matched an existing lookup entry.{score_note}{pair_note}"
     if method == "api":
-        return "Filled from the endoflife.date lookup."
+        return f"Filled from the endoflife.date lookup{_matched_record_note(slot)}."
+    if method == "lookup-fallback":
+        fallback_from = slot.get("fallbackFrom")
+        source_os = str(fallback_from.get("os_string") or "").strip() if isinstance(fallback_from, dict) else ""
+        source_note = f' from row "{source_os}"' if source_os else ""
+        return (
+            "Retired method: dates were copied from another row sharing the same "
+            f"normalized OS pair{source_note}, not resolved from a live source. "
+            "Re-run lookup to verify against current data."
+        )
     if method in _METHOD_TO_MATCHED_BY:
         label = _METHOD_TO_MATCHED_BY[method]
-        return f"Filled from the {label} local vendor lifecycle database."
+        return f"Filled from the {label} local vendor lifecycle database{_matched_record_note(slot)}."
     return "No match evidence recorded."
 
 
@@ -95,13 +151,23 @@ def classify_matched_by(method: str | None) -> str:
     return _METHOD_TO_MATCHED_BY.get(normalized, "No match")
 
 
-def row_matched_by(evidence_entry: dict | None) -> str:
+def row_matched_by(evidence_entry: dict | None, row: dict | None = None) -> str:
     """The single overall Matched-by category shown for a row.
 
     Prefers the lifecycle (eol) slot's method since that is what the
     Matched-by filter is really describing (which source resolved the row);
     falls back to the normalization slots when there is no lifecycle match.
+
+    Ambiguous rows are classified from the row itself, not evidence: no code
+    path actually records a method="ambiguous" evidence entry (the field is
+    set directly on the row, not via a lookup), so without this an ambiguous
+    row with no other evidence would misreport as "No match" instead of
+    "Ambiguous" -- exactly the kind of mismatch that made the Matched-by
+    filter look unreliable.
     """
+    if row is not None and is_ambiguous_row(row):
+        return _METHOD_TO_MATCHED_BY.get("ambiguous", "Ambiguous")
+
     if not isinstance(evidence_entry, dict):
         return "No match"
 
@@ -112,6 +178,19 @@ def row_matched_by(evidence_entry: dict | None) -> str:
             if method and method not in {"none", "loaded"}:
                 return classify_matched_by(method)
     return "No match"
+
+
+# Which row field a normalization slot's value actually lives in -- used to
+# catch a stale evidence slot (method "none") that no longer matches reality
+# because the row field itself is non-empty. That combination only happens
+# for values set before evidence tracking existed for this field (e.g. an
+# older import, or a retired normalization path) -- "No normalized value is
+# set." would be flatly false in that case, since the drawer shows the value
+# right above the evidence list.
+_ROW_FIELD_FOR_SLOT = {
+    "detailed": "normalized_os_detailed_name",
+    "normalized": "normalized_os",
+}
 
 
 def build_evidence_entries(evidence_entry: dict | None, row: dict) -> dict:
@@ -127,11 +206,18 @@ def build_evidence_entries(evidence_entry: dict | None, row: dict) -> dict:
         if not isinstance(slot, dict):
             continue
         method = str(slot.get("method") or "none").strip().lower()
+        detail = _method_summary(method, slot)
+        row_field = _ROW_FIELD_FOR_SLOT.get(slot_name)
+        if method == "none" and row_field and str(row.get(row_field) or "").strip():
+            detail = (
+                "This value predates evidence tracking for this field -- no "
+                "record of how it was set. Re-run lookup to verify it."
+            )
         entries.append(
             {
                 "method": method,
                 "field": _FIELD_LABELS.get(slot_name, slot_name),
-                "detail": _method_summary(method, slot),
+                "detail": detail,
                 "query_used": str(slot.get("queryUsed") or "").strip(),
                 "product_slug": str(slot.get("productSlug") or "").strip(),
                 "release_label": str(slot.get("releaseLabel") or slot.get("releaseName") or "").strip(),
@@ -139,7 +225,7 @@ def build_evidence_entries(evidence_entry: dict | None, row: dict) -> dict:
             }
         )
 
-    return {"matched_by": row_matched_by(entry), "entries": entries}
+    return {"matched_by": row_matched_by(entry, row), "entries": entries}
 
 
 def build_eol_evidence_slot(result: dict) -> dict:

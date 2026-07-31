@@ -120,10 +120,15 @@ class ResolveAndPickTests(unittest.TestCase):
             _resolve_product_slug("Microsoft SQL Server 2025 Enterprise", self._products()),
             "sql-server",
         )
-        self.assertEqual(
-            _resolve_product_slug("Windows Server 2025 Standard", self._products()),
-            "windows",
-        )
+
+    def test_windows_family_is_never_resolved(self) -> None:
+        """The "windows" family is deliberately excluded from matching --
+        endoflife.date's own dedicated windows/windows-server products
+        already cover this ground far more precisely, and Microsoft
+        Lifecycle's own release naming for it is too loose to safely
+        disambiguate (see test_bare_major_no_longer_matches_wrong_release)."""
+        self.assertIsNone(_resolve_product_slug("Windows Server 2025 Standard", self._products()))
+        self.assertIsNone(_resolve_product_slug("Windows 10 Pro 10.0.16299.0", self._products()))
 
     def test_resolve_product_slug_no_match(self) -> None:
         self.assertIsNone(_resolve_product_slug("Ubuntu 22.04 LTS", self._products()))
@@ -143,6 +148,25 @@ class ResolveAndPickTests(unittest.TestCase):
         # A bitness-only hint must not pick a release.
         self.assertIsNone(_pick_release(releases, ["64"]))
         self.assertIsNone(_pick_release(releases, []))
+
+    def test_pick_release_refuses_to_guess_on_a_tie(self) -> None:
+        """Real incident this pins: a bare major hint ("10") scored an exact
+        token match against EVERY Windows 10-family release's own shared "10"
+        prefix token, so a 2017 build (10.0.16299) matched "Windows 10 IoT
+        Enterprise LTSC 2021" (a 2021 release) purely because both releases'
+        names started with "10" -- there was no real signal to choose among
+        the tied candidates. Even outside the excluded "windows" family, a
+        genuine tie must never be resolved by picking whichever sorts first."""
+        releases = [
+            {"release_name": "10-1709-w", "released_date": "", "eol_date": "1",
+             "eoas_date": "", "latest_raw": "", "is_supported": 1},
+            {"release_name": "10-24h2-iot-lts", "released_date": "", "eol_date": "2",
+             "eoas_date": "", "latest_raw": "", "is_supported": 1},
+        ]
+        # Both release names contain the bare token "10" -- an exact-string
+        # match against either candidate's extracted "10" token -- so this
+        # hint ties between them.
+        self.assertIsNone(_pick_release(releases, ["10"]))
 
 
 class CollectProductsPaginationTests(unittest.TestCase):
@@ -275,6 +299,48 @@ class MicrosoftLifecycleLiveSmokeTests(unittest.TestCase):
             self.assertIn("release", sample)
             self.assertIn("eol_date", sample)
             self.assertIn("eoas_date", sample)
+        finally:
+            drop_schema(schema_name)
+
+    def test_cancelled_sync_preserves_existing_data(self) -> None:
+        """A sync cancelled mid-pagination must never replace a complete
+        prior dataset with the partial one collected so far (regression for
+        a real incident: cancelling mid-run dropped 16/825 down to 15/599)."""
+        import threading
+
+        from vendor_lookups.db import drop_schema
+        import vendor_lookups.microsoft_lifecycle_service as mls
+
+        schema_name = _temp_schema("mslifecancel")
+        try:
+            first = sync_microsoft_lifecycle_database(schema_name=schema_name, max_pages=2)
+            self.assertTrue(first["ok"], first)
+            before_products = first["product_count"]
+            before_releases = first["release_count"]
+
+            cancel_event = threading.Event()
+            call_count = {"n": 0}
+            orig_fetch_page = mls._fetch_page
+
+            def fetch_then_cancel(skip, top=mls.PAGE_SIZE):
+                call_count["n"] += 1
+                if call_count["n"] == 2:
+                    cancel_event.set()
+                return orig_fetch_page(skip, top)
+
+            with patch.object(mls, "_fetch_page", side_effect=fetch_then_cancel):
+                second = sync_microsoft_lifecycle_database(
+                    schema_name=schema_name, cancel_event=cancel_event, max_pages=10
+                )
+
+            self.assertTrue(second["cancelled"])
+            self.assertFalse(second["ok"])
+            self.assertEqual(second["product_count"], before_products)
+            self.assertEqual(second["release_count"], before_releases)
+
+            status = get_status(schema_name)
+            self.assertEqual(int(status["product_count"]), before_products)
+            self.assertEqual(int(status["release_count"]), before_releases)
         finally:
             drop_schema(schema_name)
 

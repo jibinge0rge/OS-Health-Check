@@ -82,7 +82,19 @@ def _normalize_for_slug_lookup(os_name: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+@lru_cache(maxsize=None)
 def _phrase_pattern(phrase: str) -> re.Pattern[str]:
+    """Compile (and cache) the match pattern for one slug-index phrase.
+
+    ``resolve_product_slug`` scans the *entire* slug index (thousands of
+    phrases from ~300+ endoflife.date products) for every row, so this was
+    the dominant cost of a Refresh: recompiling every phrase's regex from
+    scratch on every call blew straight through Python's own internal
+    ``re.compile`` cache (a few hundred entries) well before a single row's
+    scan finished, so it never actually stayed cached. An explicit,
+    unbounded cache here compiles each distinct phrase exactly once for the
+    life of the process.
+    """
     escaped = re.escape(phrase.strip().lower())
     if " " in phrase:
         return re.compile(rf"(?<![a-z0-9]){escaped}(?![a-z0-9])", re.I)
@@ -606,9 +618,23 @@ def lookup_os_eol(
         empty_result["api_note"] = "No releases found in endoflife.date product data"
         return empty_result
 
+    # Hints from cleaned_name alone, not the raw os_string too. When the query
+    # field is a normalized value (preferred above for cross-vendor safety),
+    # that value can be coarser than the raw os_string -- Windows' own
+    # normalized_os is deliberately family-level ("Microsoft Windows 11",
+    # no build), so extract_version_hints(cleaned_name) yields only a bare
+    # major like "11". That's too weak to score >= _MIN_RELEASE_SCORE against
+    # any specific release (correctly -- a bare major must never match), so
+    # release-level lookup would silently find nothing and leave whatever
+    # release-level tag ("(W)" vs "(E)") the row already had, permanently,
+    # since normalized_os never round-trips the OS's actual build number.
+    # The raw os_string still has it ("10.0.22631"), so folding its hints in
+    # too preserves the safer product-slug resolution above while restoring
+    # the precision needed to pick or correct the specific release.
+    release_hints = list(dict.fromkeys(extract_version_hints(os_string) + extract_version_hints(cleaned_name)))
     selected_release = pick_release(
         releases,
-        extract_version_hints(cleaned_name),
+        release_hints,
         os_text=f"{os_string} {cleaned_name}",
     )
     if not selected_release:
@@ -678,9 +704,21 @@ def lookup_os_eol(
 def lookup_os_eol_batch(
     items: list[dict[str, str]],
     reference_date: str | None = None,
+    product_cache: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
+    """Batch endoflife.date lookups, fetching each distinct product slug once.
+
+    ``product_cache`` defaults to a fresh dict scoped to this call. Pass a
+    dict shared across multiple calls (e.g. one Refresh run split into
+    chunks) so a product already fetched by an earlier chunk is never
+    re-fetched from the network by a later one -- the fix for Refresh being
+    slow on a large lookup: without this, a common slug like "windows" or
+    "ios" would get re-requested from endoflife.date once per chunk that
+    happens to contain a matching row, instead of once for the whole run.
+    """
     valid_slugs = get_valid_slugs()
-    product_cache: dict[str, dict[str, Any]] = {}
+    if product_cache is None:
+        product_cache = {}
     fetch_errors: dict[str, Exception] = {}
 
     slugs_needed: set[str] = set()
@@ -696,8 +734,11 @@ def lookup_os_eol_batch(
         if slug:
             slugs_needed.add(slug)
 
-    if slugs_needed:
-        workers = min(EOL_FETCH_WORKERS, len(slugs_needed))
+    # Only fetch what a prior call on this same (shared) cache hasn't
+    # already brought back -- the whole point of accepting an external cache.
+    slugs_to_fetch = slugs_needed - product_cache.keys()
+    if slugs_to_fetch:
+        workers = min(EOL_FETCH_WORKERS, len(slugs_to_fetch))
 
         def fetch_slug(slug: str) -> tuple[str, dict[str, Any] | None, Exception | None]:
             try:
@@ -706,7 +747,7 @@ def lookup_os_eol_batch(
                 return slug, None, exc
 
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = [executor.submit(fetch_slug, slug) for slug in slugs_needed]
+            futures = [executor.submit(fetch_slug, slug) for slug in slugs_to_fetch]
             for future in as_completed(futures):
                 slug, payload, error = future.result()
                 if payload is not None:

@@ -37,6 +37,7 @@ from .db import connection_for, init_source_schema, set_metadata
 from eol_service import (
     extract_version_hints,
     iso_date_to_epoch,
+    join_labels,
     pick_api_os_value_with_field,
     resolve_lifecycle_status,
 )
@@ -262,7 +263,39 @@ def sync_microsoft_lifecycle_database(
         max_pages=max_pages,
     )
     cancelled = cancel_event is not None and cancel_event.is_set()
-    if not items and not cancelled:
+
+    # Cancelled before the catalog finished paginating: `items` is a partial
+    # slice of the whole ~800-product list, never a valid replacement for
+    # what's already stored. Leave the existing (possibly complete) dataset
+    # untouched rather than committing a partial one over it.
+    if cancelled:
+        finished = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with _connect(schema_name) as connection:
+            product_count = int(
+                connection.execute("SELECT COUNT(*) AS count FROM products").fetchone()["count"]
+            )
+            release_count = int(
+                connection.execute("SELECT COUNT(*) AS count FROM releases").fetchone()["count"]
+            )
+            _set_metadata(connection, "last_sync_started", started)
+            _set_metadata(connection, "last_sync_status", "cancelled")
+            _set_metadata(
+                connection,
+                "last_sync_message",
+                f"Cancelled after fetching {len(items)} raw entries; "
+                "existing data left unchanged.",
+            )
+        return {
+            "ok": False,
+            "product_count": product_count,
+            "release_count": release_count,
+            "started": started,
+            "finished": finished,
+            "source_url": PRODUCTS_INDEX_URL,
+            "cancelled": True,
+        }
+
+    if not items:
         raise ValueError("Microsoft Lifecycle API returned zero products.")
 
     products, releases = build_release_rows(items)
@@ -302,32 +335,47 @@ def sync_microsoft_lifecycle_database(
             )
         _set_metadata(connection, "last_updated", scraped_at)
         _set_metadata(connection, "last_sync_started", started)
-        _set_metadata(connection, "last_sync_status", "cancelled" if cancelled else "ok")
+        _set_metadata(connection, "last_sync_status", "ok")
         _set_metadata(
             connection,
             "last_sync_message",
-            (
-                f"Cancelled after {len(releases)} releases across {len(products)} products."
-                if cancelled
-                else f"Synced {len(products)} products / {len(releases)} releases "
-                "from Microsoft Lifecycle."
-            ),
+            f"Synced {len(products)} products / {len(releases)} releases "
+            "from Microsoft Lifecycle.",
         )
 
     return {
-        "ok": not cancelled,
+        "ok": True,
         "product_count": len(products),
         "release_count": len(releases),
         "started": started,
         "finished": scraped_at,
         "source_url": PRODUCTS_INDEX_URL,
-        "cancelled": cancelled,
+        "cancelled": False,
     }
 
 
 # Numbers that look like versions but are almost always architecture / bitness.
 _NON_VERSION_HINTS = frozenset({"16", "32", "64", "86", "128", "256"})
 _MIN_RELEASE_SCORE = 80
+
+# The "windows" family is deliberately never matched here. endoflife.date's
+# own dedicated "windows" and "windows-server" products already cover this
+# ground far more precisely (raw NT build via latest.name, edition-aware
+# tie-breaking -- see eol_service.py's pick_release) and are always tried
+# first in the Refresh cascade. Microsoft Lifecycle's own "windows" family,
+# by contrast, mixes real OS releases with unrelated tools (PowerShell,
+# FSLogix, Windows Defender Exploit Guard, Microsoft Robotics, ...) under one
+# family, and every OS release's own name is a slug like "10-1709-w" whose
+# extracted numeric tokens include the bare major ("10") shared by EVERY
+# Windows 10/11 release. A bare-major hint (e.g. from a normalized_os value
+# with no build number) then scores an exact-string-match 100 against that
+# shared token for dozens of unrelated releases at once -- there is no
+# genuine signal left to pick among them, so a real incident matched a
+# 2017 build (10.0.16299) to "Windows 10 IoT Enterprise LTSC 2021" (a 2021
+# release) purely because both names happen to start with "10". The data is
+# still scraped/stored for reference in the Vendor Lookups viewer; it is
+# only excluded from automated matching.
+_EXCLUDED_FAMILIES = frozenset({"windows"})
 
 
 def _version_tokens(text: str) -> list[str]:
@@ -348,17 +396,25 @@ def _release_score(release_name: str, hint: str) -> int:
 def _pick_release(
     releases: list[Mapping[str, Any]], hints: list[str]
 ) -> Mapping[str, Any] | None:
+    """Conservative on ties as well as on weak scores: if two or more
+    releases score exactly the same best score, there is no real signal
+    telling them apart -- refuse to guess rather than silently picking
+    whichever one happened to sort first."""
     if not releases or not hints:
         return None
-    best = None
+    best: list[Mapping[str, Any]] = []
     best_score = 0
     for release in releases:
         name = _clean(release["release_name"])
         score = max((_release_score(name, hint) for hint in hints), default=0)
         if score > best_score:
             best_score = score
-            best = release
-    return best if best_score >= _MIN_RELEASE_SCORE else None
+            best = [release]
+        elif score == best_score and score > 0:
+            best.append(release)
+    if best_score < _MIN_RELEASE_SCORE or len(best) != 1:
+        return None
+    return best[0]
 
 
 def _resolve_product_slug(query: str, products: list[Mapping[str, Any]]) -> str | None:
@@ -370,6 +426,8 @@ def _resolve_product_slug(query: str, products: list[Mapping[str, Any]]) -> str 
     best_score = 0.0
     for product in products:
         slug = _clean(product["slug"])
+        if slug in _EXCLUDED_FAMILIES:
+            continue
         name = _clean(product["name"])
         slug_text = slug.replace("-", " ")
         score = 0.0
@@ -475,7 +533,11 @@ def lookup_os_microsoft_lifecycle(
         eol_iso = _clean(selected["eol_date"])
         eoas_iso = _clean(selected["eoas_date"])
         release_name = _clean(selected["release_name"])
-        label = f"{product_name} {release_name}".strip()
+        # Not a plain f-string join -- many release titles already start
+        # with (or embed) the family name (e.g. family "Windows" + release
+        # "Windows Mobile 6"/"Windows Server 2025"), which would otherwise
+        # duplicate into "Windows Windows Mobile 6".
+        label = join_labels(product_name, release_name)
 
         return {
             "eol_date": iso_date_to_epoch(eol_iso),

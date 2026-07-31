@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
+import vendor_lookups.router_switch_service as rs
 from vendor_lookups.router_switch_service import (
     _MIN_RELEASE_SCORE,
     _parse_page_count,
@@ -242,6 +245,79 @@ class RouterSwitchLiveSmokeTests(unittest.TestCase):
             self.assertIn("release", sample)
             self.assertIn("eol_date", sample)
             self.assertIn("eoas_date", sample)
+        finally:
+            drop_schema(schema_name)
+
+
+@unittest.skipUnless(_pg_available(), "DATABASE_URL not set")
+class RouterSwitchCancelPreservesDataTests(unittest.TestCase):
+    def test_cancel_after_one_manufacturer_preserves_the_next(self) -> None:
+        """A cancel between manufacturers must never wipe a not-yet-reached
+        manufacturer's prior data (regression: the sync used to delete every
+        selected manufacturer's rows up front, before any of them were
+        actually re-scraped)."""
+        from vendor_lookups.db import drop_schema
+
+        schema_name = _temp_schema("rscancel")
+        init_db(schema_name)
+        try:
+            with _connect(schema_name) as connection:
+                for slug in ("cisco", "dell"):
+                    connection.execute(
+                        "INSERT INTO products(slug, name, category, url, scraped_at) "
+                        "VALUES (%s, %s, %s, %s, %s)",
+                        (slug, f"OLD {slug}", "hardware", f"https://example.com/{slug}", "2020-01-01T00:00:00"),
+                    )
+                    connection.execute(
+                        "INSERT INTO releases(product_slug, release_name, released_date, "
+                        "eol_date, eoas_date, latest_raw, is_supported) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                        (slug, "OLD-PART-1", "2020-01-01", "2021-01-01", "", "old", 0),
+                    )
+
+            cancel_event = threading.Event()
+            sleep_calls = {"n": 0}
+
+            def fake_sleep(_seconds):
+                sleep_calls["n"] += 1
+                if sleep_calls["n"] == 1:
+                    cancel_event.set()
+
+            with (
+                patch.object(rs, "_fetch_html", return_value="<html></html>"),
+                patch.object(rs, "_parse_page_count", return_value=(1, 1, 1)),
+                patch.object(
+                    rs,
+                    "_parse_table_rows",
+                    return_value=[
+                        {
+                            "product_slug": "cisco",
+                            "release_name": "NEW-PART-1",
+                            "released_date": "2026-01-01",
+                            "eol_date": "2030-01-01",
+                            "eoas_date": "",
+                            "latest_raw": "new",
+                        }
+                    ],
+                ),
+                patch.object(rs.time, "sleep", side_effect=fake_sleep),
+            ):
+                result = sync_router_switch_database(
+                    schema_name=schema_name,
+                    manufacturers=(("cisco", "Cisco"), ("dell", "Dell")),
+                    cancel_event=cancel_event,
+                )
+
+            self.assertTrue(result["cancelled"])
+
+            with _connect(schema_name) as connection:
+                releases = {
+                    r["product_slug"]: r["release_name"]
+                    for r in connection.execute("SELECT product_slug, release_name FROM releases")
+                }
+            self.assertEqual(releases["cisco"], "NEW-PART-1")
+            # dell was never reached -- its prior release must be untouched.
+            self.assertEqual(releases["dell"], "OLD-PART-1")
         finally:
             drop_schema(schema_name)
 

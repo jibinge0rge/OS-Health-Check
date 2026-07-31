@@ -178,6 +178,33 @@ class ResolveProductSlugTests(unittest.TestCase):
         # A bare major (no build) must still refuse to guess a specific release.
         self.assertEqual(pick_release(releases, extract_version_hints("Windows 10")), {})
 
+    def test_coarse_normalized_query_alone_loses_the_build_number(self) -> None:
+        """Pins the exact hint-starvation bug: once normalized_os is set to
+        Windows' own family-level form ("Microsoft Windows 11", no build --
+        by design, see build_normalization_from_product), a lookup querying
+        with only that value has no build number left to disambiguate a
+        specific release; lookup_os_eol must fold in hints from the raw
+        os_string too (which still has "10.0.22631") rather than passing
+        pick_release only extract_version_hints(cleaned_name)."""
+        releases = [
+            {"name": "11-23h2-e", "label": "11 23H2 (E)", "latest": {"name": "10.0.22631"}},
+            {"name": "11-23h2-w", "label": "11 23H2 (W)", "latest": {"name": "10.0.22631"}},
+        ]
+        os_string = "Windows Microsoft Windows 11 Enterprise multi-session 10.0.22631 Build 22631"
+        cleaned_name = "Microsoft Windows 11"  # what a coarse, already-set normalized_os looks like
+
+        # The bug: hints from cleaned_name alone can't score high enough to
+        # pick anything (correctly conservative on a bare major) --
+        # release-level info is lost entirely, not just edition info.
+        self.assertEqual(pick_release(releases, extract_version_hints(cleaned_name)), {})
+
+        # The fix: hints merged from os_string restore the build number, and
+        # os_text (already os_string-inclusive) still narrows to the correct
+        # edition instead of falling back to "take the minimum of both".
+        merged_hints = list(dict.fromkeys(extract_version_hints(os_string) + extract_version_hints(cleaned_name)))
+        picked = pick_release(releases, merged_hints, os_text=f"{os_string} {cleaned_name}")
+        self.assertEqual(picked.get("name"), "11-23h2-e")
+
     @staticmethod
     def _windows_24h2_shared_build_releases() -> list[dict[str, object]]:
         """Build 10.0.26100 shared by four Windows 11 24H2 editions/channels

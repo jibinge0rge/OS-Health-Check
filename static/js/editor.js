@@ -7,7 +7,7 @@ import { parseRowDate, classifyDateChip, formatRelative } from "./date_utils.js"
 import { initFiltersPanel, toggleFiltersPanel, matchesColumnFilters, activeFilterCount, clearAllColumnFilters } from "./filters_panel.js";
 import { initDrawer, openDrawer, closeDrawer, isDrawerOpenFor, refreshDrawerFields } from "./drawer.js";
 import { openModal, closeModal, showToast, runProgress } from "./modals.js";
-import { hasActive } from "./tasks.js";
+import { getTasks, hasActive } from "./tasks.js";
 
 const CSV_HEADERS = ["os_string", "normalized_os_detailed_name", "normalized_os", "eol_date", "eol_status", "eoas_date", "eoas_status"];
 const PAGE_SIZE_OPTIONS = [50, 100, 250, 500, 1000];
@@ -73,7 +73,13 @@ export async function initEditor() {
     clearAllColumnFilters(); clearSelection(); renderAll();
   });
 
-  document.getElementById("bulk-refresh-btn").addEventListener("click", bulkRefresh);
+  // openRefreshModal already branches on state.selected -- reusing it here
+  // (instead of the old bulkRefresh, which awaited one non-streamed request
+  // and only showed a toast before/after) gives the bulk-selection refresh
+  // the same progress bar as the toolbar's Refresh EOL/EOAS, so a large
+  // selection shows live per-chunk progress instead of going quiet for
+  // however long the whole batch takes.
+  document.getElementById("bulk-refresh-btn").addEventListener("click", openRefreshModal);
   document.getElementById("bulk-same-as-os-btn").addEventListener("click", bulkSameAsOs);
   document.getElementById("bulk-revert-btn").addEventListener("click", bulkRevert);
   document.getElementById("bulk-export-btn").addEventListener("click", () => exportRows(selectedRows()));
@@ -121,9 +127,20 @@ function backToData() {
   setState({ source: "data" });
 }
 
+// True while a vendor lookup update or an Add OS enrichment pipeline is
+// running -- both mutate rows/evidence the same Draft would be built from,
+// so entering Draft mid-run risks forking from a half-updated state.
+function isEnrichmentBusy() {
+  return hasActive("add-os") || getTasks().some((t) => t.kind.startsWith("vendor-sync:") && t.status === "running");
+}
+
 async function switchSource(target) {
   if (target === state.source) return;
   if (target === "draft") {
+    if (isEnrichmentBusy()) {
+      showToast("Vendor lookup update or Add OS enrichment is in progress — try again once it finishes.");
+      return;
+    }
     if (state.draftExists) {
       const draft = await api.getLookup("draft");
       state.draftRows = draft.rows;
@@ -291,17 +308,6 @@ function toggleSelectAllFiltered(filtered) {
   }
   updateBulkBar();
   renderTable();
-}
-
-async function bulkRefresh() {
-  const targets = selectedRows();
-  if (!targets.length) return;
-  showToast(`Refreshing ${targets.length} row(s)…`);
-  const result = await api.refreshRows(targets);
-  result.rows.forEach((updated, i) => Object.assign(targets[i], updated));
-  scheduleAutosave();
-  refreshView();
-  showToast(`Refreshed ${targets.length} row(s).`);
 }
 
 function bulkSameAsOs() {
@@ -662,9 +668,18 @@ async function openRefreshModal() {
     const draft = await api.getLookup("draft");
     state.draftRows = draft.rows;
   }
+  // `targets` deliberately still includes ambiguous rows -- this list is
+  // sent to the server as-is and saved back verbatim at the end of the
+  // refresh (see lookup_refresh_events), so shrinking it here would drop
+  // every excluded row from the persisted draft, not just skip enriching
+  // it. The server already skips ambiguous rows internally (never queries
+  // a lifecycle source with them); this just makes the count honest about it.
   const targets = state.selected.size ? selectedRows() : state.draftRows;
-  document.getElementById("refresh-summary").textContent =
-    `${targets.length} row(s) eligible for refresh. Existing EOL/EOAS values will be overwritten.`;
+  const ambiguousCount = targets.filter((row) => row.normalized_os_detailed_name === "Ambiguous OS").length;
+  const enrichableCount = targets.length - ambiguousCount;
+  document.getElementById("refresh-summary").textContent = ambiguousCount
+    ? `${targets.length} row(s) selected, ${enrichableCount} eligible for refresh (${ambiguousCount} Ambiguous OS row(s) skipped). Existing EOL/EOAS values will be overwritten.`
+    : `${targets.length} row(s) eligible for refresh. Existing EOL/EOAS values will be overwritten.`;
   openModal("modal-refresh");
   const bodyEl = document.getElementById("modal-refresh-body");
   const footerEl = document.getElementById("modal-refresh-footer");
@@ -675,7 +690,10 @@ async function openRefreshModal() {
       label: "Refresh EOL/EOAS",
       bodyEl, footerEl,
       eventGenerator: streams.refreshLookup(targets, state.evidence, "draft"),
-      onCancel: (jobId) => jobId && api.cancelRefreshJob(jobId).catch(() => {}),
+      // No inline .catch() -- tasks.js's cancelTask() awaits this to know
+      // whether the cancel actually landed, re-enabling the Cancel button
+      // if it rejects (job already gone, network error, etc.).
+      onCancel: (jobId) => (jobId ? api.cancelRefreshJob(jobId) : undefined),
       onComplete: async (event) => {
         // Merge by os_string -- `targets` may be a selection subset, so
         // replacing the whole array here would silently drop every other
@@ -731,6 +749,11 @@ async function* addOsPipeline(osStrings, { signal } = {}) {
     if (ambiguousFlags[i]) {
       row.normalized_os_detailed_name = "Ambiguous OS";
       row.normalized_os = "Ambiguous OS";
+      // Ambiguous rows are filtered out of lookupRows below (never sent for
+      // refresh), so they'd otherwise never get a matched_by at all until
+      // the next full page load -- set it immediately, matching what the
+      // server computes via lookup_extras.row_matched_by.
+      row.matched_by = "Ambiguous";
     } else {
       const exact = allowedPairs.find((p) => p.__key === dedupeKey(collapseConsecutiveDuplicateWords(osString)));
       if (exact) {

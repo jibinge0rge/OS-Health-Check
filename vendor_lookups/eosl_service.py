@@ -282,9 +282,6 @@ def sync_os_database(
     cancelled = False
 
     with _connect(schema_name) as connection:
-        connection.execute("DELETE FROM releases")
-        connection.execute("DELETE FROM products")
-
         for index, (slug, list_name) in enumerate(products, start=1):
             if cancel_event is not None and cancel_event.is_set():
                 cancelled = True
@@ -299,6 +296,18 @@ def sync_os_database(
                     product_name = list_name
                 scraped_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 with connection.transaction():
+                    # Replace only THIS product's own rows, atomically with
+                    # inserting its fresh scrape -- never a blanket wipe of
+                    # every product up front. A cancel after this point still
+                    # leaves every already-processed product updated exactly
+                    # once, and every not-yet-reached product's prior data
+                    # untouched (not wiped to empty). Note: a product that
+                    # eosl.date later removes entirely will linger here until
+                    # a full, uncancelled run naturally stops touching it --
+                    # acceptable since the alternative (a cancelled run
+                    # deleting everything) is far worse.
+                    connection.execute("DELETE FROM releases WHERE product_slug = %s", (slug,))
+                    connection.execute("DELETE FROM products WHERE slug = %s", (slug,))
                     connection.execute(
                         """
                         INSERT INTO products(slug, name, category, url, scraped_at)

@@ -10,6 +10,22 @@ export function initBackgroundTasks() {
   document.getElementById("bg-clear-history-btn").addEventListener("click", () => {
     clearHistory();
   });
+
+  // Delegated on the stable list containers (never themselves replaced),
+  // not bound to each Cancel/Dismiss button directly -- renderActive/
+  // renderHistory replace every row's innerHTML on every progress tick (a
+  // fast-moving sync can tick several times a second), which would
+  // otherwise tear down a listener bound straight to a button mid-click and
+  // silently swallow that click, requiring another one to register.
+  document.getElementById("bg-active-list").addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-cancel]");
+    if (btn) cancelTask(btn.dataset.cancel);
+  });
+  document.getElementById("bg-history-list").addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-dismiss]");
+    if (btn) dismissTask(btn.dataset.dismiss);
+  });
+
   subscribe(render);
   render(getTasks());
 }
@@ -53,15 +69,11 @@ function renderActive(running) {
         <div class="bg-task-log">${task.log.slice(-6).map((l) => escapeHtml(l)).join("<br>")}</div>
         ${task.cancellable === false ? "" : `
         <div class="bg-task-actions">
-          <button class="btn tertiary" data-cancel="${task.id}" type="button">Cancel</button>
+          <button class="btn tertiary" data-cancel="${task.id}" type="button" ${task.cancelling ? "disabled" : ""}>${task.cancelling ? "Cancelling…" : "Cancel"}</button>
         </div>`}
       </div>`;
     })
     .join("");
-
-  list.querySelectorAll("[data-cancel]").forEach((btn) => {
-    btn.addEventListener("click", () => cancelTask(btn.dataset.cancel));
-  });
 }
 
 const STATUS_LABEL = { complete: "Succeeded", error: "Failed", cancelled: "Cancelled" };
@@ -88,10 +100,6 @@ function renderHistory(finished) {
       </div>`;
     })
     .join("");
-
-  list.querySelectorAll("[data-dismiss]").forEach((btn) => {
-    btn.addEventListener("click", () => dismissTask(btn.dataset.dismiss));
-  });
 }
 
 function formatWhen(at) {

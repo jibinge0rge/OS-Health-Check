@@ -73,6 +73,7 @@ from lookup_extras import (
     build_eol_evidence_slot,
     build_evidence_entries,
     compute_lookup_diff,
+    is_ambiguous_row,
     merge_lookup_rows,
     row_matched_by,
 )
@@ -92,6 +93,19 @@ load_dotenv()
 # file, corrupting the Data-vs-Draft diff). LOOKUP_DB_ENABLED is a separate,
 # explicit opt-in required in addition to DATABASE_URL.
 _USE_DB = bool(os.environ.get("DATABASE_URL")) and str(os.environ.get("LOOKUP_DB_ENABLED", "")).strip().lower() in (
+    "1", "true", "yes", "on",
+)
+
+# Optional, DB-mode-only: also write each successful publish out to
+# _data/eol_lookup.csv / _data/eol_lookup_evidence.json / _data/.revision, so
+# a single-instance deployment can keep a git-trackable snapshot alongside
+# Postgres as the source of truth. Off by default -- Postgres is never read
+# back from these files while _USE_DB is on, and if more than one app
+# instance shares the same database, each instance's mirrored files only
+# reflect publishes *it* performed, not the other instances' -- they will
+# drift stale relative to the real (Postgres) Data whenever someone else
+# publishes from a different instance.
+_MIRROR_FILES = _USE_DB and str(os.environ.get("LOOKUP_DB_MIRROR_FILES", "")).strip().lower() in (
     "1", "true", "yes", "on",
 )
 
@@ -1453,10 +1467,17 @@ def _apply_lifecycle_result(row: dict, result: dict, evidence_by_os: dict) -> No
     row["eoas_date"] = str(result.get("eoas_date") or "")
     row["eoas_status"] = str(result.get("eoas_status") or "")
 
-    filled_detailed = not str(row.get("normalized_os_detailed_name") or "").strip() and result.get(
-        "normalized_os_detailed_name"
-    )
-    filled_normalized = not str(row.get("normalized_os") or "").strip() and result.get("normalized_os")
+    # Adopt whenever this lookup actually produced a name -- not just when the
+    # row's field was previously blank. A confirmed release match names one
+    # specific release (e.g. "23H2 (E)") together with its dates; refusing to
+    # correct an already-non-blank name left eol_date/eoas_date matching a
+    # *different*, newly-resolved release than whatever release-level tag the
+    # row still displayed, silently, on every future refresh, with no way to
+    # self-correct short of deleting the row's normalized fields by hand. A
+    # lookup with nothing to report leaves these blank in `result`, so a
+    # genuine no-match still leaves the row's existing values untouched.
+    filled_detailed = bool(result.get("normalized_os_detailed_name"))
+    filled_normalized = bool(result.get("normalized_os"))
     if filled_detailed:
         row["normalized_os_detailed_name"] = collapse_consecutive_duplicate_words(result.get("normalized_os_detailed_name"))
     if filled_normalized:
@@ -1476,22 +1497,60 @@ def _row_has_lifecycle_data(row: dict) -> bool:
     return bool(str(row.get("eol_date") or "").strip() or str(row.get("eoas_date") or "").strip())
 
 
-def refresh_rows_lifecycle_chunk(rows: list[dict], evidence_by_os: dict) -> None:
+def _attach_matched_by(rows: list[dict], evidence_by_os: dict) -> None:
+    """Stamp row["matched_by"] the same way GET /api/lookup does, so a row
+    returned from a Refresh/Add-OS run is self-consistent with its own
+    evidence immediately -- without this, the client keeps whatever
+    matched_by a row had from the last full /api/lookup fetch (or none at
+    all for a brand-new row), which goes stale the moment its evidence
+    actually changes. That staleness is what made the "Matched by" column
+    filter look broken specifically on rows touched during the current
+    Draft session."""
+    for row in rows:
+        os_key = str(row.get("os_string") or "").strip()
+        row["matched_by"] = row_matched_by(evidence_by_os.get(os_key), row)
+
+
+def refresh_rows_lifecycle_chunk(
+    rows: list[dict],
+    evidence_by_os: dict,
+    product_cache: dict[str, dict[str, object]] | None = None,
+) -> None:
     """Synchronous worker: one chunk through endoflife.date, then the vendor
     cascade for whatever is still unresolved. Meant to run inside
     asyncio.to_thread per chunk so the caller can yield progress between
-    chunks."""
+    chunks.
+
+    ``product_cache`` should be one dict shared across every chunk of the
+    same Refresh run (see lookup_refresh_events/lookup_rows_refresh_events)
+    so a product fetched by an earlier chunk is never re-fetched from
+    endoflife.date by a later one -- previously this defaulted fresh per
+    chunk, so a common slug like "windows" could be re-requested from the
+    network once per chunk that contained a matching row instead of once
+    for the whole refresh, which is what made large refreshes so slow.
+
+    Ambiguous OS rows are skipped entirely -- not even queried. Querying a
+    lifecycle source with the literal text "Ambiguous OS" doesn't fail
+    cleanly: it can fall back to the raw (also ambiguous) os_string and pick
+    up a real but unrelated product via coincidental version-number overlap,
+    silently writing a wrong date onto a row that was flagged specifically
+    because we can't tell which product it is.
+    """
+    eligible_rows = [row for row in rows if not is_ambiguous_row(row)]
+    if not eligible_rows:
+        return
+
     eol_items = [
         {
             "os_string": row.get("os_string", ""),
             "normalized_os_detailed_name": row.get("normalized_os_detailed_name", ""),
             "normalized_os": row.get("normalized_os", ""),
         }
-        for row in rows
+        for row in eligible_rows
     ]
-    eol_results = lookup_os_eol_batch(eol_items)
+    eol_results = lookup_os_eol_batch(eol_items, product_cache=product_cache)
     still_unresolved: list[dict] = []
-    for row, result in zip(rows, eol_results):
+    for row, result in zip(eligible_rows, eol_results):
         _apply_lifecycle_result(row, result, evidence_by_os)
         if not _row_has_lifecycle_data(row):
             still_unresolved.append(row)
@@ -1522,13 +1581,15 @@ async def lookup_refresh_events(
     total = len(rows)
     evidence_by_os = dict((normalize_evidence_payload(evidence).get("by_os") or {}))
     processed = 0
+    # Shared across every chunk of this run -- see refresh_rows_lifecycle_chunk.
+    product_cache: dict[str, dict[str, object]] = {}
 
     for start in range(0, total, LOOKUP_REFRESH_CHUNK_SIZE):
         if cancel_event.is_set():
             yield sse_event({"type": "cancelled", "processed": processed, "total": total})
             return
         chunk = rows[start : start + LOOKUP_REFRESH_CHUNK_SIZE]
-        await asyncio.to_thread(refresh_rows_lifecycle_chunk, chunk, evidence_by_os)
+        await asyncio.to_thread(refresh_rows_lifecycle_chunk, chunk, evidence_by_os, product_cache)
         processed += len(chunk)
         yield sse_event(
             {
@@ -1544,6 +1605,7 @@ async def lookup_refresh_events(
     saved_evidence = save_evidence(
         prune_evidence_to_rows({"by_os": evidence_by_os, "updated_at": ""}, lookup_rows), source
     )
+    _attach_matched_by(rows, evidence_by_os)
     yield sse_event(
         {
             "type": "complete",
@@ -1563,10 +1625,12 @@ async def lookup_rows_refresh_events(rows: list[dict]) -> AsyncIterator[str]:
     total = len(rows)
     evidence_by_os: dict[str, object] = {}
     processed = 0
+    # Shared across every chunk of this run -- see refresh_rows_lifecycle_chunk.
+    product_cache: dict[str, dict[str, object]] = {}
 
     for start in range(0, total, LOOKUP_REFRESH_CHUNK_SIZE):
         chunk = rows[start : start + LOOKUP_REFRESH_CHUNK_SIZE]
-        await asyncio.to_thread(refresh_rows_lifecycle_chunk, chunk, evidence_by_os)
+        await asyncio.to_thread(refresh_rows_lifecycle_chunk, chunk, evidence_by_os, product_cache)
         processed += len(chunk)
         yield sse_event(
             {
@@ -1577,6 +1641,7 @@ async def lookup_rows_refresh_events(rows: list[dict]) -> AsyncIterator[str]:
             }
         )
 
+    _attach_matched_by(rows, evidence_by_os)
     yield sse_event({"type": "complete", "rows": rows, "evidence_by_os": evidence_by_os})
 
 
@@ -1668,7 +1733,7 @@ async def get_lookup(source: str = "data") -> dict[str, object]:
     evidence = load_evidence(source)
     by_os = evidence.get("by_os") if isinstance(evidence.get("by_os"), dict) else {}
     for row in rows:
-        row["matched_by"] = row_matched_by(by_os.get(str(row.get("os_string") or "").strip()))
+        row["matched_by"] = row_matched_by(by_os.get(str(row.get("os_string") or "").strip()), row)
     result: dict[str, object] = {
         "headers": CSV_HEADERS,
         "rows": rows,
@@ -1802,6 +1867,25 @@ def check_publish_conflicts(payload: LookupPayload) -> dict[str, object]:
     return {"conflicts": [] if result["ok"] else result["conflicts"], "stale": False}
 
 
+def _mirror_publish_to_files(
+    rows: list[LookupRow],
+    evidence: dict[str, object],
+    revision: int,
+    suffix: str,
+) -> tuple[Path | None, Path | None]:
+    """DB-mode-only, opt-in (``LOOKUP_DB_MIRROR_FILES``): write the just-published
+    Data out to _data/ too, so the files stay git-trackable alongside Postgres
+    as the actual source of truth. Backs up the previous file contents first,
+    same as the file-mode publish path does."""
+    backup_path = backup_data_file(suffix)
+    evidence_backup_path = backup_data_evidence(suffix)
+    _write_rows_csv(rows, DATA_PATH)
+    _save_evidence_file(evidence, "data")
+    DATA_REVISION_PATH.parent.mkdir(parents=True, exist_ok=True)
+    DATA_REVISION_PATH.write_text(str(revision), encoding="utf-8")
+    return backup_path, evidence_backup_path
+
+
 def perform_publish(payload: LookupPayload) -> dict[str, object]:
     """Executes a publish. Raises HTTPException(409) if it can't proceed --
     unresolved file-mode conflicts, or a stale DB-mode revision."""
@@ -1818,15 +1902,22 @@ def perform_publish(payload: LookupPayload) -> dict[str, object]:
             )
         except lookup_db.PublishConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        backup_path = evidence_backup_path = None
+        if _MIRROR_FILES:
+            backup_path, evidence_backup_path = _mirror_publish_to_files(
+                payload.rows, db_result["evidence"], db_result["data_revision"], suffix
+            )
         return {
             "validated": True,
             "row_count": db_result["row_count"],
             "source": "data",
             "draft_deleted": True,
             "backup_suffix": suffix,
-            # DB-mode backups are rows in the `backups` table, not files.
-            "backup_path": "",
-            "evidence_backup_path": "",
+            # DB-mode backups are rows in the `backups` table, not files --
+            # unless file mirroring is on, in which case these are real paths.
+            "backup_path": str(backup_path) if backup_path else "",
+            "evidence_backup_path": str(evidence_backup_path) if evidence_backup_path else "",
             "evidence": db_result["evidence"],
             "data_revision": db_result["data_revision"],
         }
@@ -1882,6 +1973,7 @@ async def refresh_lookup_row(payload: RowRefreshRequest) -> dict[str, object]:
     evidence_by_os: dict[str, object] = {}
     await asyncio.to_thread(refresh_rows_lifecycle_chunk, [row], evidence_by_os)
     os_key = str(row.get("os_string") or "").strip()
+    _attach_matched_by([row], evidence_by_os)
     return {"row": row, "evidence_entry": evidence_by_os.get(os_key, {})}
 
 
@@ -1889,9 +1981,11 @@ async def refresh_lookup_row(payload: RowRefreshRequest) -> dict[str, object]:
 async def refresh_lookup_rows(payload: RowsRefreshRequest) -> dict[str, object]:
     rows = [item.model_dump() for item in payload.rows]
     evidence_by_os: dict[str, object] = {}
+    product_cache: dict[str, dict[str, object]] = {}
     for start in range(0, len(rows), LOOKUP_REFRESH_CHUNK_SIZE):
         chunk = rows[start : start + LOOKUP_REFRESH_CHUNK_SIZE]
-        await asyncio.to_thread(refresh_rows_lifecycle_chunk, chunk, evidence_by_os)
+        await asyncio.to_thread(refresh_rows_lifecycle_chunk, chunk, evidence_by_os, product_cache)
+    _attach_matched_by(rows, evidence_by_os)
     return {"rows": rows, "evidence_by_os": evidence_by_os}
 
 

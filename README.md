@@ -80,6 +80,7 @@ Never commit `.env` (it is gitignored). For Portainer, set the same variables in
 |----------|-----------|---------|---------|
 | `DATABASE_URL` | **Yes** for vendor lookups | Compose: `postgresql://oshealth:oshealth@db:5432/oshealth` | PostgreSQL connection string, used unconditionally for vendor-lookup caches |
 | `LOOKUP_DB_ENABLED` | Optional — explicit opt-in | *(unset / false)* | Set to `true` to **also** move the published lookup + draft into Postgres (requires `DATABASE_URL` too). Leaving it unset keeps the lookup data as local files even if `DATABASE_URL` is set for vendor caches — see [Where the lookup data lives](#where-the-lookup-data-lives-file-mode-vs-shared-postgres) |
+| `LOOKUP_DB_MIRROR_FILES` | Optional, DB-mode only | *(unset / false)* | Set to `true` to **also** write `_data/eol_lookup.csv` / `_data/eol_lookup_evidence.json` / `_data/.revision` on every publish, alongside Postgres. Ignored unless `LOOKUP_DB_ENABLED=true`. See the caveat under [Where the lookup data lives](#where-the-lookup-data-lives-file-mode-vs-shared-postgres) before enabling this with more than one app instance sharing the database |
 | `POSTGRES_USER` | Compose `db` service | `oshealth` | Postgres username |
 | `POSTGRES_PASSWORD` | Compose `db` service | `oshealth` | Postgres password |
 | `POSTGRES_DB` | Compose `db` service | `oshealth` | Postgres database name |
@@ -177,6 +178,10 @@ python lookup_db.py
 (Reads the current `_data/eol_lookup.csv` + evidence and writes them into the `lookup` schema's `data` source. Run this once, from an environment where `DATABASE_URL` is already set and `_data/` still has the file-mode content you want to keep — then set `LOOKUP_DB_ENABLED=true` on the deployment before it starts serving traffic, so it actually reads the lookup from Postgres instead of falling back to `_data/`.)
 
 **Non-goals, on purpose**: switching to Postgres does *not* turn Draft into a per-user thing — there's still exactly one shared Draft, same as file mode, just relocated. Two people editing that one shared Draft at the same time can still step on each other's in-progress edits (that's a separate, larger feature if it's ever wanted). Also, don't mix modes against the same deployment — pick file mode or Postgres mode per environment; running both against the same `_data/` would silently fork into two unrelated stores.
+
+**Keeping `_data/` updated too (`LOOKUP_DB_MIRROR_FILES=true`)**: by default, once `LOOKUP_DB_ENABLED=true`, `_data/eol_lookup.csv` and `_data/eol_lookup_evidence.json` are never read from **or** written to again — Postgres is the only source of truth. Set `LOOKUP_DB_MIRROR_FILES=true` (in addition to `LOOKUP_DB_ENABLED=true`) if you want every successful publish to *also* overwrite those files (and `_data/.revision`), e.g. to keep a git-trackable snapshot alongside a single-instance deployment. It backs up the previous file contents first, exactly like the file-mode publish path does.
+
+This is meaningful only for a single app instance talking to that database. If more than one instance shares the same Postgres (several people each running their own container against one remote database), each instance's mirrored files reflect only the publishes *that instance* performed — they go stale the moment a different instance publishes, since nothing pushes a copy to the others. Postgres itself never drifts (it's still the one real source of truth either way); only the optional file mirror can mislead you into thinking a stale local CSV is current. Leave it off unless you specifically want that git-trackable file for a single instance.
 
 ---
 
