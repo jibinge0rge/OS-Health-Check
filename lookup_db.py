@@ -20,15 +20,16 @@ same idiom tests/test_layer23_switch.py already uses for the vendor caches.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
 
 import psycopg
 from psycopg import sql
+from psycopg.conninfo import conninfo_to_dict
 
-from vendor_lookups.db import get_pool
+from vendor_lookups.db import get_database_url, get_pool
 
 SCHEMA = "lookup"
 
@@ -152,7 +153,13 @@ def _row_tuple(source: str, index: int, row: dict[str, object]) -> tuple:
     )
 
 
-def _insert_rows(connection: psycopg.Connection[Any], source: str, rows: list[dict[str, object]]) -> None:
+def _insert_rows(
+    connection: psycopg.Connection[Any],
+    source: str,
+    rows: list[dict[str, object]],
+    on_progress: Callable[[int, int], None] | None = None,
+) -> None:
+    total = len(rows)
     for index, row in enumerate(rows):
         connection.execute(
             "INSERT INTO rows (source, row_order, os_string, normalized_os_detailed_name, "
@@ -160,6 +167,12 @@ def _insert_rows(connection: psycopg.Connection[Any], source: str, rows: list[di
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             _row_tuple(source, index, row),
         )
+        # One INSERT per row means one network round trip per row -- against
+        # a remote Postgres (e.g. Aiven) that's the slow part by far, so this
+        # is opt-in (only the CLI import passes on_progress) rather than
+        # printing on every normal app request that saves rows.
+        if on_progress and ((index + 1) % 250 == 0 or index + 1 == total):
+            on_progress(index + 1, total)
 
 
 def db_source_exists(source: str, schema: str = SCHEMA) -> bool:
@@ -181,7 +194,12 @@ def db_load_rows(source: str, schema: str = SCHEMA) -> list[dict[str, str]]:
         return [dict(row) for row in cursor.fetchall()]
 
 
-def db_save_rows(rows: list[dict[str, object]], source: str, schema: str = SCHEMA) -> None:
+def db_save_rows(
+    rows: list[dict[str, object]],
+    source: str,
+    schema: str = SCHEMA,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> None:
     """Delete+bulk-insert for this source in one transaction. Stamps
     draft_based_on_revision the first time draft rows are written for a
     fresh draft (the DB-mode equivalent of file mode's base-snapshot
@@ -193,7 +211,7 @@ def db_save_rows(rows: list[dict[str, object]], source: str, schema: str = SCHEM
             if existing is None:
                 _set_meta(connection, "draft_based_on_revision", str(_data_revision(connection)))
         connection.execute("DELETE FROM rows WHERE source = %s", (source,))
-        _insert_rows(connection, source, rows)
+        _insert_rows(connection, source, rows, on_progress=on_progress)
 
 
 def db_load_evidence(source: str, schema: str = SCHEMA) -> dict[str, object]:
@@ -306,16 +324,54 @@ def db_published_at(schema: str = SCHEMA) -> str:
         return _get_meta(connection, "published_at", "")
 
 
+def _describe_target() -> str:
+    try:
+        info = conninfo_to_dict(get_database_url())
+        return f"{info.get('host', '?')}:{info.get('port', '5432')}/{info.get('dbname', '?')}"
+    except Exception:
+        return "Postgres"
+
+
 def _import_from_files() -> None:
     """One-time migration: loads the current file-mode _data/eol_lookup.csv
     + evidence sidecar into this DB's 'data' source, for cutting a real
     deployment over from file-mode to DB-mode without losing what's already
     published. Run directly: `python lookup_db.py`."""
+    import time
+
     import app  # local import -- avoids a circular import when app.py imports this module
+
+    if app._USE_DB:
+        # app.load_rows("data") below would silently read from (likely empty)
+        # Postgres instead of the local CSV if LOOKUP_DB_ENABLED is already
+        # on -- exactly how a prior run of this script quietly "imported" 0
+        # rows. Fail loudly instead of repeating that.
+        raise SystemExit(
+            "LOOKUP_DB_ENABLED is already set -- unset it (keep DATABASE_URL), "
+            "rerun this script so it reads the local CSV instead of Postgres, "
+            "then set LOOKUP_DB_ENABLED=true again afterward."
+        )
+
+    target = _describe_target()
+    print(f"Connecting to {target} ...")
+    t0 = time.monotonic()
+    try:
+        with get_pool().connection() as connection:
+            connection.execute("SELECT 1")
+    except Exception as exc:
+        print(f"Connection failed after {time.monotonic() - t0:.2f}s: {exc}")
+        raise
+    print(f"Connected in {time.monotonic() - t0:.2f}s.")
 
     rows = app.load_rows("data") if app.DATA_PATH.exists() else []
     evidence = app.load_evidence("data")
-    db_save_rows(rows, "data")
+
+    print(f"Importing {len(rows)} row(s) into schema '{SCHEMA}' at {target} ...")
+
+    def report(done: int, total: int) -> None:
+        print(f"  {done}/{total} row(s) inserted ({done * 100 // total if total else 100}%)")
+
+    db_save_rows(rows, "data", on_progress=report)
     db_save_evidence(evidence, "data")
     print(f"Imported {len(rows)} row(s) into Postgres schema '{SCHEMA}'.")
 
