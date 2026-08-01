@@ -37,9 +37,15 @@
 
 .kpi-row { display: flex; gap: 10px; margin: 14px 0; }
 .kpi-tile { flex: 1 1 0; border: 1px solid var(--c-border); border-radius: 4px; padding: 10px 12px; }
-.kpi-label { display: block; font: 600 10px/14px var(--font-sans); letter-spacing: .06em; text-transform: uppercase; color: var(--fg3); }
+/* min-height reserves room for a label that wraps to 2 lines (e.g. "STILL
+   UNRESOLVED" in a 4-tile row) so kpi-value still lines up across every
+   tile regardless of how many lines its own label took. */
+.kpi-label { display: block; font: 600 10px/14px var(--font-sans); letter-spacing: .06em; text-transform: uppercase; color: var(--fg3); min-height: 28px; }
 .kpi-value { display: block; font: 700 20px/24px var(--font-sans); color: var(--fg1); font-variant-numeric: tabular-nums; margin-top: 4px; }
 .kpi-value.warn { color: var(--warning); }
+
+.review-ack-block { margin-bottom: 14px; padding: 10px 12px; border: 1px solid var(--warning-border); border-radius: 6px; background: var(--warning-bg); }
+.review-ack-block .conflict-warning { margin-bottom: 8px; }
 
 .conflict-resolver { margin-bottom: 16px; padding-bottom: 14px; border-bottom: 1px solid var(--c-border); }
 .conflict-warning { color: var(--warning); font-weight: 600; margin-bottom: 10px; }

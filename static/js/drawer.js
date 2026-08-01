@@ -51,6 +51,27 @@ export function initDrawer(cb) {
   document.getElementById("drawer-same-as-os-btn").addEventListener("click", () => currentRow && handlers.onSameAsOs?.(currentRow));
   document.getElementById("drawer-rerun-btn").addEventListener("click", () => currentRow && handlers.onRerun?.(currentRow));
   document.getElementById("drawer-revert-btn").addEventListener("click", () => currentRow && handlers.onRevert?.(currentRow));
+  document.getElementById("drawer-toggle-reviewed-btn").addEventListener("click", () => currentRow && handlers.onToggleReviewed?.(currentRow));
+}
+
+function updateReviewedButton(row) {
+  const btn = document.getElementById("drawer-toggle-reviewed-btn");
+  // Only a changed (new/edited) row needs reviewing -- a row identical to
+  // published Data has nothing to validate.
+  const changed = handlers.isChanged?.(row) ?? true;
+  btn.hidden = !changed;
+  if (!changed) return;
+  const reviewed = handlers.isReviewed?.(row) ?? false;
+  btn.textContent = reviewed ? "Mark as not reviewed" : "Mark as reviewed";
+  btn.classList.toggle("reviewed", reviewed);
+}
+
+/** Called after the reviewed flag changes elsewhere (table toggle, bulk
+ * action) so the drawer's own button reflects it without a full re-open
+ * (which would needlessly re-fetch evidence over the network). */
+export function refreshDrawerReviewedState(row) {
+  if (!isDrawerOpenFor(row)) return;
+  updateReviewedButton(row);
 }
 
 export function isDrawerOpenFor(row) {
@@ -69,6 +90,7 @@ export async function openDrawer(row) {
   panel.dataset.editable = isDraft() ? "true" : "false";
   titleEl.textContent = row.os_string || "(blank)";
   actionsEl.hidden = !isDraft();
+  if (isDraft()) updateReviewedButton(row);
 
   const editable = isDraft();
   panel.querySelectorAll("[data-drawer-field]").forEach((input) => {

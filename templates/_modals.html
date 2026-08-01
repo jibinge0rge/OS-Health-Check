@@ -83,6 +83,15 @@
         <div class="kpi-tile"><span class="kpi-label">NEW ROWS</span><span class="kpi-value" id="kpi-new">0</span></div>
         <div class="kpi-tile"><span class="kpi-label">EDITED ROWS</span><span class="kpi-value" id="kpi-edited">0</span></div>
         <div class="kpi-tile"><span class="kpi-label">STILL UNRESOLVED</span><span class="kpi-value warn" id="kpi-unresolved">0</span></div>
+        <div class="kpi-tile"><span class="kpi-label">NOT REVIEWED</span><span class="kpi-value warn" id="kpi-not-reviewed">0</span></div>
+      </div>
+      <div class="review-ack-block" id="review-ack-block" hidden>
+        <p class="modal-note conflict-warning" id="review-warning-note"></p>
+        <label class="checkbox-chip" id="review-ack-chip">
+          <input type="checkbox" id="review-ack-checkbox" />
+          <span class="box"></span>
+          Publish anyway without reviewing every row
+        </label>
       </div>
       <label class="field-label">Backup name suffix (optional)</label>
       <input type="text" class="text-input" id="backup-suffix-input" placeholder="pre-q3-refresh" />

@@ -83,7 +83,7 @@ VENDOR_SOURCES: dict[str, VendorSource] = {
         "sync": eosl_sync_os_database,
         "lookup_batch": lookup_os_eosl_batch,
         "lookup_one": lookup_os_eosl,
-        "uses_keywords": False,
+        "uses_keywords": True,
         "viewer_headers": {
             "product": "Product",
             "release": "Release",
@@ -103,7 +103,7 @@ VENDOR_SOURCES: dict[str, VendorSource] = {
         "sync": sync_microsoft_lifecycle_database,
         "lookup_batch": lookup_os_microsoft_lifecycle_batch,
         "lookup_one": lookup_os_microsoft_lifecycle,
-        "uses_keywords": False,
+        "uses_keywords": True,
         "viewer_headers": {
             "product": "Product Family",
             "release": "Product",
@@ -417,9 +417,9 @@ def _empty_vendor_result(
 def lookup_vendor_batch(items: list[dict[str, str]]) -> list[dict[str, str]]:
     """Vendor fallback after endoflife.date.
 
-    Fixed order: eosl → junos → suse → layer23-switch → router-switch.
-    Specialists (junos/suse/layer23-switch/router-switch) only run when enabled and keywords match.
-    eosl runs when enabled (no keyword gate).
+    Fixed order: eosl → microsoft-lifecycle → junos → suse → layer23-switch → router-switch.
+    Each source only runs when enabled and (if it has keywords configured) a keyword matches;
+    an empty keyword list means the source is always eligible when enabled.
     """
     settings = load_settings()
     results: list[dict[str, str]] = []

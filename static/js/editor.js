@@ -5,7 +5,7 @@ import { api, streams } from "./api.js";
 import { iconMarkup } from "./icons.js";
 import { parseRowDate, classifyDateChip, formatRelative } from "./date_utils.js";
 import { initFiltersPanel, toggleFiltersPanel, matchesColumnFilters, activeFilterCount, clearAllColumnFilters } from "./filters_panel.js";
-import { initDrawer, openDrawer, closeDrawer, isDrawerOpenFor, refreshDrawerFields } from "./drawer.js";
+import { initDrawer, openDrawer, closeDrawer, isDrawerOpenFor, refreshDrawerFields, refreshDrawerReviewedState } from "./drawer.js";
 import { openModal, closeModal, showToast, runProgress } from "./modals.js";
 import { getTasks, hasActive } from "./tasks.js";
 
@@ -58,6 +58,9 @@ export async function initEditor() {
     onSameAsOs: (row) => { applySameAsOs(row); scheduleAutosave(); refreshView(); },
     onRerun: (row) => rerunRow(row),
     onRevert: (row) => { revertRow(row); scheduleAutosave(); refreshView(); },
+    onToggleReviewed: (row) => { toggleRowReviewed(row); scheduleAutosave(); refreshDrawerReviewedState(row); refreshView(); },
+    isReviewed: (row) => isRowReviewed(row),
+    isChanged: (row) => isChangedRow(row),
   });
 
   el.segData.addEventListener("click", () => switchSource("data"));
@@ -82,6 +85,8 @@ export async function initEditor() {
   document.getElementById("bulk-refresh-btn").addEventListener("click", openRefreshModal);
   document.getElementById("bulk-same-as-os-btn").addEventListener("click", bulkSameAsOs);
   document.getElementById("bulk-revert-btn").addEventListener("click", bulkRevert);
+  document.getElementById("bulk-mark-reviewed-btn").addEventListener("click", bulkMarkReviewed);
+  document.getElementById("bulk-mark-unreviewed-btn").addEventListener("click", bulkMarkUnreviewed);
   document.getElementById("bulk-export-btn").addEventListener("click", () => exportRows(selectedRows()));
   document.getElementById("bulk-delete-btn").addEventListener("click", bulkDelete);
   document.getElementById("bulk-clear-btn").addEventListener("click", clearSelection);
@@ -255,6 +260,29 @@ function revertRow(row) {
   CSV_HEADERS.forEach((header) => { if (header !== "os_string") row[header] = baseline[header]; });
 }
 
+// ---------- Reviewed flag ----------
+// Stored as a sibling key inside the evidence sidecar's by_os[os_string]
+// entry (alongside the detailed/normalized/eol lookup slots) rather than as
+// a CSV column -- it rides along with the rest of the evidence through
+// autosave, pruning and the 3-way publish merge for free, with no schema
+// migration needed (see row_matched_by for the same pattern already in use).
+function evidenceKey(row) { return String(row.os_string || "").trim(); }
+
+function isRowReviewed(row) {
+  return Boolean(state.evidence?.by_os?.[evidenceKey(row)]?.reviewed);
+}
+
+function setRowReviewed(row, value) {
+  const key = evidenceKey(row);
+  if (!key) return;
+  state.evidence.by_os = state.evidence.by_os || {};
+  state.evidence.by_os[key] = { ...(state.evidence.by_os[key] || {}), reviewed: value };
+}
+
+function toggleRowReviewed(row) {
+  setRowReviewed(row, !isRowReviewed(row));
+}
+
 async function rerunRow(row) {
   showToast("Re-running lookup…");
   try {
@@ -328,6 +356,24 @@ function bulkRevert() {
   showToast(`Reverted ${targets.length} row(s) to Data.`);
 }
 
+function bulkMarkReviewed() {
+  const targets = selectedRows();
+  if (!targets.length) return;
+  targets.forEach((row) => setRowReviewed(row, true));
+  scheduleAutosave();
+  refreshView();
+  showToast(`Marked ${targets.length} row(s) as reviewed.`);
+}
+
+function bulkMarkUnreviewed() {
+  const targets = selectedRows();
+  if (!targets.length) return;
+  targets.forEach((row) => setRowReviewed(row, false));
+  scheduleAutosave();
+  refreshView();
+  showToast(`Marked ${targets.length} row(s) as not reviewed.`);
+}
+
 function bulkDelete() {
   const targets = selectedRows();
   if (!targets.length) return;
@@ -349,12 +395,21 @@ const QUICK_CHIPS = [
   ["nodates", "No dates"],
   ["ambiguous", "Ambiguous"],
   ["changed", "Changed"],
+  ["unreviewed", "Not reviewed"],
 ];
 
 function isAmbiguousRow(row) {
   const d = String(row.normalized_os_detailed_name || "").trim().toLowerCase();
   const n = String(row.normalized_os || "").trim().toLowerCase();
   return d === "ambiguous os" || n === "ambiguous os";
+}
+
+// Only rows that are actually new/edited need reviewing -- a row that's
+// identical to published Data doesn't need re-validating just because it's
+// sitting in the draft.
+function isChangedRow(row) {
+  const key = dedupeKey(row.os_string);
+  return addedSet.has(key) || editedSet.has(key);
 }
 
 function rowMatchesChip(row, chip) {
@@ -364,7 +419,8 @@ function rowMatchesChip(row, chip) {
     case "eoas": { const d = parseRowDate(row.eoas_date); return d && d.getTime() < Date.now(); }
     case "nodates": return !String(row.eol_date || "").trim() && !String(row.eoas_date || "").trim();
     case "ambiguous": return isAmbiguousRow(row);
-    case "changed": return isDraft() && (addedSet.has(dedupeKey(row.os_string)) || editedSet.has(dedupeKey(row.os_string)));
+    case "changed": return isDraft() && isChangedRow(row);
+    case "unreviewed": return isDraft() && isChangedRow(row) && !isRowReviewed(row);
     default: return true;
   }
 }
@@ -378,7 +434,7 @@ function quickChipCounts() {
 
 function renderQuickChips() {
   const counts = quickChipCounts();
-  const chips = isDraft() ? QUICK_CHIPS : QUICK_CHIPS.filter(([key]) => key !== "changed");
+  const chips = isDraft() ? QUICK_CHIPS : QUICK_CHIPS.filter(([key]) => key !== "changed" && key !== "unreviewed");
   el.quickChips.innerHTML = chips
     .map(([key, label]) => `
       <button type="button" class="quick-chip ${state.chip === key ? "active" : ""}" data-chip="${key}">
@@ -616,11 +672,19 @@ function renderRow(row) {
     else if (editedSet.has(key)) flag = `<span class="row-flag edited">EDITED</span>`;
   }
 
+  // Only rows that actually changed need a review control -- an unchanged
+  // row has nothing new to validate against published Data.
+  const showReviewToggle = isDraft() && isChangedRow(row);
+  const reviewed = showReviewToggle && isRowReviewed(row);
+  const reviewToggleHtml = showReviewToggle
+    ? `<button type="button" class="review-toggle ${reviewed ? "reviewed" : ""}" data-role="review" title="${reviewed ? "Mark as not reviewed" : "Mark as reviewed"}">${reviewed ? iconMarkup("check", { size: 9 }) + " Reviewed" : "Review"}</button>`
+    : "";
+
   const cells = [];
   if (isDraft()) {
     cells.push(`<span class="row-checkbox ${state.selected.has(row.os_string) ? "checked" : ""}" data-role="select">${iconMarkup("check", { size: 10 })}</span>`);
   }
-  cells.push(`<div class="cell-os">${flag}<span class="os-value" title="${escapeHtml(row.os_string)}">${escapeHtml(row.os_string)}</span></div>`);
+  cells.push(`<div class="cell-os">${flag}<span class="os-value" title="${escapeHtml(row.os_string)}">${escapeHtml(row.os_string)}</span>${reviewToggleHtml}</div>`);
   cells.push(textCellHtml(row.normalized_os_detailed_name));
   cells.push(textCellHtml(row.normalized_os));
   cells.push(dateCellHtml(row, "eol_date", "eol"));
@@ -630,7 +694,7 @@ function renderRow(row) {
   wrap.innerHTML = cells.join("");
 
   wrap.addEventListener("click", (event) => {
-    if (event.target.closest("[data-role='select']")) return;
+    if (event.target.closest("[data-role='select']") || event.target.closest("[data-role='review']")) return;
     // While a selection is active, clicking a row is presumed to be part of
     // building/adjusting that selection (a near-miss on the checkbox) --
     // don't also pop the drawer open. Only open it when nothing is selected.
@@ -645,6 +709,15 @@ function renderRow(row) {
     if (state.selected.has(row.os_string)) state.selected.delete(row.os_string);
     else state.selected.add(row.os_string);
     updateBulkBar();
+    renderTable();
+  });
+
+  const reviewEl = wrap.querySelector("[data-role='review']");
+  reviewEl?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleRowReviewed(row);
+    scheduleAutosave();
+    refreshDrawerReviewedState(row);
     renderTable();
   });
 
@@ -919,9 +992,37 @@ async function openValidateModal() {
   // presumed more current).
   const resolutions = Object.fromEntries(conflicts.map((c) => [c.os_string, "theirs"]));
 
+  // Only rows that actually changed (new/edited) need reviewing -- an
+  // unchanged row has nothing new to validate against published Data. Uses
+  // this fetch's own added/edited lists rather than the module-level
+  // addedSet/editedSet so it can't be momentarily stale relative to `d`.
+  const changedKeys = new Set([...(d.added || []), ...(d.edited || [])].map(dedupeKey));
+  const changedRows = state.draftRows.filter((row) => changedKeys.has(dedupeKey(row.os_string)));
+  const totalChanged = changedRows.length;
+  const notReviewedCount = changedRows.filter((row) => !isRowReviewed(row)).length;
+  document.getElementById("kpi-not-reviewed").textContent = String(notReviewedCount);
+
+  const reviewAckBlock = document.getElementById("review-ack-block");
+  const reviewAckChip = document.getElementById("review-ack-chip");
+  const reviewAckCheckbox = document.getElementById("review-ack-checkbox");
+  let reviewAcknowledged = notReviewedCount === 0;
+  reviewAckBlock.hidden = notReviewedCount === 0;
+  reviewAckChip.classList.remove("active");
+  reviewAckCheckbox.checked = false;
+  document.getElementById("review-warning-note").textContent =
+    `${notReviewedCount} of ${totalChanged} changed row(s) haven't been marked reviewed.`;
+  reviewAckChip.onclick = (event) => {
+    event.preventDefault();
+    reviewAcknowledged = !reviewAcknowledged;
+    reviewAckCheckbox.checked = reviewAcknowledged;
+    reviewAckChip.classList.toggle("active", reviewAcknowledged);
+    updateConfirmState();
+  };
+
   function updateConfirmState() {
     const allResolved = conflicts.every((c) => resolutions[c.os_string] === "mine" || resolutions[c.os_string] === "theirs");
-    confirmBtn.disabled = conflicts.length > 0 && !allResolved;
+    const reviewOk = notReviewedCount === 0 || reviewAcknowledged;
+    confirmBtn.disabled = (conflicts.length > 0 && !allResolved) || !reviewOk;
     confirmBtn.textContent = conflicts.length > 0 ? "Resolve & publish" : "Validate and publish";
   }
 
