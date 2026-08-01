@@ -142,14 +142,20 @@ function openUpdateModal(sourceId) {
   document.getElementById("vendor-update-title").textContent = isAll
     ? "Update all vendor lifecycle databases?"
     : `Update the ${sources.find((s) => s.id === sourceId)?.label || sourceId} local vendor lifecycle database?`;
-  document.getElementById("modal-vendor-update-body").innerHTML =
-    `<p class="modal-note">This refreshes the local vendor lifecycle database only. It does not write dates into the lookup — run Refresh EOL/EOAS afterward to pull new data into rows.</p>`;
+  const enabledCount = sources.filter((s) => s.enabled).length;
+  document.getElementById("modal-vendor-update-body").innerHTML = isAll
+    ? `<p class="modal-note">This refreshes the local vendor lifecycle database for each <strong>enabled</strong> source only (${enabledCount} of ${sources.length}) — disabled sources in Settings are skipped. It does not write dates into the lookup — run Refresh EOL/EOAS afterward to pull new data into rows.</p>`
+    : `<p class="modal-note">This refreshes the local vendor lifecycle database only. It does not write dates into the lookup — run Refresh EOL/EOAS afterward to pull new data into rows.</p>`;
   openModal("modal-vendor-update");
 
   const bodyEl = document.getElementById("modal-vendor-update-body");
   const footerEl = document.getElementById("modal-vendor-update-footer");
   document.getElementById("vendor-update-confirm-btn").onclick = async () => {
-    const targets = isAll ? sources.map((s) => s.id) : [sourceId];
+    const targets = isAll ? sources.filter((s) => s.enabled).map((s) => s.id) : [sourceId];
+    if (isAll && !targets.length) {
+      showToast("No enabled vendor lookups to update — enable one in Settings first.");
+      return;
+    }
     let batchCancelled = false;
     for (const id of targets) {
       if (batchCancelled) break;

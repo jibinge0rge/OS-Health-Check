@@ -3,13 +3,18 @@
 import { api, streams } from "./api.js";
 import { openModal, promptModal, runProgress, showToast } from "./modals.js";
 
+// Shown in the filename field's placeholder, and saved as the actual value
+// server-side (update_azure_settings/update_aws_settings) when that field is
+// left blank -- keep these two in sync.
+const DEFAULT_UPLOAD_FILENAME = "manual_eol_lookup.csv";
+
 const PROVIDERS = {
   azure: {
     label: "Azure Blob",
     fields: [
-      { key: "account_name", label: "Storage account" },
-      { key: "container_name", label: "Container" },
-      { key: "blob_name", label: "Blob path" },
+      { key: "account_name", label: "Storage account", placeholder: "e.g. mystorageaccount" },
+      { key: "container_name", label: "Container", placeholder: "e.g. lookup-exports" },
+      { key: "blob_name", label: "Blob path", placeholder: `Optional — defaults to ${DEFAULT_UPLOAD_FILENAME}` },
     ],
     authLabel: "Azure CLI (az login)",
     get: api.getAzureSettings, put: api.putAzureSettings, uploadStream: streams.azureUpload,
@@ -17,9 +22,9 @@ const PROVIDERS = {
   aws: {
     label: "AWS S3",
     fields: [
-      { key: "bucket", label: "Bucket" },
-      { key: "region", label: "Region" },
-      { key: "key", label: "Key" },
+      { key: "bucket", label: "Bucket", placeholder: "e.g. my-lookup-bucket" },
+      { key: "region", label: "Region", placeholder: "e.g. us-east-1" },
+      { key: "key", label: "Key", placeholder: `Optional — defaults to ${DEFAULT_UPLOAD_FILENAME}` },
     ],
     authLabel: "AWS CLI (aws configure)",
     get: api.getAwsSettings, put: api.putAwsSettings, uploadStream: streams.awsUpload,
@@ -83,7 +88,7 @@ function renderProfileUI() {
 
   const fieldsWrap = document.getElementById("profile-fields");
   fieldsWrap.innerHTML = provider.fields
-    .map((f) => `<div class="profile-field"><label>${f.label}</label><input type="text" data-field="${f.key}" value="${escapeHtml(profile?.[f.key] || "")}" /></div>`)
+    .map((f) => `<div class="profile-field"><label>${f.label}</label><input type="text" data-field="${f.key}" placeholder="${escapeHtml(f.placeholder || "")}" value="${escapeHtml(profile?.[f.key] || "")}" /></div>`)
     .join("") + `<div class="profile-field"><label>Auth</label><input type="text" value="${provider.authLabel}" disabled /></div>`;
 
   const hasProfile = Boolean(profile);

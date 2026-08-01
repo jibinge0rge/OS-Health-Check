@@ -141,6 +141,9 @@ CSV_HEADERS = [
     "eoas_status",
 ]
 STATIC_DIR = BASE_DIR / "static"
+# Destination filename for Azure/AWS deploy profiles when the user leaves the
+# blob path / key field blank -- keep in sync with deploy.js's placeholder.
+DEFAULT_UPLOAD_FILENAME = "manual_eol_lookup.csv"
 
 
 def static_v(rel_path: str) -> str:
@@ -2202,11 +2205,13 @@ async def update_azure_settings(payload: AzureSettingsSaveRequest) -> AzureSetti
     for profile in payload.profiles:
         if not profile.name:
             raise HTTPException(status_code=400, detail="Each Azure profile needs a name.")
-        if not profile.account_name or not profile.container_name or not profile.blob_name:
+        if not profile.account_name or not profile.container_name:
             raise HTTPException(
                 status_code=400,
-                detail=f"Profile '{profile.name}' is incomplete. Fill account, container, and blob path.",
+                detail=f"Profile '{profile.name}' is incomplete. Fill account and container.",
             )
+        if not profile.blob_name:
+            profile.blob_name = DEFAULT_UPLOAD_FILENAME
         if profile.blob_name.startswith("/"):
             raise HTTPException(
                 status_code=400,
@@ -2245,11 +2250,13 @@ async def update_aws_settings(payload: AwsSettingsSaveRequest) -> AwsSettingsSto
     for profile in payload.profiles:
         if not profile.name:
             raise HTTPException(status_code=400, detail="Each AWS profile needs a name.")
-        if not profile.bucket or not profile.key:
+        if not profile.bucket:
             raise HTTPException(
                 status_code=400,
-                detail=f"Profile '{profile.name}' is incomplete. Fill bucket and key.",
+                detail=f"Profile '{profile.name}' is incomplete. Fill bucket.",
             )
+        if not profile.key:
+            profile.key = DEFAULT_UPLOAD_FILENAME
     return save_aws_settings_store(
         AwsSettingsStore(active_profile_id=payload.active_profile_id, profiles=payload.profiles)
     )
