@@ -324,7 +324,9 @@ def db_published_at(schema: str = SCHEMA) -> str:
         return _get_meta(connection, "published_at", "")
 
 
-def _describe_target() -> str:
+def describe_target() -> str:
+    """host:port/dbname parsed from DATABASE_URL, never the password -- safe
+    to show in the CLI import output or the app's storage-mode indicator."""
     try:
         info = conninfo_to_dict(get_database_url())
         return f"{info.get('host', '?')}:{info.get('port', '5432')}/{info.get('dbname', '?')}"
@@ -352,7 +354,7 @@ def _import_from_files() -> None:
             "then set LOOKUP_DB_ENABLED=true again afterward."
         )
 
-    target = _describe_target()
+    target = describe_target()
     print(f"Connecting to {target} ...")
     t0 = time.monotonic()
     try:

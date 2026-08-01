@@ -243,3 +243,6 @@ a { color: inherit; }
   border: 1px solid var(--c-border);
   color: var(--fg3); background: var(--c-raised);
 }
+
+.storage-chip.file { color: var(--fg3); border-color: var(--c-border); background: var(--c-raised); }
+.storage-chip.postgres { color: var(--brand); border-color: var(--brand); background: var(--tint); }

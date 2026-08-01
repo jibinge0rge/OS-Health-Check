@@ -115,6 +115,21 @@ async function loadData() {
   el.publishedAtMeta.textContent = state.publishedAt
     ? `Lookup published ${formatPublishedAt(state.publishedAt)}`
     : "Lookup published —";
+  renderStorageChip(data.storage_mode, data.storage_target);
+}
+
+function renderStorageChip(mode, target) {
+  const chip = document.getElementById("storage-mode-chip");
+  chip.hidden = false;
+  chip.classList.toggle("postgres", mode === "postgres");
+  chip.classList.toggle("file", mode !== "postgres");
+  if (mode === "postgres") {
+    chip.textContent = "Shared Database";
+    chip.title = `The published lookup and draft are stored in a shared database (${target || "unknown host"}), not on this machine.`;
+  } else {
+    chip.textContent = "Local files";
+    chip.title = "The published lookup and draft are stored as local files on this machine, not shared with other instances.";
+  }
 }
 
 function formatPublishedAt(iso) {

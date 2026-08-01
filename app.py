@@ -1742,7 +1742,12 @@ async def get_lookup(source: str = "data") -> dict[str, object]:
         "published_at": _published_at(),
         "draft_exists": _draft_exists(),
         "data_revision": read_data_revision(),
+        "storage_mode": "postgres" if _USE_DB else "file",
     }
+    if _USE_DB:
+        # host:port/dbname only -- never the password -- so the UI can show
+        # which Postgres this instance is actually talking to.
+        result["storage_target"] = lookup_db.describe_target()
     if source.strip().lower() == "draft" and _draft_exists():
         result["based_on_revision"] = read_draft_based_on_revision()
     return result
