@@ -108,26 +108,42 @@ export async function openDrawer(row) {
   try {
     const result = await api.getRowEvidence(row.os_string, state.source);
     if (!isDrawerOpenFor(row)) return;
-    const matchedInput = panel.querySelector('[data-drawer-field="matched_by"]');
-    if (matchedInput) matchedInput.value = result.matched_by || row.matched_by || "No match";
-    if (!result.entries || !result.entries.length) {
-      evidenceListEl.innerHTML = `<p class="modal-note">No evidence recorded for this row.</p>`;
-      return;
-    }
-    evidenceListEl.innerHTML = result.entries
-      .map(
-        (entry) => `
-        <div class="evidence-entry">
-          <span class="evidence-method-chip ${entry.method === "none" ? "none" : ""}">${escapeHtml(entry.method)}</span>
-          <div class="evidence-field-name">${escapeHtml(entry.field)}</div>
-          <div class="evidence-detail">${escapeHtml(entry.detail)}</div>
-        </div>`
-      )
-      .join("");
+    renderEvidenceDetail(row, result);
   } catch (error) {
     if (!isDrawerOpenFor(row)) return;
     evidenceListEl.innerHTML = `<p class="modal-note">Couldn't load evidence: ${escapeHtml(String(error.message || error))}</p>`;
   }
+}
+
+/** Shared by openDrawer's fetch and refreshDrawerEvidence's already-in-hand
+ * result -- `detail` is {matched_by, entries} (build_evidence_entries's
+ * shape), same as GET /api/lookup/evidence returns. */
+function renderEvidenceDetail(row, detail) {
+  const matchedInput = panel.querySelector('[data-drawer-field="matched_by"]');
+  if (matchedInput) matchedInput.value = detail?.matched_by || row.matched_by || "No match";
+  if (!detail?.entries || !detail.entries.length) {
+    evidenceListEl.innerHTML = `<p class="modal-note">No evidence recorded for this row.</p>`;
+    return;
+  }
+  evidenceListEl.innerHTML = detail.entries
+    .map(
+      (entry) => `
+      <div class="evidence-entry">
+        <span class="evidence-method-chip ${entry.method === "none" ? "none" : ""}">${escapeHtml(entry.method)}</span>
+        <div class="evidence-field-name">${escapeHtml(entry.field)}</div>
+        <div class="evidence-detail">${escapeHtml(entry.detail)}</div>
+      </div>`
+    )
+    .join("");
+}
+
+/** Called after a fresh re-run/refresh already returned formatted evidence
+ * detail, so the drawer's evidence list updates immediately instead of
+ * showing whatever was loaded when it first opened -- no extra round trip,
+ * and no dependency on the (possibly debounced/off) autosave having landed. */
+export function refreshDrawerEvidence(row, detail) {
+  if (!isDrawerOpenFor(row)) return;
+  renderEvidenceDetail(row, detail);
 }
 
 export function refreshDrawerFields(row) {

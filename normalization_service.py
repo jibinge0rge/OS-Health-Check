@@ -207,6 +207,7 @@ _VENDOR_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("f5", (r"\bf5\b", r"\bbig[\s\-]?ip\b")),
     ("citrix", (r"\bcitrix\b", r"\bxenserver\b")),
     ("juniper", (r"\bjuniper\b", r"\bjunos\b")),
+    ("google", (r"\bgoogle\b", r"\bchrome\s*os\b", r"\bchromeos\b", r"\bcontainer[\s\-]?optimized\b", r"\bcos\b")),
 )
 
 

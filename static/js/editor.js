@@ -5,7 +5,7 @@ import { api, streams } from "./api.js";
 import { iconMarkup } from "./icons.js";
 import { parseRowDate, classifyDateChip, formatRelative } from "./date_utils.js";
 import { initFiltersPanel, toggleFiltersPanel, matchesColumnFilters, activeFilterCount, clearAllColumnFilters } from "./filters_panel.js";
-import { initDrawer, openDrawer, closeDrawer, isDrawerOpenFor, refreshDrawerFields, refreshDrawerReviewedState } from "./drawer.js";
+import { initDrawer, openDrawer, closeDrawer, isDrawerOpenFor, refreshDrawerFields, refreshDrawerReviewedState, refreshDrawerEvidence } from "./drawer.js";
 import { openModal, closeModal, showToast, runProgress } from "./modals.js";
 import { getTasks, hasActive } from "./tasks.js";
 
@@ -321,9 +321,21 @@ async function rerunRow(row) {
   try {
     const result = await api.refreshRow(row);
     Object.assign(row, result.row);
+    // The row's fields update above, but the evidence sidecar entry (what
+    // the drawer's "Filled from.../Retired method..." text is built from)
+    // was never applied anywhere -- it stayed whatever was last saved, so a
+    // re-run could find nothing new yet keep showing an old, now-stale
+    // evidence note (e.g. a retired "copied from row X" record) forever,
+    // even after the row's own fields plainly changed.
+    const key = evidenceKey(row);
+    if (key) {
+      state.evidence.by_os = state.evidence.by_os || {};
+      state.evidence.by_os[key] = result.evidence_entry || {};
+    }
     scheduleAutosave();
     refreshView();
     refreshDrawerFields(row);
+    refreshDrawerEvidence(row, result.evidence_detail);
     showToast("Lookup refreshed.");
   } catch (error) {
     showToast(`Re-run failed: ${error.message}`);

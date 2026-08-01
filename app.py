@@ -1981,8 +1981,14 @@ async def refresh_lookup_row(payload: RowRefreshRequest) -> dict[str, object]:
     evidence_by_os: dict[str, object] = {}
     await asyncio.to_thread(refresh_rows_lifecycle_chunk, [row], evidence_by_os)
     os_key = str(row.get("os_string") or "").strip()
+    entry = evidence_by_os.get(os_key, {})
     _attach_matched_by([row], evidence_by_os)
-    return {"row": row, "evidence_entry": evidence_by_os.get(os_key, {})}
+    # Pre-formatted the same way GET /api/lookup/evidence renders the drawer's
+    # evidence list, so the caller can update that list immediately from this
+    # response -- without it, the drawer kept showing whatever evidence text
+    # was loaded when it first opened, stale relative to what this re-run just
+    # found, until the debounced autosave landed and the drawer was reopened.
+    return {"row": row, "evidence_entry": entry, "evidence_detail": build_evidence_entries(entry, row)}
 
 
 @app.post("/api/lookup/rows/refresh")
