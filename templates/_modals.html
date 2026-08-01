@@ -4,13 +4,13 @@
     <div class="modal-header">
       <div>
         <div class="modal-eyebrow">EOL/EOAS REFRESH</div>
-        <h2 class="modal-title">Refresh lifecycle data?</h2>
+        <h2 class="modal-title">Refresh lifecycle data</h2>
       </div>
       <button class="icon-btn modal-close" type="button" data-close-modal aria-label="Close"></button>
     </div>
     <div class="modal-body" id="modal-refresh-body">
       <p id="refresh-summary"></p>
-      <p class="modal-note">Existing EOL/EOAS values on eligible rows are overwritten. Source order: endoflife.date → eosl.date → Juniper Junos → SUSE Lifecycle → Layer23-Switch EOL → Router-Switch EOL.</p>
+      <p class="modal-note">Existing EOL/EOAS values on eligible rows are overwritten. Source order: endoflife.date → eosl.date → Microsoft Lifecycle → Juniper Junos → SUSE Lifecycle → Layer23-Switch EOL → Router-Switch EOL.</p>
     </div>
     <div class="modal-footer" id="modal-refresh-footer">
       <button class="btn" type="button" data-close-modal>Cancel</button>
@@ -70,11 +70,28 @@
       <button class="icon-btn modal-close" type="button" data-close-modal aria-label="Close"></button>
     </div>
     <div class="modal-body" id="modal-validate-body">
+      <div class="conflict-resolver" id="conflict-resolver" hidden>
+        <p class="modal-note conflict-warning" id="conflict-count-note"></p>
+        <div class="conflict-bulk-row">
+          <button class="btn tertiary" type="button" id="conflict-apply-mine">Keep mine for all</button>
+          <button class="btn tertiary" type="button" id="conflict-apply-theirs">Keep theirs for all</button>
+        </div>
+        <div class="conflict-list" id="conflict-list"></div>
+      </div>
       <p class="modal-note">The current Data file and its evidence sidecar are backed up first. The draft is then written over Data and deleted.</p>
       <div class="kpi-row">
         <div class="kpi-tile"><span class="kpi-label">NEW ROWS</span><span class="kpi-value" id="kpi-new">0</span></div>
         <div class="kpi-tile"><span class="kpi-label">EDITED ROWS</span><span class="kpi-value" id="kpi-edited">0</span></div>
         <div class="kpi-tile"><span class="kpi-label">STILL UNRESOLVED</span><span class="kpi-value warn" id="kpi-unresolved">0</span></div>
+        <div class="kpi-tile"><span class="kpi-label">NOT REVIEWED</span><span class="kpi-value warn" id="kpi-not-reviewed">0</span></div>
+      </div>
+      <div class="review-ack-block" id="review-ack-block" hidden>
+        <p class="modal-note conflict-warning" id="review-warning-note"></p>
+        <label class="checkbox-chip" id="review-ack-chip">
+          <input type="checkbox" id="review-ack-checkbox" />
+          <span class="box"></span>
+          Publish anyway without reviewing every row
+        </label>
       </div>
       <label class="field-label">Backup name suffix (optional)</label>
       <input type="text" class="text-input" id="backup-suffix-input" placeholder="pre-q3-refresh" />

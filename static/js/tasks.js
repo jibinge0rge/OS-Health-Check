@@ -100,6 +100,7 @@ export function startTask({ kind, label, eventGenerator, onCancel, onComplete, o
     error: null,
     unread: false,
     cancellable,
+    cancelling: false,
     onCancel: () => onCancel?.(task.jobId),
   };
   tasks.unshift(task);
@@ -138,6 +139,23 @@ export function startTask({ kind, label, eventGenerator, onCancel, onComplete, o
           task.finishedAt = Date.now();
           task.log.push("Cancelled.");
           saveHistory();
+          notify();
+          return;
+        } else if (event.type === "conflict") {
+          // Publish found rows changed both here and in Data since the
+          // pre-check ran (or the pre-check was skipped/failed) -- rare
+          // enough that surfacing it as a plain error is an acceptable
+          // fallback; the common path resolves conflicts before this
+          // ever starts a task (see openValidateModal).
+          task.status = "error";
+          task.stage = "Failed.";
+          task.finishedAt = Date.now();
+          task.unread = true;
+          task.error = `${(event.conflicts || []).length} row(s) changed both here and in Data since you last checked. Re-open Validate & Publish to resolve them.`;
+          task.log.push(task.error);
+          saveHistory();
+          notify();
+          onError?.({ message: task.error, conflicts: event.conflicts });
           notify();
           return;
         } else if (event.type === "error") {
@@ -185,10 +203,34 @@ export function startTask({ kind, label, eventGenerator, onCancel, onComplete, o
   return task;
 }
 
+/**
+ * Marks the task as cancelling immediately (so the UI can disable its Cancel
+ * button and stop double/triple-clicks) before the cancel request -- which
+ * hits a server endpoint and can take a few seconds to actually land -- has
+ * resolved. If that request itself fails (network error, job already gone),
+ * the task is presumably still running, so `cancelling` is cleared again and
+ * the button re-enables for another try.
+ */
 export function cancelTask(id) {
   const task = getTask(id);
-  if (!task || task.status !== "running" || task.cancellable === false) return;
-  task.onCancel?.();
+  if (!task || task.status !== "running" || task.cancellable === false || task.cancelling) return;
+  task.cancelling = true;
+  notify();
+
+  let result;
+  try {
+    result = task.onCancel?.();
+  } catch (_err) {
+    task.cancelling = false;
+    notify();
+    return;
+  }
+  if (result && typeof result.then === "function") {
+    result.catch(() => {
+      task.cancelling = false;
+      notify();
+    });
+  }
 }
 
 export function dismissTask(id) {

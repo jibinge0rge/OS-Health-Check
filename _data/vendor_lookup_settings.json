@@ -4,6 +4,10 @@
       "enabled": true,
       "keywords": []
     },
+    "microsoft-lifecycle": {
+      "enabled": true,
+      "keywords": []
+    },
     "junos": {
       "enabled": true,
       "keywords": [
@@ -32,5 +36,5 @@
       ]
     }
   },
-  "updated_at": "2026-07-23T06:07:36+00:00"
+  "updated_at": "2026-08-01T03:22:04+00:00"
 }

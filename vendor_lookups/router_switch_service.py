@@ -352,7 +352,6 @@ def sync_router_switch_database(
     vendors = manufacturers or manufacturers_from_slugs(load_selected_manufacturers())
     # Persist the selection used for this sync so all clients share it.
     save_selected_manufacturers([slug for slug, _ in vendors])
-    selected_slugs = [slug for slug, _ in vendors]
     errors: list[dict[str, str]] = []
     release_total = 0
     page_total_estimate = len(vendors)  # refined as we learn page counts
@@ -367,17 +366,6 @@ def sync_router_switch_database(
 
     try:
         with _connect(schema_name) as connection:
-            # Replace only the selected manufacturers; leave others intact.
-            placeholders = ",".join(["%s"] * len(selected_slugs))
-            connection.execute(
-                f"DELETE FROM releases WHERE product_slug IN ({placeholders})",
-                selected_slugs,
-            )
-            connection.execute(
-                f"DELETE FROM products WHERE slug IN ({placeholders})",
-                selected_slugs,
-            )
-
             for vendor_index, (slug, name) in enumerate(vendors, start=1):
                 if is_cancelled():
                     cancelled = True
@@ -402,10 +390,21 @@ def sync_router_switch_database(
                 page_total_estimate = pages_done + total_pages + remaining_vendors
 
                 scraped_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                # Upsert, never delete-then-insert: _store_page below already
+                # upserts each release page by page, so a cancel mid-way
+                # through even a single manufacturer's (thousands of) pages
+                # only refreshes the pages actually fetched -- every
+                # not-yet-fetched page's prior rows, and every other
+                # manufacturer's rows, are left completely untouched.
                 connection.execute(
                     """
                     INSERT INTO products(slug, name, category, url, scraped_at)
                     VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (slug) DO UPDATE SET
+                        name = EXCLUDED.name,
+                        category = EXCLUDED.category,
+                        url = EXCLUDED.url,
+                        scraped_at = EXCLUDED.scraped_at
                     """,
                     (slug, name, "hardware", list_url, scraped_at),
                 )
@@ -892,8 +891,8 @@ def lookup_os_router_switch(
             part = _clean(row["release_name"])
             product_name = _clean(row["latest_raw"]) or part
             manufacturer = manufacturer_names.get(_clean(row["product_slug"]), "")
-            if manufacturer and _clean(os_string):
-                if not vendors_compatible(os_string, f"{manufacturer} {product_name}"):
+            if manufacturer and _clean(cleaned_name):
+                if not vendors_compatible(cleaned_name, f"{manufacturer} {product_name}"):
                     continue
             score = _score_router_switch_row(part, product_name, cleaned_name, hints)
             if cleaned_name != _clean(os_string):

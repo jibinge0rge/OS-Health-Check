@@ -33,11 +33,21 @@ function selectTab(tab) {
   document.getElementById("settings-tab-appearance").hidden = tab !== "appearance";
 }
 
+function renderRefreshOrderChips(sources) {
+  const strip = document.getElementById("settings-refresh-order-chips");
+  if (!strip) return;
+  strip.innerHTML = sources
+    .filter((s) => s.enabled)
+    .map((s) => `<span class="chip-arrow">&#8594; ${escapeHtml(s.id)}</span>`)
+    .join("");
+}
+
 async function renderVendorTab() {
   const [{ sources }, settingsPayload] = await Promise.all([
     api.vendorSources(),
     api.vendorSettingsGet().catch(() => ({ sources: {} })),
   ]);
+  renderRefreshOrderChips(sources);
   const wrap = document.getElementById("settings-vendor-cards");
   wrap.innerHTML = sources
     .map(
@@ -68,6 +78,8 @@ async function renderVendorTab() {
     card.querySelector("[data-vendor-toggle]").addEventListener("change", async (event) => {
       await api.vendorPreferences(sourceId, { enabled: event.target.checked });
       showToast(`${sourceId} ${event.target.checked ? "enabled" : "disabled"}.`);
+      const { sources: updated } = await api.vendorSources();
+      renderRefreshOrderChips(updated);
     });
     card.querySelectorAll("[data-remove-keyword]").forEach((btn) => {
       btn.addEventListener("click", async () => {

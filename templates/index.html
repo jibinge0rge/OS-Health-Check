@@ -26,6 +26,7 @@
       <span class="topbar-title">OS Health Check</span>
       <span class="topbar-subtitle">Lifecycle lookup</span>
       <div class="topbar-spacer"></div>
+      <span class="chip storage-chip" id="storage-mode-chip" hidden></span>
       <span class="topbar-meta" id="published-at-meta">Lookup published —</span>
       <div class="notif-bell-wrap">
         <button class="icon-btn topbar-bell" id="notif-bell" type="button" aria-label="Notifications">
@@ -39,6 +40,14 @@
       </div>
       <div class="topbar-avatar" id="topbar-avatar">SA</div>
     </header>
+
+    <div class="staleness-banner" id="staleness-banner" hidden>
+      <span id="staleness-banner-text"></span>
+      <div class="staleness-banner-actions">
+        <button class="btn tertiary" type="button" id="staleness-reload-btn" hidden>Reload</button>
+        <button class="icon-btn" type="button" id="staleness-dismiss-btn" aria-label="Dismiss"></button>
+      </div>
+    </div>
 
     <div class="app-body">
       <aside class="rail" id="rail">

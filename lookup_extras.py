@@ -7,11 +7,13 @@ exists in `_data/eol_lookup_evidence.json` / `_draft/eol_lookup_evidence.json`
 already used client-side in templates/index.html's
 `describeNormalizationMethod` (manual, loaded, none, fuzzy, ai, fuzzy+ai, eol,
 ambiguous) plus the vendor source ids used as `proof.eol.method` when a vendor
-cascade lookup resolved the row (eosl, junos, suse, layer23-switch,
-router-switch) or "api" for the primary endoflife.date lookup.
+cascade lookup resolved the row (eosl, microsoft-lifecycle, junos, suse,
+layer23-switch, router-switch) or "api" for the primary endoflife.date lookup.
 """
 
 from __future__ import annotations
+
+from normalization_service import AMBIGUOUS_OS
 
 CSV_HEADERS = [
     "os_string",
@@ -23,6 +25,18 @@ CSV_HEADERS = [
     "eoas_status",
 ]
 
+
+def is_ambiguous_row(row: dict) -> bool:
+    """True when a row is marked Ambiguous OS (its OS value contains '/',
+    so it could be more than one product) -- such a row must never receive
+    EOL/EOAS enrichment. There's no way to know which of the ambiguous
+    candidates a fetched date would even belong to, and querying a lifecycle
+    source with the literal text "Ambiguous OS" has produced real false
+    positives (e.g. matching an unrelated product by coincidental version
+    number overlap once the lookup falls back to the raw OS string)."""
+    return str(row.get("normalized_os_detailed_name") or "").strip().casefold() == AMBIGUOUS_OS
+
+
 # Chip set from the design README's Column filters -> Matched by section.
 # Vendor sources without a dedicated chip (layer23-switch, router-switch)
 # still get a real category value; they just fall outside the fixed chip set
@@ -30,6 +44,7 @@ CSV_HEADERS = [
 _METHOD_TO_MATCHED_BY = {
     "api": "endoflife.date",
     "eosl": "eosl.date",
+    "microsoft-lifecycle": "Microsoft Lifecycle",
     "junos": "Juniper Junos",
     "suse": "SUSE Lifecycle",
     "layer23-switch": "Layer23-Switch EOL",
@@ -39,6 +54,15 @@ _METHOD_TO_MATCHED_BY = {
     "fuzzy+ai": "AI",
     "manual": "Manual",
     "ambiguous": "Ambiguous",
+    # Retired method: no current code path writes this anymore (dates were
+    # once copied from another row sharing the same normalized pair instead
+    # of resolving from a real source). Old evidence still carries it, so it
+    # must still classify as *something* other than "No match" -- that would
+    # claim there's no recorded match at all, when there plainly is one
+    # (see _method_summary's "lookup-fallback" branch for the recorded
+    # fallbackFrom row). "Fuzzy" is the closest existing category: derived
+    # from another matching row rather than a live vendor/API source.
+    "lookup-fallback": "Fuzzy",
 }
 
 MATCHED_BY_CHIPS = [
@@ -47,6 +71,7 @@ MATCHED_BY_CHIPS = [
     "Fuzzy",
     "AI",
     "eosl.date",
+    "Microsoft Lifecycle",
     "Juniper Junos",
     "SUSE Lifecycle",
     "Manual",
@@ -68,22 +93,55 @@ _METHOD_SUMMARIES = {
 }
 
 
+def _matched_record_note(slot: dict) -> str:
+    """' -- matched "X" (query: "Y")' suffix naming exactly which vendor/API
+    record a lookup resolved to, so the evidence detail isn't just "filled
+    from eosl.date" with no way to tell which of its products/releases that
+    means. Blank when the slot has neither a release label/slug nor the
+    query text (e.g. an older evidence entry recorded before these fields
+    existed)."""
+    release_label = str(slot.get("releaseLabel") or "").strip()
+    product_slug = str(slot.get("productSlug") or "").strip()
+    query_used = str(slot.get("queryUsed") or "").strip()
+    record = release_label or product_slug
+
+    parts = []
+    if record:
+        parts.append(f'matched "{record}"')
+    if query_used:
+        parts.append(f'query: "{query_used}"')
+    if not parts:
+        return ""
+    return " -- " + ", ".join(parts)
+
+
 def _method_summary(method: str, slot: dict) -> str:
     if method in _METHOD_SUMMARIES:
         return _METHOD_SUMMARIES[method]
     if method in {"fuzzy", "ai", "fuzzy+ai"}:
         score = slot.get("score")
         score_note = f" Match score {score}%." if score is not None else ""
+        matched_pair = str(slot.get("queryUsed") or "").strip()
+        pair_note = f' Matched existing pair for "{matched_pair}".' if matched_pair else ""
         if method == "ai":
-            return f"AI chose an existing normalized pair.{score_note}"
+            return f"AI chose an existing normalized pair.{score_note}{pair_note}"
         if method == "fuzzy+ai":
-            return f"Fuzzy found a candidate and AI confirmed it.{score_note}"
-        return f"Fuzzy matched an existing lookup entry.{score_note}"
+            return f"Fuzzy found a candidate and AI confirmed it.{score_note}{pair_note}"
+        return f"Fuzzy matched an existing lookup entry.{score_note}{pair_note}"
     if method == "api":
-        return "Filled from the endoflife.date lookup."
+        return f"Filled from the endoflife.date lookup{_matched_record_note(slot)}."
+    if method == "lookup-fallback":
+        fallback_from = slot.get("fallbackFrom")
+        source_os = str(fallback_from.get("os_string") or "").strip() if isinstance(fallback_from, dict) else ""
+        source_note = f' from row "{source_os}"' if source_os else ""
+        return (
+            "Retired method: dates were copied from another row sharing the same "
+            f"normalized OS pair{source_note}, not resolved from a live source. "
+            "Re-run lookup to verify against current data."
+        )
     if method in _METHOD_TO_MATCHED_BY:
         label = _METHOD_TO_MATCHED_BY[method]
-        return f"Filled from the {label} local vendor lifecycle database."
+        return f"Filled from the {label} local vendor lifecycle database{_matched_record_note(slot)}."
     return "No match evidence recorded."
 
 
@@ -93,13 +151,23 @@ def classify_matched_by(method: str | None) -> str:
     return _METHOD_TO_MATCHED_BY.get(normalized, "No match")
 
 
-def row_matched_by(evidence_entry: dict | None) -> str:
+def row_matched_by(evidence_entry: dict | None, row: dict | None = None) -> str:
     """The single overall Matched-by category shown for a row.
 
     Prefers the lifecycle (eol) slot's method since that is what the
     Matched-by filter is really describing (which source resolved the row);
     falls back to the normalization slots when there is no lifecycle match.
+
+    Ambiguous rows are classified from the row itself, not evidence: no code
+    path actually records a method="ambiguous" evidence entry (the field is
+    set directly on the row, not via a lookup), so without this an ambiguous
+    row with no other evidence would misreport as "No match" instead of
+    "Ambiguous" -- exactly the kind of mismatch that made the Matched-by
+    filter look unreliable.
     """
+    if row is not None and is_ambiguous_row(row):
+        return _METHOD_TO_MATCHED_BY.get("ambiguous", "Ambiguous")
+
     if not isinstance(evidence_entry, dict):
         return "No match"
 
@@ -110,6 +178,19 @@ def row_matched_by(evidence_entry: dict | None) -> str:
             if method and method not in {"none", "loaded"}:
                 return classify_matched_by(method)
     return "No match"
+
+
+# Which row field a normalization slot's value actually lives in -- used to
+# catch a stale evidence slot (method "none") that no longer matches reality
+# because the row field itself is non-empty. That combination only happens
+# for values set before evidence tracking existed for this field (e.g. an
+# older import, or a retired normalization path) -- "No normalized value is
+# set." would be flatly false in that case, since the drawer shows the value
+# right above the evidence list.
+_ROW_FIELD_FOR_SLOT = {
+    "detailed": "normalized_os_detailed_name",
+    "normalized": "normalized_os",
+}
 
 
 def build_evidence_entries(evidence_entry: dict | None, row: dict) -> dict:
@@ -125,11 +206,18 @@ def build_evidence_entries(evidence_entry: dict | None, row: dict) -> dict:
         if not isinstance(slot, dict):
             continue
         method = str(slot.get("method") or "none").strip().lower()
+        detail = _method_summary(method, slot)
+        row_field = _ROW_FIELD_FOR_SLOT.get(slot_name)
+        if method == "none" and row_field and str(row.get(row_field) or "").strip():
+            detail = (
+                "This value predates evidence tracking for this field -- no "
+                "record of how it was set. Re-run lookup to verify it."
+            )
         entries.append(
             {
                 "method": method,
                 "field": _FIELD_LABELS.get(slot_name, slot_name),
-                "detail": _method_summary(method, slot),
+                "detail": detail,
                 "query_used": str(slot.get("queryUsed") or "").strip(),
                 "product_slug": str(slot.get("productSlug") or "").strip(),
                 "release_label": str(slot.get("releaseLabel") or slot.get("releaseName") or "").strip(),
@@ -137,7 +225,7 @@ def build_evidence_entries(evidence_entry: dict | None, row: dict) -> dict:
             }
         )
 
-    return {"matched_by": row_matched_by(entry), "entries": entries}
+    return {"matched_by": row_matched_by(entry, row), "entries": entries}
 
 
 def build_eol_evidence_slot(result: dict) -> dict:
@@ -243,4 +331,165 @@ def compute_lookup_diff(data_rows: list[dict], draft_rows: list[dict]) -> dict:
         "added_count": len(added),
         "edited_count": len(edited),
         "deleted_count": len(deleted),
+    }
+
+
+def _group_by_key(rows: list[dict]) -> tuple[dict[str, list[dict]], list[dict]]:
+    """Groups rows by dedupe key, keeping ALL rows per key (not first-wins)
+    so a real duplicate os_string is never silently collapsed. Returns
+    (groups, blank_os_string_rows)."""
+    groups: dict[str, list[dict]] = {}
+    blanks: list[dict] = []
+    for row in rows:
+        key = _dedupe_key(row.get("os_string"))
+        if not key:
+            blanks.append(row)
+            continue
+        groups.setdefault(key, []).append(row)
+    return groups, blanks
+
+
+def _evidence_by_dedupe_key(evidence: dict) -> dict[str, dict]:
+    by_os = evidence.get("by_os") if isinstance(evidence, dict) else None
+    if not isinstance(by_os, dict):
+        return {}
+    result: dict[str, dict] = {}
+    for os_string, entry in by_os.items():
+        key = _dedupe_key(os_string)
+        if key and key not in result:
+            result[key] = entry
+    return result
+
+
+def merge_lookup_rows(
+    base_rows: list[dict],
+    current_rows: list[dict],
+    draft_rows: list[dict],
+    base_evidence: dict,
+    current_evidence: dict,
+    draft_evidence: dict,
+) -> dict:
+    """3-way merge for publish: reconciles what Data has become (`current`)
+    against what the draft changed (`draft`), relative to what Data looked
+    like when the draft started (`base`) -- so publishing never blindly
+    overwrites changes someone else already published in the meantime.
+
+    Row identity and equality reuse `_dedupe_key`/`_rows_equal`, the same
+    semantics `compute_lookup_diff` already uses.
+
+    Duplicate os_string handling: `compute_lookup_diff` accepts "first
+    occurrence wins per key" as a read-only reporting simplification, which
+    is fine for a KPI count but not for a merge that decides what gets
+    written -- a dict keyed by identity would silently drop the second/
+    third row under a duplicated key, and real data has duplicates. So any
+    key present more than once in base, current, or draft is never
+    content-diffed here; it's always surfaced as an "ambiguous_duplicate"
+    conflict carrying every row under that key from both sides, and the
+    caller's resolution decides what gets written.
+
+    Blank-os_string rows have no stable identity (same reasoning
+    `compute_lookup_diff` documents) and pass through from the draft
+    untouched, never merge-compared.
+
+    Evidence follows whichever row version wins for a given key rather than
+    being unioned independently of the row merge -- otherwise a row's
+    evidence could end up describing how a *different* version of that row
+    was derived than the one actually kept.
+    """
+    base_groups, _ = _group_by_key(base_rows)
+    current_groups, _ = _group_by_key(current_rows)
+    draft_groups, draft_blanks = _group_by_key(draft_rows)
+
+    current_evidence_by_key = _evidence_by_dedupe_key(current_evidence)
+    draft_evidence_by_key = _evidence_by_dedupe_key(draft_evidence)
+
+    all_keys = set(base_groups) | set(current_groups) | set(draft_groups)
+    merged_rows: list[dict] = []
+    merged_by_os: dict[str, dict] = {}
+    conflicts: list[dict] = []
+
+    for key in all_keys:
+        base_group = base_groups.get(key, [])
+        current_group = current_groups.get(key, [])
+        draft_group = draft_groups.get(key, [])
+
+        if len(base_group) > 1 or len(current_group) > 1 or len(draft_group) > 1:
+            sample = (base_group + current_group + draft_group)[0]
+            conflicts.append(
+                {
+                    "os_string": sample.get("os_string", ""),
+                    "kind": "ambiguous_duplicate",
+                    "mine": {"rows": draft_group, "evidence": draft_evidence_by_key.get(key, {})},
+                    "theirs": {"rows": current_group, "evidence": current_evidence_by_key.get(key, {})},
+                }
+            )
+            continue
+
+        base_row = base_group[0] if base_group else None
+        current_row = current_group[0] if current_group else None
+        draft_row = draft_group[0] if draft_group else None
+
+        def keep(row: dict, evidence_by_key: dict[str, dict]) -> None:
+            merged_rows.append(row)
+            entry = evidence_by_key.get(key)
+            if entry:
+                merged_by_os[row.get("os_string", "")] = entry
+
+        def conflict(kind: str) -> None:
+            conflicts.append(
+                {
+                    "os_string": (current_row or draft_row or base_row).get("os_string", ""),
+                    "kind": kind,
+                    "mine": {"row": draft_row, "evidence": draft_evidence_by_key.get(key, {})} if draft_row else None,
+                    "theirs": {"row": current_row, "evidence": current_evidence_by_key.get(key, {})} if current_row else None,
+                }
+            )
+
+        if base_row is None:
+            if current_row is not None and draft_row is not None:
+                if _rows_equal(current_row, draft_row):
+                    keep(current_row, current_evidence_by_key)
+                else:
+                    conflict("added_both")
+            elif current_row is not None:
+                keep(current_row, current_evidence_by_key)
+            elif draft_row is not None:
+                keep(draft_row, draft_evidence_by_key)
+            continue
+
+        if current_row is None and draft_row is None:
+            continue  # deleted on both sides -- nothing to keep
+
+        if current_row is None:
+            if _rows_equal(base_row, draft_row):
+                continue  # local never touched it -- respect the upstream deletion
+            conflict("edited_local_deleted_upstream")
+            continue
+
+        if draft_row is None:
+            if _rows_equal(base_row, current_row):
+                continue  # upstream never touched it -- respect the local deletion
+            conflict("edited_upstream_deleted_local")
+            continue
+
+        upstream_changed = not _rows_equal(base_row, current_row)
+        local_changed = not _rows_equal(base_row, draft_row)
+        if not local_changed:
+            # Unchanged locally: keep upstream's version (a no-op copy if
+            # upstream didn't change either) -- always safe since local
+            # never diverged from base for this row.
+            keep(current_row, current_evidence_by_key)
+        elif not upstream_changed:
+            keep(draft_row, draft_evidence_by_key)
+        elif _rows_equal(current_row, draft_row):
+            keep(current_row, current_evidence_by_key)
+        else:
+            conflict("edited_both")
+
+    merged_rows.extend(draft_blanks)
+
+    return {
+        "merged_rows": merged_rows,
+        "merged_evidence": {"by_os": merged_by_os, "updated_at": ""},
+        "conflicts": conflicts,
     }

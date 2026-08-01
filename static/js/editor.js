@@ -5,9 +5,9 @@ import { api, streams } from "./api.js";
 import { iconMarkup } from "./icons.js";
 import { parseRowDate, classifyDateChip, formatRelative } from "./date_utils.js";
 import { initFiltersPanel, toggleFiltersPanel, matchesColumnFilters, activeFilterCount, clearAllColumnFilters } from "./filters_panel.js";
-import { initDrawer, openDrawer, closeDrawer, isDrawerOpenFor, refreshDrawerFields } from "./drawer.js";
+import { initDrawer, openDrawer, closeDrawer, isDrawerOpenFor, refreshDrawerFields, refreshDrawerReviewedState, refreshDrawerEvidence } from "./drawer.js";
 import { openModal, closeModal, showToast, runProgress } from "./modals.js";
-import { hasActive } from "./tasks.js";
+import { getTasks, hasActive } from "./tasks.js";
 
 const CSV_HEADERS = ["os_string", "normalized_os_detailed_name", "normalized_os", "eol_date", "eol_status", "eoas_date", "eoas_status"];
 const PAGE_SIZE_OPTIONS = [50, 100, 250, 500, 1000];
@@ -56,8 +56,12 @@ export async function initEditor() {
   initDrawer({
     onFieldChange: () => scheduleAutosave(),
     onSameAsOs: (row) => { applySameAsOs(row); scheduleAutosave(); refreshView(); },
+    onMarkAmbiguous: (row) => { applyAmbiguous(row); scheduleAutosave(); refreshView(); refreshDrawerFields(row); },
     onRerun: (row) => rerunRow(row),
     onRevert: (row) => { revertRow(row); scheduleAutosave(); refreshView(); },
+    onToggleReviewed: (row) => { toggleRowReviewed(row); scheduleAutosave(); refreshDrawerReviewedState(row); refreshView(); },
+    isReviewed: (row) => isRowReviewed(row),
+    isChanged: (row) => isChangedRow(row),
   });
 
   el.segData.addEventListener("click", () => switchSource("data"));
@@ -73,9 +77,18 @@ export async function initEditor() {
     clearAllColumnFilters(); clearSelection(); renderAll();
   });
 
-  document.getElementById("bulk-refresh-btn").addEventListener("click", bulkRefresh);
+  // openRefreshModal already branches on state.selected -- reusing it here
+  // (instead of the old bulkRefresh, which awaited one non-streamed request
+  // and only showed a toast before/after) gives the bulk-selection refresh
+  // the same progress bar as the toolbar's Refresh EOL/EOAS, so a large
+  // selection shows live per-chunk progress instead of going quiet for
+  // however long the whole batch takes.
+  document.getElementById("bulk-refresh-btn").addEventListener("click", openRefreshModal);
   document.getElementById("bulk-same-as-os-btn").addEventListener("click", bulkSameAsOs);
+  document.getElementById("bulk-ambiguous-btn").addEventListener("click", bulkMarkAmbiguous);
   document.getElementById("bulk-revert-btn").addEventListener("click", bulkRevert);
+  document.getElementById("bulk-mark-reviewed-btn").addEventListener("click", bulkMarkReviewed);
+  document.getElementById("bulk-mark-unreviewed-btn").addEventListener("click", bulkMarkUnreviewed);
   document.getElementById("bulk-export-btn").addEventListener("click", () => exportRows(selectedRows()));
   document.getElementById("bulk-delete-btn").addEventListener("click", bulkDelete);
   document.getElementById("bulk-clear-btn").addEventListener("click", clearSelection);
@@ -98,11 +111,27 @@ async function loadData() {
   state.evidence = data.evidence;
   state.draftExists = data.draft_exists;
   state.publishedAt = data.published_at;
+  state.dataRevision = data.data_revision ?? 0;
   dataByOs = new Map(state.dataRows.map((row) => [dedupeKey(row.os_string), row]));
   el.railRowCount.textContent = String(state.dataRows.length);
   el.publishedAtMeta.textContent = state.publishedAt
     ? `Lookup published ${formatPublishedAt(state.publishedAt)}`
     : "Lookup published —";
+  renderStorageChip(data.storage_mode, data.storage_target);
+}
+
+function renderStorageChip(mode, target) {
+  const chip = document.getElementById("storage-mode-chip");
+  chip.hidden = false;
+  chip.classList.toggle("postgres", mode === "postgres");
+  chip.classList.toggle("file", mode !== "postgres");
+  if (mode === "postgres") {
+    chip.textContent = "Shared Database";
+    chip.title = `The published lookup and draft are stored in a shared database (${target || "unknown host"}), not on this machine.`;
+  } else {
+    chip.textContent = "Local files";
+    chip.title = "The published lookup and draft are stored as local files on this machine, not shared with other instances.";
+  }
 }
 
 function formatPublishedAt(iso) {
@@ -120,17 +149,37 @@ function backToData() {
   setState({ source: "data" });
 }
 
+// True while a vendor lookup update or an Add OS enrichment pipeline is
+// running -- both mutate rows/evidence the same Draft would be built from,
+// so entering Draft mid-run risks forking from a half-updated state.
+function isEnrichmentBusy() {
+  return hasActive("add-os") || getTasks().some((t) => t.kind.startsWith("vendor-sync:") && t.status === "running");
+}
+
 async function switchSource(target) {
   if (target === state.source) return;
   if (target === "draft") {
+    if (isEnrichmentBusy()) {
+      showToast("Vendor lookup update or Add OS enrichment is in progress — try again once it finishes.");
+      return;
+    }
     if (state.draftExists) {
       const draft = await api.getLookup("draft");
       state.draftRows = draft.rows;
       state.evidence = draft.evidence;
+      state.draftBasedOnRevision = draft.based_on_revision ?? 0;
     } else {
-      state.draftRows = state.dataRows.map((row) => ({ ...row }));
-      await persistDraft();
+      // Fork from a fresh fetch of Data, not whatever the browser's
+      // in-memory copy happens to be -- that stale copy could already be
+      // older than Data's current on-disk state. This same fetch also
+      // becomes the publish-time merge base, so it must be exactly what
+      // Data was at the instant the draft was created, not re-derived
+      // from disk later (which would race against concurrent publishes).
+      const fresh = await api.getLookup("data");
+      state.draftRows = fresh.rows.map((row) => ({ ...row }));
+      await persistDraft({ baseRows: fresh.rows, baseEvidence: fresh.evidence });
       state.draftExists = true;
+      state.draftBasedOnRevision = fresh.data_revision ?? 0;
     }
     if (state.chip === "all") state.chip = "changed";
   } else {
@@ -167,8 +216,8 @@ function scheduleAutosave() {
   saveTimer = setTimeout(persistDraft, 800);
 }
 
-async function persistDraft() {
-  await api.saveLookup(state.draftRows, state.evidence, "draft");
+async function persistDraft(baseOptions = {}) {
+  await api.saveLookup(state.draftRows, state.evidence, "draft", baseOptions);
   setState({ dirty: false });
   // The diff (Changed chip, NEW/EDITED flags) is computed server-side from
   // the saved draft file, so it can only be refreshed once the save above
@@ -186,12 +235,32 @@ async function persistDraft() {
  * adjacent repeats collapse; "Windows Server 2012 Windows" is untouched
  * since the two "Windows" aren't next to each other. */
 function collapseConsecutiveDuplicateWords(text) {
-  const words = String(text || "").trim().split(/\s+/);
+  // Collapses a word OR multi-word phrase repeated immediately next to
+  // itself (case-insensitive), preferring the longest repeated run at each
+  // position. Mirrors collapse_consecutive_duplicate_words in
+  // normalization_service.py -- the two must agree on what counts as a
+  // duplicate since both feed the same fields.
+  const words = String(text || "").trim().split(/\s+/).filter(Boolean);
+  const n = words.length;
   const out = [];
-  for (const word of words) {
-    const prev = out[out.length - 1];
-    if (prev && prev.toLowerCase() === word.toLowerCase()) continue;
-    out.push(word);
+  let i = 0;
+  while (i < n) {
+    let runLen = 0;
+    for (let length = Math.floor((n - i) / 2); length > 0; length -= 1) {
+      const first = words.slice(i, i + length).map((w) => w.toLowerCase());
+      const second = words.slice(i + length, i + 2 * length).map((w) => w.toLowerCase());
+      if (first.length === second.length && first.every((w, idx) => w === second[idx])) {
+        runLen = length;
+        break;
+      }
+    }
+    if (runLen) {
+      out.push(...words.slice(i, i + runLen));
+      i += 2 * runLen;
+    } else {
+      out.push(words[i]);
+      i += 1;
+    }
   }
   return out.join(" ");
 }
@@ -202,10 +271,49 @@ function applySameAsOs(row) {
   row.normalized_os = collapsed;
 }
 
+// Same shape as an ambiguous row created by the Add OS pipeline -- clears
+// EOL/EOAS too, since keeping lifecycle dates tied to a normalization the
+// user just disavowed as unreliable would be actively misleading (they'd
+// otherwise still show a stale "Past EOL" chip etc.). Matches what
+// isAmbiguousRow/dateCellHtml already expect ("skipped" for a blank date on
+// an ambiguous row, not "none").
+function applyAmbiguous(row) {
+  row.normalized_os_detailed_name = "Ambiguous OS";
+  row.normalized_os = "Ambiguous OS";
+  row.eol_date = "";
+  row.eol_status = "";
+  row.eoas_date = "";
+  row.eoas_status = "";
+  row.matched_by = "Ambiguous";
+}
+
 function revertRow(row) {
   const baseline = dataByOs.get(dedupeKey(row.os_string));
   if (!baseline) return;
   CSV_HEADERS.forEach((header) => { if (header !== "os_string") row[header] = baseline[header]; });
+}
+
+// ---------- Reviewed flag ----------
+// Stored as a sibling key inside the evidence sidecar's by_os[os_string]
+// entry (alongside the detailed/normalized/eol lookup slots) rather than as
+// a CSV column -- it rides along with the rest of the evidence through
+// autosave, pruning and the 3-way publish merge for free, with no schema
+// migration needed (see row_matched_by for the same pattern already in use).
+function evidenceKey(row) { return String(row.os_string || "").trim(); }
+
+function isRowReviewed(row) {
+  return Boolean(state.evidence?.by_os?.[evidenceKey(row)]?.reviewed);
+}
+
+function setRowReviewed(row, value) {
+  const key = evidenceKey(row);
+  if (!key) return;
+  state.evidence.by_os = state.evidence.by_os || {};
+  state.evidence.by_os[key] = { ...(state.evidence.by_os[key] || {}), reviewed: value };
+}
+
+function toggleRowReviewed(row) {
+  setRowReviewed(row, !isRowReviewed(row));
 }
 
 async function rerunRow(row) {
@@ -213,9 +321,21 @@ async function rerunRow(row) {
   try {
     const result = await api.refreshRow(row);
     Object.assign(row, result.row);
+    // The row's fields update above, but the evidence sidecar entry (what
+    // the drawer's "Filled from.../Retired method..." text is built from)
+    // was never applied anywhere -- it stayed whatever was last saved, so a
+    // re-run could find nothing new yet keep showing an old, now-stale
+    // evidence note (e.g. a retired "copied from row X" record) forever,
+    // even after the row's own fields plainly changed.
+    const key = evidenceKey(row);
+    if (key) {
+      state.evidence.by_os = state.evidence.by_os || {};
+      state.evidence.by_os[key] = result.evidence_entry || {};
+    }
     scheduleAutosave();
     refreshView();
     refreshDrawerFields(row);
+    refreshDrawerEvidence(row, result.evidence_detail);
     showToast("Lookup refreshed.");
   } catch (error) {
     showToast(`Re-run failed: ${error.message}`);
@@ -263,17 +383,6 @@ function toggleSelectAllFiltered(filtered) {
   renderTable();
 }
 
-async function bulkRefresh() {
-  const targets = selectedRows();
-  if (!targets.length) return;
-  showToast(`Refreshing ${targets.length} row(s)…`);
-  const result = await api.refreshRows(targets);
-  result.rows.forEach((updated, i) => Object.assign(targets[i], updated));
-  scheduleAutosave();
-  refreshView();
-  showToast(`Refreshed ${targets.length} row(s).`);
-}
-
 function bulkSameAsOs() {
   const targets = selectedRows();
   if (!targets.length) return;
@@ -290,6 +399,33 @@ function bulkRevert() {
   scheduleAutosave();
   refreshView();
   showToast(`Reverted ${targets.length} row(s) to Data.`);
+}
+
+function bulkMarkAmbiguous() {
+  const targets = selectedRows();
+  if (!targets.length) return;
+  targets.forEach(applyAmbiguous);
+  scheduleAutosave();
+  refreshView();
+  showToast(`Marked ${targets.length} row(s) as Ambiguous OS.`);
+}
+
+function bulkMarkReviewed() {
+  const targets = selectedRows();
+  if (!targets.length) return;
+  targets.forEach((row) => setRowReviewed(row, true));
+  scheduleAutosave();
+  refreshView();
+  showToast(`Marked ${targets.length} row(s) as reviewed.`);
+}
+
+function bulkMarkUnreviewed() {
+  const targets = selectedRows();
+  if (!targets.length) return;
+  targets.forEach((row) => setRowReviewed(row, false));
+  scheduleAutosave();
+  refreshView();
+  showToast(`Marked ${targets.length} row(s) as not reviewed.`);
 }
 
 function bulkDelete() {
@@ -313,12 +449,21 @@ const QUICK_CHIPS = [
   ["nodates", "No dates"],
   ["ambiguous", "Ambiguous"],
   ["changed", "Changed"],
+  ["unreviewed", "Not reviewed"],
 ];
 
 function isAmbiguousRow(row) {
   const d = String(row.normalized_os_detailed_name || "").trim().toLowerCase();
   const n = String(row.normalized_os || "").trim().toLowerCase();
   return d === "ambiguous os" || n === "ambiguous os";
+}
+
+// Only rows that are actually new/edited need reviewing -- a row that's
+// identical to published Data doesn't need re-validating just because it's
+// sitting in the draft.
+function isChangedRow(row) {
+  const key = dedupeKey(row.os_string);
+  return addedSet.has(key) || editedSet.has(key);
 }
 
 function rowMatchesChip(row, chip) {
@@ -328,7 +473,8 @@ function rowMatchesChip(row, chip) {
     case "eoas": { const d = parseRowDate(row.eoas_date); return d && d.getTime() < Date.now(); }
     case "nodates": return !String(row.eol_date || "").trim() && !String(row.eoas_date || "").trim();
     case "ambiguous": return isAmbiguousRow(row);
-    case "changed": return isDraft() && (addedSet.has(dedupeKey(row.os_string)) || editedSet.has(dedupeKey(row.os_string)));
+    case "changed": return isDraft() && isChangedRow(row);
+    case "unreviewed": return isDraft() && isChangedRow(row) && !isRowReviewed(row);
     default: return true;
   }
 }
@@ -342,7 +488,7 @@ function quickChipCounts() {
 
 function renderQuickChips() {
   const counts = quickChipCounts();
-  const chips = isDraft() ? QUICK_CHIPS : QUICK_CHIPS.filter(([key]) => key !== "changed");
+  const chips = isDraft() ? QUICK_CHIPS : QUICK_CHIPS.filter(([key]) => key !== "changed" && key !== "unreviewed");
   el.quickChips.innerHTML = chips
     .map(([key, label]) => `
       <button type="button" class="quick-chip ${state.chip === key ? "active" : ""}" data-chip="${key}">
@@ -580,11 +726,19 @@ function renderRow(row) {
     else if (editedSet.has(key)) flag = `<span class="row-flag edited">EDITED</span>`;
   }
 
+  // Only rows that actually changed need a review control -- an unchanged
+  // row has nothing new to validate against published Data.
+  const showReviewToggle = isDraft() && isChangedRow(row);
+  const reviewed = showReviewToggle && isRowReviewed(row);
+  const reviewToggleHtml = showReviewToggle
+    ? `<button type="button" class="review-toggle ${reviewed ? "reviewed" : ""}" data-role="review" title="${reviewed ? "Mark as not reviewed" : "Mark as reviewed"}">${reviewed ? iconMarkup("check", { size: 9 }) + " Reviewed" : "Review"}</button>`
+    : "";
+
   const cells = [];
   if (isDraft()) {
     cells.push(`<span class="row-checkbox ${state.selected.has(row.os_string) ? "checked" : ""}" data-role="select">${iconMarkup("check", { size: 10 })}</span>`);
   }
-  cells.push(`<div class="cell-os">${flag}<span class="os-value" title="${escapeHtml(row.os_string)}">${escapeHtml(row.os_string)}</span></div>`);
+  cells.push(`<div class="cell-os">${flag}<span class="os-value" title="${escapeHtml(row.os_string)}">${escapeHtml(row.os_string)}</span>${reviewToggleHtml}</div>`);
   cells.push(textCellHtml(row.normalized_os_detailed_name));
   cells.push(textCellHtml(row.normalized_os));
   cells.push(dateCellHtml(row, "eol_date", "eol"));
@@ -594,7 +748,7 @@ function renderRow(row) {
   wrap.innerHTML = cells.join("");
 
   wrap.addEventListener("click", (event) => {
-    if (event.target.closest("[data-role='select']")) return;
+    if (event.target.closest("[data-role='select']") || event.target.closest("[data-role='review']")) return;
     // While a selection is active, clicking a row is presumed to be part of
     // building/adjusting that selection (a near-miss on the checkbox) --
     // don't also pop the drawer open. Only open it when nothing is selected.
@@ -609,6 +763,15 @@ function renderRow(row) {
     if (state.selected.has(row.os_string)) state.selected.delete(row.os_string);
     else state.selected.add(row.os_string);
     updateBulkBar();
+    renderTable();
+  });
+
+  const reviewEl = wrap.querySelector("[data-role='review']");
+  reviewEl?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleRowReviewed(row);
+    scheduleAutosave();
+    refreshDrawerReviewedState(row);
     renderTable();
   });
 
@@ -632,9 +795,18 @@ async function openRefreshModal() {
     const draft = await api.getLookup("draft");
     state.draftRows = draft.rows;
   }
+  // `targets` deliberately still includes ambiguous rows -- this list is
+  // sent to the server as-is and saved back verbatim at the end of the
+  // refresh (see lookup_refresh_events), so shrinking it here would drop
+  // every excluded row from the persisted draft, not just skip enriching
+  // it. The server already skips ambiguous rows internally (never queries
+  // a lifecycle source with them); this just makes the count honest about it.
   const targets = state.selected.size ? selectedRows() : state.draftRows;
-  document.getElementById("refresh-summary").textContent =
-    `${targets.length} row(s) eligible for refresh. Existing EOL/EOAS values will be overwritten.`;
+  const ambiguousCount = targets.filter((row) => row.normalized_os_detailed_name === "Ambiguous OS").length;
+  const enrichableCount = targets.length - ambiguousCount;
+  document.getElementById("refresh-summary").textContent = ambiguousCount
+    ? `${targets.length} row(s) selected, ${enrichableCount} eligible for refresh (${ambiguousCount} Ambiguous OS row(s) skipped). Existing EOL/EOAS values will be overwritten.`
+    : `${targets.length} row(s) eligible for refresh. Existing EOL/EOAS values will be overwritten.`;
   openModal("modal-refresh");
   const bodyEl = document.getElementById("modal-refresh-body");
   const footerEl = document.getElementById("modal-refresh-footer");
@@ -645,7 +817,10 @@ async function openRefreshModal() {
       label: "Refresh EOL/EOAS",
       bodyEl, footerEl,
       eventGenerator: streams.refreshLookup(targets, state.evidence, "draft"),
-      onCancel: (jobId) => jobId && api.cancelRefreshJob(jobId).catch(() => {}),
+      // No inline .catch() -- tasks.js's cancelTask() awaits this to know
+      // whether the cancel actually landed, re-enabling the Cancel button
+      // if it rejects (job already gone, network error, etc.).
+      onCancel: (jobId) => (jobId ? api.cancelRefreshJob(jobId) : undefined),
       onComplete: async (event) => {
         // Merge by os_string -- `targets` may be a selection subset, so
         // replacing the whole array here would silently drop every other
@@ -701,6 +876,11 @@ async function* addOsPipeline(osStrings, { signal } = {}) {
     if (ambiguousFlags[i]) {
       row.normalized_os_detailed_name = "Ambiguous OS";
       row.normalized_os = "Ambiguous OS";
+      // Ambiguous rows are filtered out of lookupRows below (never sent for
+      // refresh), so they'd otherwise never get a matched_by at all until
+      // the next full page load -- set it immediately, matching what the
+      // server computes via lookup_extras.row_matched_by.
+      row.matched_by = "Ambiguous";
     } else {
       const exact = allowedPairs.find((p) => p.__key === dedupeKey(collapseConsecutiveDuplicateWords(osString)));
       if (exact) {
@@ -815,6 +995,23 @@ document.getElementById("modal-add").addEventListener("click", (event) => {
 
 // ---------- Validate & publish modal ----------
 
+/** Short human-readable summary of one side of a conflict, for the
+ * resolver list. `side` is {row, evidence} (or {rows, evidence} for
+ * ambiguous_duplicate), or null when that side deleted the row. */
+function summarizeConflictSide(side, kind) {
+  if (!side) return "(deleted)";
+  if (kind === "ambiguous_duplicate") {
+    const count = (side.rows || []).length;
+    return `${count} row(s)`;
+  }
+  const row = side.row;
+  if (!row) return "(deleted)";
+  const name = row.normalized_os || row.normalized_os_detailed_name || "(no normalized name)";
+  const eol = row.eol_date ? row.eol_date : "no EOL date";
+  const eoas = row.eoas_date ? row.eoas_date : "no EOAS date";
+  return `${name} — EOL ${eol}, EOAS ${eoas}`;
+}
+
 async function openValidateModal() {
   if (hasActive("publish")) {
     showToast("A publish is already running — see Background tasks.");
@@ -824,22 +1021,116 @@ async function openValidateModal() {
     showToast("A refresh is still running — wait for it to finish before publishing.");
     return;
   }
-  const d = await api.getDiff("draft").catch(() => ({ added_count: 0, edited_count: 0, unresolved: 0 }));
+
+  openModal("modal-validate");
+  const resolverEl = document.getElementById("conflict-resolver");
+  const backupField = document.getElementById("backup-suffix-input");
+  const confirmBtn = document.getElementById("validate-confirm-btn");
+  resolverEl.hidden = true;
+  confirmBtn.disabled = true;
+  confirmBtn.textContent = "Checking…";
+  backupField.value = "";
+
+  const [d, conflictCheck] = await Promise.all([
+    api.getDiff("draft").catch(() => ({ added_count: 0, edited_count: 0, unresolved: 0 })),
+    api.checkPublishConflicts(state.draftRows, state.evidence).catch(() => ({ conflicts: [] })),
+  ]);
   document.getElementById("kpi-new").textContent = String(d.added_count ?? d.added?.length ?? 0);
   document.getElementById("kpi-edited").textContent = String(d.edited_count ?? d.edited?.length ?? 0);
   document.getElementById("kpi-unresolved").textContent = String(d.unresolved ?? 0);
-  document.getElementById("backup-suffix-input").value = "";
-  openModal("modal-validate");
+
+  const conflicts = conflictCheck.conflicts || [];
+  // Default every conflict to "theirs" -- the already-published side is
+  // usually the fresher one (e.g. two environments both ran Refresh
+  // EOL/EOAS and published at different times; whichever landed first is
+  // presumed more current).
+  const resolutions = Object.fromEntries(conflicts.map((c) => [c.os_string, "theirs"]));
+
+  // Only rows that actually changed (new/edited) need reviewing -- an
+  // unchanged row has nothing new to validate against published Data. Uses
+  // this fetch's own added/edited lists rather than the module-level
+  // addedSet/editedSet so it can't be momentarily stale relative to `d`.
+  const changedKeys = new Set([...(d.added || []), ...(d.edited || [])].map(dedupeKey));
+  const changedRows = state.draftRows.filter((row) => changedKeys.has(dedupeKey(row.os_string)));
+  const totalChanged = changedRows.length;
+  const notReviewedCount = changedRows.filter((row) => !isRowReviewed(row)).length;
+  document.getElementById("kpi-not-reviewed").textContent = String(notReviewedCount);
+
+  const reviewAckBlock = document.getElementById("review-ack-block");
+  const reviewAckChip = document.getElementById("review-ack-chip");
+  const reviewAckCheckbox = document.getElementById("review-ack-checkbox");
+  let reviewAcknowledged = notReviewedCount === 0;
+  reviewAckBlock.hidden = notReviewedCount === 0;
+  reviewAckChip.classList.remove("active");
+  reviewAckCheckbox.checked = false;
+  document.getElementById("review-warning-note").textContent =
+    `${notReviewedCount} of ${totalChanged} changed row(s) haven't been marked reviewed.`;
+  reviewAckChip.onclick = (event) => {
+    event.preventDefault();
+    reviewAcknowledged = !reviewAcknowledged;
+    reviewAckCheckbox.checked = reviewAcknowledged;
+    reviewAckChip.classList.toggle("active", reviewAcknowledged);
+    updateConfirmState();
+  };
+
+  function updateConfirmState() {
+    const allResolved = conflicts.every((c) => resolutions[c.os_string] === "mine" || resolutions[c.os_string] === "theirs");
+    const reviewOk = notReviewedCount === 0 || reviewAcknowledged;
+    confirmBtn.disabled = (conflicts.length > 0 && !allResolved) || !reviewOk;
+    confirmBtn.textContent = conflicts.length > 0 ? "Resolve & publish" : "Validate and publish";
+  }
+
+  if (conflicts.length) {
+    resolverEl.hidden = false;
+    document.getElementById("conflict-count-note").textContent =
+      `${conflicts.length} row(s) changed both here and in Data since you started this draft — pick which version to keep.`;
+
+    const listEl = document.getElementById("conflict-list");
+    listEl.innerHTML = conflicts
+      .map(
+        (c, i) => `
+        <div class="conflict-row">
+          <div class="conflict-os">${escapeHtml(c.os_string)}</div>
+          <label class="conflict-option">
+            <input type="radio" name="conflict-${i}" value="mine" data-os="${escapeHtml(c.os_string)}" />
+            Keep mine: ${escapeHtml(summarizeConflictSide(c.mine, c.kind))}
+          </label>
+          <label class="conflict-option">
+            <input type="radio" name="conflict-${i}" value="theirs" data-os="${escapeHtml(c.os_string)}" checked />
+            Keep theirs: ${escapeHtml(summarizeConflictSide(c.theirs, c.kind))}
+          </label>
+        </div>`
+      )
+      .join("");
+    listEl.querySelectorAll("input[type=radio]").forEach((input) => {
+      input.addEventListener("change", () => {
+        resolutions[input.dataset.os] = input.value;
+        updateConfirmState();
+      });
+    });
+    document.getElementById("conflict-apply-mine").onclick = () => {
+      conflicts.forEach((c) => { resolutions[c.os_string] = "mine"; });
+      listEl.querySelectorAll('input[value="mine"]').forEach((el) => { el.checked = true; });
+      updateConfirmState();
+    };
+    document.getElementById("conflict-apply-theirs").onclick = () => {
+      conflicts.forEach((c) => { resolutions[c.os_string] = "theirs"; });
+      listEl.querySelectorAll('input[value="theirs"]').forEach((el) => { el.checked = true; });
+      updateConfirmState();
+    };
+  }
+  updateConfirmState();
 
   const bodyEl = document.getElementById("modal-validate-body");
   const footerEl = document.getElementById("modal-validate-footer");
-  document.getElementById("validate-confirm-btn").onclick = () => {
-    const suffix = document.getElementById("backup-suffix-input").value.trim();
+  confirmBtn.onclick = () => {
+    const suffix = backupField.value.trim();
+    resolverEl.hidden = true;
     runProgress({
       kind: "publish",
       label: "Validate & publish",
       bodyEl, footerEl,
-      eventGenerator: streams.validatePublish(state.draftRows, state.evidence, suffix),
+      eventGenerator: streams.validatePublish(state.draftRows, state.evidence, suffix, resolutions),
       // Backup + write + delete-draft each complete as one atomic file
       // operation on the server -- there's no safe midpoint to actually
       // stop at, so offering a Cancel button here would be a broken
@@ -891,8 +1182,12 @@ function openRevertDraftModal() {
     const dataSnapshot = await api.getLookup("data");
     state.draftRows = dataSnapshot.rows.map((row) => ({ ...row }));
     state.evidence = dataSnapshot.evidence;
+    state.draftBasedOnRevision = dataSnapshot.data_revision ?? 0;
     clearSelection();
-    await persistDraft();
+    // Revert re-syncs the draft to current Data, so the merge base must
+    // reset to this same snapshot too -- otherwise a later publish would
+    // still diff against the draft's original (now stale) starting point.
+    await persistDraft({ baseRows: dataSnapshot.rows, baseEvidence: dataSnapshot.evidence, resetBase: true });
     await recomputeDiff();
     renderAll();
     closeModal();

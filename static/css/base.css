@@ -103,6 +103,18 @@ a { color: inherit; }
   flex: none;
 }
 
+/* ---------- Staleness banner ---------- */
+.staleness-banner {
+  flex: none;
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 20px;
+  background: var(--tint);
+  border-bottom: 1px solid var(--brand);
+  font-size: 12px; color: var(--fg1);
+}
+.staleness-banner-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.staleness-banner-actions .btn { height: 24px; padding: 0 10px; font-size: 11px; }
+
 /* ---------- Body row: rail + main ---------- */
 .app-body { flex: 1 1 auto; display: flex; min-height: 0; }
 
@@ -231,3 +243,6 @@ a { color: inherit; }
   border: 1px solid var(--c-border);
   color: var(--fg3); background: var(--c-raised);
 }
+
+.storage-chip.file { color: var(--fg3); border-color: var(--c-border); background: var(--c-raised); }
+.storage-chip.postgres { color: var(--brand); border-color: var(--brand); background: var(--tint); }

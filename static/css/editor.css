@@ -214,6 +214,18 @@
 .row-flag.new { color: var(--success); background: var(--success-bg); }
 .row-flag.edited { color: var(--brand); background: var(--tint); }
 
+.review-toggle {
+  flex: none; display: inline-flex; align-items: center; gap: 3px;
+  font: 600 9px/12px var(--font-sans); letter-spacing: .04em;
+  border-radius: 4px; padding: 1px 6px;
+  border: 1px solid var(--c-border-strong); background: transparent; color: var(--fg3);
+  cursor: pointer;
+}
+.review-toggle:hover { color: var(--fg1); border-color: var(--fg2); }
+.review-toggle.reviewed { color: var(--success); background: var(--success-bg); border-color: transparent; }
+
+#drawer-toggle-reviewed-btn.reviewed { color: var(--success); border-color: var(--success); }
+
 .cell-text { color: var(--fg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cell-text.empty {
   display: inline-flex; width: fit-content;

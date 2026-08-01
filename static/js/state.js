@@ -29,6 +29,12 @@ export const state = {
   dirty: false,
   autoSave: true,
   publishedAt: "",
+  // Data's revision as of this page's last load, and (in Draft) the
+  // revision the open draft's merge base was captured from -- compared
+  // against a fresh check in staleness.js so "Data changed" is surfaced
+  // proactively instead of only being discovered at publish time.
+  dataRevision: 0,
+  draftBasedOnRevision: 0,
 
   headers: [],
   dataRows: [],

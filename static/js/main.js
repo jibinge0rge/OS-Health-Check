@@ -8,6 +8,7 @@ import { initDeploy } from "./deploy.js";
 import { initBackgroundTasks } from "./background.js";
 import { subscribe as subscribeTasks, activeCount } from "./tasks.js";
 import { subscribe as subscribeNotifications, hasUnread, markAllRead, getNotifications } from "./notifications.js";
+import { initStaleness } from "./staleness.js";
 
 applyPersistedAppearance();
 
@@ -122,3 +123,4 @@ await initEditor();
 initVendor();
 initSettings();
 initDeploy();
+initStaleness();

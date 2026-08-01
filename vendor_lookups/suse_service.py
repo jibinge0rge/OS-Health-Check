@@ -17,6 +17,7 @@ from .db import connection_for, init_source_schema, set_metadata
 from eol_service import (
     extract_version_hints,
     iso_date_to_epoch,
+    join_labels,
     pick_api_os_value_with_field,
     resolve_lifecycle_status,
 )
@@ -629,7 +630,7 @@ def lookup_os_suse(
             "SELECT slug, name FROM products WHERE slug = %s", (product_slug,)
         ).fetchone()
         product_name = _clean(product["name"]) if product else product_slug
-        if _clean(os_string) and not vendors_compatible(os_string, product_name):
+        if _clean(cleaned_name) and not vendors_compatible(cleaned_name, product_name):
             empty["product_slug"] = product_slug
             empty["api_note"] = f"SUSE product '{product_name}' does not match OS vendor"
             return empty
@@ -657,7 +658,7 @@ def lookup_os_suse(
         eol_iso = _clean(selected["eol_date"])
         eoas_iso = _clean(selected["eoas_date"])
         release_name = _clean(selected["release_name"])
-        label = f"{product_name} {release_name}".strip()
+        label = join_labels(product_name, release_name)
 
         return {
             "eol_date": iso_date_to_epoch(eol_iso),

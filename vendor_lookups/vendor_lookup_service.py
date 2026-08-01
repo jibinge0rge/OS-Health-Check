@@ -1,7 +1,7 @@
 """Registry for local vendor lifecycle lookup sources + Refresh fallback routing.
 
 Fixed order after endoflife.date (not configurable):
-  eosl → junos → suse → layer23-switch → router-switch
+  eosl → microsoft-lifecycle → junos → suse → layer23-switch → router-switch
 
 Per-source enable flags and family keywords are persisted in
 ``_data/vendor_lookup_settings.json`` (see ``vendor_settings``).
@@ -25,6 +25,13 @@ from .junos_service import (
     lookup_os_junos,
     lookup_os_junos_batch,
     sync_junos_database,
+)
+from .microsoft_lifecycle_service import (
+    get_status as microsoft_lifecycle_get_status,
+    list_all_rows as microsoft_lifecycle_list_all_rows,
+    lookup_os_microsoft_lifecycle,
+    lookup_os_microsoft_lifecycle_batch,
+    sync_microsoft_lifecycle_database,
 )
 from .layer23_switch_service import (
     get_status as layer23_switch_get_status,
@@ -76,12 +83,32 @@ VENDOR_SOURCES: dict[str, VendorSource] = {
         "sync": eosl_sync_os_database,
         "lookup_batch": lookup_os_eosl_batch,
         "lookup_one": lookup_os_eosl,
-        "uses_keywords": False,
+        "uses_keywords": True,
         "viewer_headers": {
             "product": "Product",
             "release": "Release",
             "released": "Released",
             "eol_date": "EOL",
+            "eoas_date": "EOAS",
+            "supported": "Supported",
+        },
+        "supported_as_type": False,
+    },
+    "microsoft-lifecycle": {
+        "id": "microsoft-lifecycle",
+        "label": "Microsoft Lifecycle",
+        "description": "Product lifecycle from learn.microsoft.com/lifecycle",
+        "get_status": microsoft_lifecycle_get_status,
+        "list_rows": microsoft_lifecycle_list_all_rows,
+        "sync": sync_microsoft_lifecycle_database,
+        "lookup_batch": lookup_os_microsoft_lifecycle_batch,
+        "lookup_one": lookup_os_microsoft_lifecycle,
+        "uses_keywords": True,
+        "viewer_headers": {
+            "product": "Product Family",
+            "release": "Product",
+            "released": "Start Date",
+            "eol_date": "End Date (EOL)",
             "eoas_date": "EOAS",
             "supported": "Supported",
         },
@@ -390,9 +417,9 @@ def _empty_vendor_result(
 def lookup_vendor_batch(items: list[dict[str, str]]) -> list[dict[str, str]]:
     """Vendor fallback after endoflife.date.
 
-    Fixed order: eosl → junos → suse → layer23-switch → router-switch.
-    Specialists (junos/suse/layer23-switch/router-switch) only run when enabled and keywords match.
-    eosl runs when enabled (no keyword gate).
+    Fixed order: eosl → microsoft-lifecycle → junos → suse → layer23-switch → router-switch.
+    Each source only runs when enabled and (if it has keywords configured) a keyword matches;
+    an empty keyword list means the source is always eligible when enabled.
     """
     settings = load_settings()
     results: list[dict[str, str]] = []

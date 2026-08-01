@@ -49,8 +49,30 @@ export function initDrawer(cb) {
   });
 
   document.getElementById("drawer-same-as-os-btn").addEventListener("click", () => currentRow && handlers.onSameAsOs?.(currentRow));
+  document.getElementById("drawer-ambiguous-btn").addEventListener("click", () => currentRow && handlers.onMarkAmbiguous?.(currentRow));
   document.getElementById("drawer-rerun-btn").addEventListener("click", () => currentRow && handlers.onRerun?.(currentRow));
   document.getElementById("drawer-revert-btn").addEventListener("click", () => currentRow && handlers.onRevert?.(currentRow));
+  document.getElementById("drawer-toggle-reviewed-btn").addEventListener("click", () => currentRow && handlers.onToggleReviewed?.(currentRow));
+}
+
+function updateReviewedButton(row) {
+  const btn = document.getElementById("drawer-toggle-reviewed-btn");
+  // Only a changed (new/edited) row needs reviewing -- a row identical to
+  // published Data has nothing to validate.
+  const changed = handlers.isChanged?.(row) ?? true;
+  btn.hidden = !changed;
+  if (!changed) return;
+  const reviewed = handlers.isReviewed?.(row) ?? false;
+  btn.textContent = reviewed ? "Mark as not reviewed" : "Mark as reviewed";
+  btn.classList.toggle("reviewed", reviewed);
+}
+
+/** Called after the reviewed flag changes elsewhere (table toggle, bulk
+ * action) so the drawer's own button reflects it without a full re-open
+ * (which would needlessly re-fetch evidence over the network). */
+export function refreshDrawerReviewedState(row) {
+  if (!isDrawerOpenFor(row)) return;
+  updateReviewedButton(row);
 }
 
 export function isDrawerOpenFor(row) {
@@ -69,6 +91,7 @@ export async function openDrawer(row) {
   panel.dataset.editable = isDraft() ? "true" : "false";
   titleEl.textContent = row.os_string || "(blank)";
   actionsEl.hidden = !isDraft();
+  if (isDraft()) updateReviewedButton(row);
 
   const editable = isDraft();
   panel.querySelectorAll("[data-drawer-field]").forEach((input) => {
@@ -85,26 +108,42 @@ export async function openDrawer(row) {
   try {
     const result = await api.getRowEvidence(row.os_string, state.source);
     if (!isDrawerOpenFor(row)) return;
-    const matchedInput = panel.querySelector('[data-drawer-field="matched_by"]');
-    if (matchedInput) matchedInput.value = result.matched_by || row.matched_by || "No match";
-    if (!result.entries || !result.entries.length) {
-      evidenceListEl.innerHTML = `<p class="modal-note">No evidence recorded for this row.</p>`;
-      return;
-    }
-    evidenceListEl.innerHTML = result.entries
-      .map(
-        (entry) => `
-        <div class="evidence-entry">
-          <span class="evidence-method-chip ${entry.method === "none" ? "none" : ""}">${escapeHtml(entry.method)}</span>
-          <div class="evidence-field-name">${escapeHtml(entry.field)}</div>
-          <div class="evidence-detail">${escapeHtml(entry.detail)}</div>
-        </div>`
-      )
-      .join("");
+    renderEvidenceDetail(row, result);
   } catch (error) {
     if (!isDrawerOpenFor(row)) return;
     evidenceListEl.innerHTML = `<p class="modal-note">Couldn't load evidence: ${escapeHtml(String(error.message || error))}</p>`;
   }
+}
+
+/** Shared by openDrawer's fetch and refreshDrawerEvidence's already-in-hand
+ * result -- `detail` is {matched_by, entries} (build_evidence_entries's
+ * shape), same as GET /api/lookup/evidence returns. */
+function renderEvidenceDetail(row, detail) {
+  const matchedInput = panel.querySelector('[data-drawer-field="matched_by"]');
+  if (matchedInput) matchedInput.value = detail?.matched_by || row.matched_by || "No match";
+  if (!detail?.entries || !detail.entries.length) {
+    evidenceListEl.innerHTML = `<p class="modal-note">No evidence recorded for this row.</p>`;
+    return;
+  }
+  evidenceListEl.innerHTML = detail.entries
+    .map(
+      (entry) => `
+      <div class="evidence-entry">
+        <span class="evidence-method-chip ${entry.method === "none" ? "none" : ""}">${escapeHtml(entry.method)}</span>
+        <div class="evidence-field-name">${escapeHtml(entry.field)}</div>
+        <div class="evidence-detail">${escapeHtml(entry.detail)}</div>
+      </div>`
+    )
+    .join("");
+}
+
+/** Called after a fresh re-run/refresh already returned formatted evidence
+ * detail, so the drawer's evidence list updates immediately instead of
+ * showing whatever was loaded when it first opened -- no extra round trip,
+ * and no dependency on the (possibly debounced/off) autosave having landed. */
+export function refreshDrawerEvidence(row, detail) {
+  if (!isDrawerOpenFor(row)) return;
+  renderEvidenceDetail(row, detail);
 }
 
 export function refreshDrawerFields(row) {

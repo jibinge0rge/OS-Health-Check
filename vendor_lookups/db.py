@@ -16,6 +16,7 @@ from psycopg_pool import ConnectionPool
 # App source ids → Postgres schema names
 SOURCE_SCHEMAS: dict[str, str] = {
     "eosl": "eosl",
+    "microsoft-lifecycle": "microsoft_lifecycle",
     "junos": "junos",
     "suse": "suse",
     "layer23-switch": "layer23_switch",

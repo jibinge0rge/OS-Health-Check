@@ -282,9 +282,6 @@ def sync_os_database(
     cancelled = False
 
     with _connect(schema_name) as connection:
-        connection.execute("DELETE FROM releases")
-        connection.execute("DELETE FROM products")
-
         for index, (slug, list_name) in enumerate(products, start=1):
             if cancel_event is not None and cancel_event.is_set():
                 cancelled = True
@@ -299,6 +296,18 @@ def sync_os_database(
                     product_name = list_name
                 scraped_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 with connection.transaction():
+                    # Replace only THIS product's own rows, atomically with
+                    # inserting its fresh scrape -- never a blanket wipe of
+                    # every product up front. A cancel after this point still
+                    # leaves every already-processed product updated exactly
+                    # once, and every not-yet-reached product's prior data
+                    # untouched (not wiped to empty). Note: a product that
+                    # eosl.date later removes entirely will linger here until
+                    # a full, uncancelled run naturally stops touching it --
+                    # acceptable since the alternative (a cancelled run
+                    # deleting everything) is far worse.
+                    connection.execute("DELETE FROM releases WHERE product_slug = %s", (slug,))
+                    connection.execute("DELETE FROM products WHERE slug = %s", (slug,))
                     connection.execute(
                         """
                         INSERT INTO products(slug, name, category, url, scraped_at)
@@ -475,7 +484,14 @@ def _resolve_product_slug(query: str, products: list[Mapping[str, Any]]) -> str 
             best_score = score
             best_slug = slug
 
-    if best_score < 60 or not best_slug:
+    # Require the full product name to actually appear in the query (the 95
+    # tier) -- the weaker 70/80/85 tiers accept a short/generic query
+    # fragment (or a coincidentally-contained slug) as "in" a much longer,
+    # unrelated product name with no regard for word boundaries or vendor.
+    # A missed match just leaves the row unresolved for manual review; a
+    # wrong one silently attaches the wrong vendor's lifecycle dates --
+    # the safer failure mode.
+    if best_score < 95 or not best_slug:
         return None
 
     # Vague "Other … Linux" must not resolve to the generic linux kernel product.
@@ -535,8 +551,8 @@ def lookup_os_eosl(
         product = connection.execute(
             "SELECT slug, name FROM products WHERE slug = %s", (product_slug,)
         ).fetchone()
-        if product and _clean(os_string):
-            if not vendors_compatible(os_string, _clean(product["name"])):
+        if product and _clean(cleaned_name):
+            if not vendors_compatible(cleaned_name, _clean(product["name"])):
                 empty["product_slug"] = product_slug
                 empty["api_note"] = (
                     f"EOSL product '{product['name']}' does not match OS vendor"
