@@ -630,7 +630,7 @@ def lookup_os_suse(
             "SELECT slug, name FROM products WHERE slug = %s", (product_slug,)
         ).fetchone()
         product_name = _clean(product["name"]) if product else product_slug
-        if _clean(os_string) and not vendors_compatible(os_string, product_name):
+        if _clean(cleaned_name) and not vendors_compatible(cleaned_name, product_name):
             empty["product_slug"] = product_slug
             empty["api_note"] = f"SUSE product '{product_name}' does not match OS vendor"
             return empty

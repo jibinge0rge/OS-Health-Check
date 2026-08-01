@@ -56,6 +56,7 @@ export async function initEditor() {
   initDrawer({
     onFieldChange: () => scheduleAutosave(),
     onSameAsOs: (row) => { applySameAsOs(row); scheduleAutosave(); refreshView(); },
+    onMarkAmbiguous: (row) => { applyAmbiguous(row); scheduleAutosave(); refreshView(); refreshDrawerFields(row); },
     onRerun: (row) => rerunRow(row),
     onRevert: (row) => { revertRow(row); scheduleAutosave(); refreshView(); },
     onToggleReviewed: (row) => { toggleRowReviewed(row); scheduleAutosave(); refreshDrawerReviewedState(row); refreshView(); },
@@ -84,6 +85,7 @@ export async function initEditor() {
   // however long the whole batch takes.
   document.getElementById("bulk-refresh-btn").addEventListener("click", openRefreshModal);
   document.getElementById("bulk-same-as-os-btn").addEventListener("click", bulkSameAsOs);
+  document.getElementById("bulk-ambiguous-btn").addEventListener("click", bulkMarkAmbiguous);
   document.getElementById("bulk-revert-btn").addEventListener("click", bulkRevert);
   document.getElementById("bulk-mark-reviewed-btn").addEventListener("click", bulkMarkReviewed);
   document.getElementById("bulk-mark-unreviewed-btn").addEventListener("click", bulkMarkUnreviewed);
@@ -269,6 +271,22 @@ function applySameAsOs(row) {
   row.normalized_os = collapsed;
 }
 
+// Same shape as an ambiguous row created by the Add OS pipeline -- clears
+// EOL/EOAS too, since keeping lifecycle dates tied to a normalization the
+// user just disavowed as unreliable would be actively misleading (they'd
+// otherwise still show a stale "Past EOL" chip etc.). Matches what
+// isAmbiguousRow/dateCellHtml already expect ("skipped" for a blank date on
+// an ambiguous row, not "none").
+function applyAmbiguous(row) {
+  row.normalized_os_detailed_name = "Ambiguous OS";
+  row.normalized_os = "Ambiguous OS";
+  row.eol_date = "";
+  row.eol_status = "";
+  row.eoas_date = "";
+  row.eoas_status = "";
+  row.matched_by = "Ambiguous";
+}
+
 function revertRow(row) {
   const baseline = dataByOs.get(dedupeKey(row.os_string));
   if (!baseline) return;
@@ -369,6 +387,15 @@ function bulkRevert() {
   scheduleAutosave();
   refreshView();
   showToast(`Reverted ${targets.length} row(s) to Data.`);
+}
+
+function bulkMarkAmbiguous() {
+  const targets = selectedRows();
+  if (!targets.length) return;
+  targets.forEach(applyAmbiguous);
+  scheduleAutosave();
+  refreshView();
+  showToast(`Marked ${targets.length} row(s) as Ambiguous OS.`);
 }
 
 function bulkMarkReviewed() {

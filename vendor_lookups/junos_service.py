@@ -484,7 +484,7 @@ def lookup_os_junos(
             )
             return empty
 
-        if _clean(os_string) and not vendors_compatible(os_string, PRODUCT_NAME):
+        if _clean(cleaned_name) and not vendors_compatible(cleaned_name, PRODUCT_NAME):
             empty["product_slug"] = PRODUCT_SLUG
             empty["api_note"] = "Junos product does not match OS vendor"
             return empty

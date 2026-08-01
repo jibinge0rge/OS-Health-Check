@@ -444,7 +444,15 @@ def _resolve_product_slug(query: str, products: list[Mapping[str, Any]]) -> str 
             best_score = score
             best_slug = slug
 
-    return best_slug if best_score >= 60 else None
+    # Require the full product name to actually appear in the query (the 95
+    # tier) -- the weaker 80/85 tiers accept a short/generic query fragment
+    # (or a coincidentally-contained slug) as "in" a much longer, unrelated
+    # product name with no regard for word boundaries or vendor. That's how
+    # a query like "VMware vSphere 4" once matched a Microsoft product whose
+    # name happened to contain "4.0" as a substring. A missed match just
+    # leaves the row unresolved for manual review; a wrong one silently
+    # attaches the wrong vendor's lifecycle dates -- the safer failure mode.
+    return best_slug if best_score >= 95 else None
 
 
 def lookup_os_microsoft_lifecycle(
@@ -503,7 +511,15 @@ def lookup_os_microsoft_lifecycle(
             "SELECT slug, name FROM products WHERE slug = %s", (product_slug,)
         ).fetchone()
         product_name = _clean(product["name"]) if product else product_slug
-        if _clean(os_string) and not vendors_compatible(os_string, product_name):
+        # Checked against cleaned_name (the value actually used to resolve
+        # product_slug above), not the raw os_string -- os_string is exactly
+        # the field most likely to lack a recognizable vendor keyword (a
+        # hostname, serial number, etc.), and vendors_compatible() treats "no
+        # vendor tag detected" as automatically compatible. Gating on the raw
+        # string let a query like "VMware vSphere 4" (from normalized_os,
+        # clearly vmware) slip through and match an unrelated Microsoft
+        # product whenever os_string itself carried no vendor keyword.
+        if _clean(cleaned_name) and not vendors_compatible(cleaned_name, product_name):
             empty["product_slug"] = product_slug
             empty["api_note"] = (
                 f"Microsoft Lifecycle product '{product_name}' does not match OS vendor"

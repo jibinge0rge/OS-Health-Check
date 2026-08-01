@@ -49,6 +49,7 @@ export function initDrawer(cb) {
   });
 
   document.getElementById("drawer-same-as-os-btn").addEventListener("click", () => currentRow && handlers.onSameAsOs?.(currentRow));
+  document.getElementById("drawer-ambiguous-btn").addEventListener("click", () => currentRow && handlers.onMarkAmbiguous?.(currentRow));
   document.getElementById("drawer-rerun-btn").addEventListener("click", () => currentRow && handlers.onRerun?.(currentRow));
   document.getElementById("drawer-revert-btn").addEventListener("click", () => currentRow && handlers.onRevert?.(currentRow));
   document.getElementById("drawer-toggle-reviewed-btn").addEventListener("click", () => currentRow && handlers.onToggleReviewed?.(currentRow));

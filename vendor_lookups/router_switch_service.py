@@ -891,8 +891,8 @@ def lookup_os_router_switch(
             part = _clean(row["release_name"])
             product_name = _clean(row["latest_raw"]) or part
             manufacturer = manufacturer_names.get(_clean(row["product_slug"]), "")
-            if manufacturer and _clean(os_string):
-                if not vendors_compatible(os_string, f"{manufacturer} {product_name}"):
+            if manufacturer and _clean(cleaned_name):
+                if not vendors_compatible(cleaned_name, f"{manufacturer} {product_name}"):
                     continue
             score = _score_router_switch_row(part, product_name, cleaned_name, hints)
             if cleaned_name != _clean(os_string):
