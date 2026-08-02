@@ -141,9 +141,12 @@ CSV_HEADERS = [
     "eoas_status",
 ]
 STATIC_DIR = BASE_DIR / "static"
-# Destination filename for Azure/AWS deploy profiles when the user leaves the
-# blob path / key field blank -- keep in sync with deploy.js's placeholder.
-DEFAULT_UPLOAD_FILENAME = "manual_eol_lookup.csv"
+# Destination file NAME (no extension) for Azure/AWS deploy profiles when the
+# user leaves the blob path / key field blank -- keep in sync with deploy.js's
+# placeholder. The extension is always chosen by upload_format, never typed
+# by the user, so this constant deliberately excludes one.
+DEFAULT_UPLOAD_FILENAME = "manual_eol_lookup"
+UPLOAD_FORMATS = {"csv": ".csv", "parquet": ".parquet"}
 
 
 def static_v(rel_path: str) -> str:
@@ -289,10 +292,27 @@ class AmbiguousOsDetectRequest(BaseModel):
     items: list[NormalizeSuggestItem] = Field(default_factory=list)
 
 
+def _normalize_upload_format(value: object) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in UPLOAD_FORMATS else "csv"
+
+
+def _strip_known_extension(name: str) -> str:
+    """Drop a trailing .csv/.parquet the user typed by hand -- the extension
+    is always chosen by upload_format instead, never typed, so a name saved
+    (or resolved) here never ends up double-extensioned like "foo.csv.csv"."""
+    lowered = name.lower()
+    for ext in UPLOAD_FORMATS.values():
+        if lowered.endswith(ext):
+            return name[: -len(ext)]
+    return name
+
+
 class AzureUploadRequest(BaseModel):
     account_name: str = Field(min_length=1)
     container_name: str = Field(min_length=1)
     blob_name: str = Field(min_length=1)
+    upload_format: str = "csv"
 
     @field_validator("account_name", "container_name", "blob_name", mode="before")
     @classmethod
@@ -309,6 +329,11 @@ class AzureUploadRequest(BaseModel):
             raise ValueError("Blob path must not start with /.")
         return value
 
+    @field_validator("upload_format", mode="before")
+    @classmethod
+    def normalize_upload_format(cls, value: object) -> str:
+        return _normalize_upload_format(value)
+
 
 class AzureProfile(BaseModel):
     id: str = ""
@@ -316,11 +341,17 @@ class AzureProfile(BaseModel):
     account_name: str = ""
     container_name: str = ""
     blob_name: str = ""
+    upload_format: str = "csv"
 
     @field_validator("id", "name", "account_name", "container_name", "blob_name", mode="before")
     @classmethod
     def strip_optional_fields(cls, value: object) -> str:
         return str(value or "").strip()
+
+    @field_validator("upload_format", mode="before")
+    @classmethod
+    def normalize_upload_format(cls, value: object) -> str:
+        return _normalize_upload_format(value)
 
 
 class AzureSettingsStore(BaseModel):
@@ -339,6 +370,7 @@ class AzureSettings(BaseModel):
     account_name: str = ""
     container_name: str = ""
     blob_name: str = ""
+    upload_format: str = "csv"
 
 
 class AzureSettingsSaveRequest(BaseModel):
@@ -357,11 +389,17 @@ class AwsProfile(BaseModel):
     bucket: str = ""
     region: str = ""
     key: str = ""
+    upload_format: str = "csv"
 
     @field_validator("id", "name", "bucket", "region", "key", mode="before")
     @classmethod
     def strip_optional_fields(cls, value: object) -> str:
         return str(value or "").strip()
+
+    @field_validator("upload_format", mode="before")
+    @classmethod
+    def normalize_upload_format(cls, value: object) -> str:
+        return _normalize_upload_format(value)
 
 
 class AwsSettingsStore(BaseModel):
@@ -896,6 +934,7 @@ def _normalize_azure_store(payload: dict[str, object] | None) -> AzureSettingsSt
                     account_name=str(item.get("account_name") or "").strip(),
                     container_name=str(item.get("container_name") or "").strip(),
                     blob_name=str(item.get("blob_name") or "").strip(),
+                    upload_format=item.get("upload_format"),
                 )
             )
 
@@ -953,6 +992,7 @@ def load_azure_settings() -> AzureSettings:
         account_name=active.account_name,
         container_name=active.container_name,
         blob_name=active.blob_name,
+        upload_format=active.upload_format,
     )
 
 
@@ -999,6 +1039,7 @@ def require_azure_settings() -> AzureUploadRequest:
         account_name=settings.account_name,
         container_name=settings.container_name,
         blob_name=settings.blob_name,
+        upload_format=settings.upload_format,
     )
 
 
@@ -1014,6 +1055,7 @@ def resolve_azure_profile(profile_id: str = "") -> AzureUploadRequest:
         account_name=profile.account_name,
         container_name=profile.container_name,
         blob_name=profile.blob_name,
+        upload_format=profile.upload_format,
     )
 
 
@@ -1044,6 +1086,7 @@ def _normalize_aws_store(payload: dict[str, object] | None) -> AwsSettingsStore:
                     bucket=str(item.get("bucket") or "").strip(),
                     region=str(item.get("region") or "").strip(),
                     key=str(item.get("key") or "").strip(),
+                    upload_format=item.get("upload_format"),
                 )
             )
 
@@ -1242,34 +1285,67 @@ def _stream_az_upload_to_queue(
         loop.call_soon_threadsafe(output_queue.put_nowait, None)
 
 
+def _write_rows_parquet(rows: list[LookupRow], path: Path) -> None:
+    """Lazy-imported so file-mode/CSV-only deployments never need pyarrow
+    installed -- only Deploy's optional Parquet upload does."""
+    try:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+    except ImportError as exc:
+        raise RuntimeError(
+            "Parquet export requires the 'pyarrow' package, which isn't installed. "
+            "Add it to requirements.txt and reinstall (rebuild the Docker image if running in a container)."
+        ) from exc
+    records = [row.model_dump() for row in rows]
+    table = pa.Table.from_pylist(records, schema=pa.schema([(h, pa.string()) for h in CSV_HEADERS]))
+    pq.write_table(table, path)
+
+
 @contextmanager
-def _resolve_data_csv_for_upload() -> Iterator[Path | None]:
-    """Path to the CSV that Deploy should actually upload. File mode: the
-    real DATA_PATH, untouched. DB mode: there's no local file that's the
-    source of truth, so export current Data into a throwaway temp file for
-    the CLI upload to read, cleaned up afterward either way. Yields None if
-    there's nothing to upload."""
-    if not _USE_DB:
+def _resolve_upload_file(fmt: str) -> Iterator[Path | None]:
+    """Path to the file Deploy should actually upload, written in the
+    requested format ("csv" or "parquet"). File mode + csv: the real
+    DATA_PATH, untouched (no copy needed). Every other combination (DB mode,
+    or Parquet in file mode) has no pre-existing file in that exact format,
+    so current Data is exported into a throwaway temp file, cleaned up
+    afterward either way. Yields None if there's nothing to upload."""
+    suffix = UPLOAD_FORMATS.get(fmt, ".csv")
+    if not _USE_DB and fmt == "csv":
         yield DATA_PATH if DATA_PATH.exists() else None
         return
 
-    rows = [LookupRow(**row) for row in lookup_db.db_load_rows("data")]
+    if not _data_exists():
+        yield None
+        return
+    rows = [LookupRow(**row) for row in load_rows("data")]
     if not rows:
         yield None
         return
-    with NamedTemporaryFile("w", newline="", encoding="utf-8", delete=False, suffix=".csv") as handle:
+
+    with NamedTemporaryFile(delete=False, suffix=suffix) as handle:
         temp_path = Path(handle.name)
     try:
-        _write_rows_csv(rows, temp_path)
+        if fmt == "parquet":
+            _write_rows_parquet(rows, temp_path)
+        else:
+            _write_rows_csv(rows, temp_path)
         yield temp_path
     finally:
         temp_path.unlink(missing_ok=True)
 
 
+def _upload_destination_name(name: str, fmt: str) -> str:
+    """The name the user typed (no extension expected) plus the extension
+    for the chosen format -- stripping any extension they typed anyway so a
+    profile saved before this feature (or before Parquet existed) never
+    produces a double extension like "foo.csv.csv"."""
+    return f"{_strip_known_extension(name)}{UPLOAD_FORMATS.get(fmt, '.csv')}"
+
+
 async def azure_upload_events(payload: AzureUploadRequest) -> AsyncIterator[str]:
-    with _resolve_data_csv_for_upload() as data_csv_path:
+    with _resolve_upload_file(payload.upload_format) as data_csv_path:
         if data_csv_path is None:
-            yield sse_event({"type": "error", "message": "Data lookup CSV not found at _data/eol_lookup.csv."})
+            yield sse_event({"type": "error", "message": "Data lookup not found at _data/eol_lookup.csv."})
             return
         async for event in _azure_upload_events(payload, data_csv_path):
             yield event
@@ -1286,6 +1362,7 @@ async def _azure_upload_events(payload: AzureUploadRequest, data_csv_path: Path)
         )
         return
 
+    blob_name = _upload_destination_name(payload.blob_name, payload.upload_format)
     command = [
         az_path,
         "storage",
@@ -1298,7 +1375,7 @@ async def _azure_upload_events(payload: AzureUploadRequest, data_csv_path: Path)
         "--file",
         str(data_csv_path),
         "--name",
-        payload.blob_name,
+        blob_name,
         "--overwrite",
         "--auth-mode",
         "login",
@@ -1309,7 +1386,7 @@ async def _azure_upload_events(payload: AzureUploadRequest, data_csv_path: Path)
             "type": "start",
             "message": (
                 f"Uploading the validated Data lookup to "
-                f"{payload.account_name}/{payload.container_name}/{payload.blob_name}"
+                f"{payload.account_name}/{payload.container_name}/{blob_name}"
             ),
         }
     )
@@ -1389,9 +1466,9 @@ async def _azure_upload_events(payload: AzureUploadRequest, data_csv_path: Path)
 
 
 async def aws_upload_events(profile: AwsProfile) -> AsyncIterator[str]:
-    with _resolve_data_csv_for_upload() as data_csv_path:
+    with _resolve_upload_file(profile.upload_format) as data_csv_path:
         if data_csv_path is None:
-            yield sse_event({"type": "error", "message": "Data lookup CSV not found at _data/eol_lookup.csv."})
+            yield sse_event({"type": "error", "message": "Data lookup not found at _data/eol_lookup.csv."})
             return
         async for event in _aws_upload_events(profile, data_csv_path):
             yield event
@@ -1405,7 +1482,8 @@ async def _aws_upload_events(profile: AwsProfile, data_csv_path: Path) -> AsyncI
         )
         return
 
-    destination = f"s3://{profile.bucket}/{profile.key}"
+    key = _upload_destination_name(profile.key, profile.upload_format)
+    destination = f"s3://{profile.bucket}/{key}"
     command = [aws_path, "s3", "cp", str(data_csv_path), destination]
     if profile.region:
         command.extend(["--region", profile.region])
@@ -1603,7 +1681,30 @@ async def lookup_refresh_events(
             }
         )
 
-    lookup_rows = [LookupRow(**row) for row in rows]
+    # `rows` may be only a selected subset -- the bulk "Refresh lifecycle"
+    # action and the toolbar's "Refresh EOL/EOAS" (when a selection is
+    # active) both send just the targeted rows, not the whole draft. Saving
+    # `rows` directly as the entire new content for `source` would silently
+    # delete every row that wasn't part of this refresh (and, on the next
+    # publish, delete them from Data too). Merge the refreshed rows back
+    # into whatever the source currently contains, keyed by os_string --
+    # mirrors the client's own onComplete merge (editor.js) so a full-draft
+    # refresh (rows already equals the whole draft) stays a no-op here.
+    existing_rows = load_rows(source) if _source_exists(source) else []
+    refreshed_by_key = {str(row.get("os_string") or "").strip(): row for row in rows}
+    seen_keys: set[str] = set()
+    merged_rows: list[dict] = []
+    for row in existing_rows:
+        key = str(row.get("os_string") or "").strip()
+        merged_rows.append(refreshed_by_key.get(key, row))
+        seen_keys.add(key)
+    for row in rows:
+        key = str(row.get("os_string") or "").strip()
+        if key not in seen_keys:
+            merged_rows.append(row)
+            seen_keys.add(key)
+
+    lookup_rows = [LookupRow(**row) for row in merged_rows]
     save_rows(lookup_rows, source)
     saved_evidence = save_evidence(
         prune_evidence_to_rows({"by_os": evidence_by_os, "updated_at": ""}, lookup_rows), source
@@ -2203,11 +2304,6 @@ async def get_azure_settings() -> AzureSettingsStore:
 
 @app.put("/api/azure/settings")
 async def update_azure_settings(payload: AzureSettingsSaveRequest) -> AzureSettingsStore:
-    if not payload.profiles:
-        raise HTTPException(
-            status_code=400,
-            detail="Add at least one Azure profile before saving.",
-        )
     for profile in payload.profiles:
         if not profile.name:
             raise HTTPException(status_code=400, detail="Each Azure profile needs a name.")
@@ -2218,6 +2314,8 @@ async def update_azure_settings(payload: AzureSettingsSaveRequest) -> AzureSetti
             )
         if not profile.blob_name:
             profile.blob_name = DEFAULT_UPLOAD_FILENAME
+        else:
+            profile.blob_name = _strip_known_extension(profile.blob_name)
         if profile.blob_name.startswith("/"):
             raise HTTPException(
                 status_code=400,
@@ -2251,8 +2349,6 @@ async def get_aws_settings() -> AwsSettingsStore:
 
 @app.put("/api/aws/settings")
 async def update_aws_settings(payload: AwsSettingsSaveRequest) -> AwsSettingsStore:
-    if not payload.profiles:
-        raise HTTPException(status_code=400, detail="Add at least one AWS profile before saving.")
     for profile in payload.profiles:
         if not profile.name:
             raise HTTPException(status_code=400, detail="Each AWS profile needs a name.")
@@ -2263,6 +2359,8 @@ async def update_aws_settings(payload: AwsSettingsSaveRequest) -> AwsSettingsSto
             )
         if not profile.key:
             profile.key = DEFAULT_UPLOAD_FILENAME
+        else:
+            profile.key = _strip_known_extension(profile.key)
     return save_aws_settings_store(
         AwsSettingsStore(active_profile_id=payload.active_profile_id, profiles=payload.profiles)
     )

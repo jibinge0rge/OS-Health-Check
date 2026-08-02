@@ -336,10 +336,12 @@ def extract_version_hints(os_name: str) -> list[str]:
         # "3.x or later" is a range, not version 3.
         if re.search(rf"(?<!\d){re.escape(value)}\.x\b", text, re.I):
             continue
-        # Lone digit after SP / R / U is a pack marker, not a product version.
+        # Lone digit after SP / R / U / (Service) Pack is a pack marker, not
+        # a product version -- e.g. the "2" in "Service Pack 2" (spelled
+        # out, not just "SP2") must not become a standalone hint either.
         if "." not in value:
-            prefix = text[max(0, match.start() - 4) : match.start()]
-            if re.search(r"(?:^|[^A-Za-z0-9])(?:SP|R|U)\s*$", prefix, re.I):
+            prefix = text[max(0, match.start() - 14) : match.start()]
+            if re.search(r"(?:^|[^A-Za-z0-9])(?:SP|R|U|(?:Service\s+)?Pack)\s*$", prefix, re.I):
                 continue
         seen.add(value)
         hints.append(value)

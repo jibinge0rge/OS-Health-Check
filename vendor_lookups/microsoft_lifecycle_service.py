@@ -379,9 +379,14 @@ _EXCLUDED_FAMILIES = frozenset({"windows"})
 
 
 def _version_tokens(text: str) -> list[str]:
+    # Negative lookbehind so a compound release tag like "25H2"/"24H1" isn't
+    # split into "25"+"2" / "24"+"1" -- that stray suffix digit previously
+    # scored a perfect 100 against an unrelated hint like "2" (extracted from
+    # something like "Service Pack 2"), matching e.g. Windows XP to release
+    # "25H2" purely by coincidental digit overlap.
     return [
         token
-        for token in re.findall(r"\d+(?:\.\d+)*", text or "")
+        for token in re.findall(r"(?<![A-Za-z])\d+(?:\.\d+)*", text or "")
         if token not in _NON_VERSION_HINTS
     ]
 

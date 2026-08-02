@@ -2,6 +2,7 @@
 // (finished tasks, most recent first, persisted across reloads by tasks.js).
 
 import { subscribe, getTasks, cancelTask, dismissTask, clearHistory } from "./tasks.js";
+import { formatDateTime } from "./date_utils.js";
 
 export function initBackgroundTasks() {
   document.querySelectorAll("[data-bg-tab]").forEach((btn) => {
@@ -105,7 +106,7 @@ function renderHistory(finished) {
 function formatWhen(at) {
   if (!at) return "";
   const d = new Date(at);
-  return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return formatDateTime(d);
 }
 
 function escapeHtml(value) {

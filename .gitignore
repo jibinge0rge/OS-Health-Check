@@ -13,3 +13,4 @@ _config/
 _draft/
 .pytest_cache/
 _data/*_sync.json
+QA/*

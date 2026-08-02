@@ -2,6 +2,9 @@
    Light is default; [data-theme="dark"] on <html> overrides. Both required. */
 
 :root {
+  /* Tells the browser to render native controls (date-picker popup,
+     scrollbars, etc.) in the matching theme instead of always light. */
+  color-scheme: light;
   --c-app: #F7F9FC;
   --c-surface: #FFFFFF;
   --c-raised: #F5F5F5;
@@ -47,6 +50,7 @@
 }
 
 :root[data-theme="dark"] {
+  color-scheme: dark;
   --c-app: #0E0E10;
   --c-surface: #161618;
   --c-raised: #1C1C1F;
@@ -70,6 +74,7 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]):not([data-theme="dark"]) {
+    color-scheme: dark;
     --c-app: #0E0E10;
     --c-surface: #161618;
     --c-raised: #1C1C1F;

@@ -5,6 +5,7 @@ jinja2
 openai
 openpyxl
 psycopg[binary,pool]
+pyarrow
 python-dotenv
 python-multipart
 requests

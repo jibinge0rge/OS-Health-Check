@@ -5,7 +5,7 @@ import { api, streams } from "./api.js";
 import { iconMarkup } from "./icons.js";
 import { parseRowDate, classifyDateChip, formatRelative } from "./date_utils.js";
 import { initFiltersPanel, toggleFiltersPanel, matchesColumnFilters, activeFilterCount, clearAllColumnFilters } from "./filters_panel.js";
-import { initDrawer, openDrawer, closeDrawer, isDrawerOpenFor, refreshDrawerFields, refreshDrawerReviewedState, refreshDrawerEvidence } from "./drawer.js";
+import { initDrawer, openDrawer, closeDrawer, isDrawerOpenFor, refreshDrawerFields, refreshDrawerReviewedState, refreshDrawerEvidence, markDrawerFieldManual } from "./drawer.js";
 import { openModal, closeModal, showToast, runProgress } from "./modals.js";
 import { getTasks, hasActive } from "./tasks.js";
 
@@ -54,7 +54,11 @@ export async function initEditor() {
 
   initFiltersPanel({ onFilterChange: () => { clearSelection(); renderAll(); } });
   initDrawer({
-    onFieldChange: () => scheduleAutosave(),
+    onFieldChange: (row, field) => {
+      const label = markFieldManual(row, field);
+      if (label) markDrawerFieldManual(row, label);
+      scheduleAutosave();
+    },
     onSameAsOs: (row) => { applySameAsOs(row); scheduleAutosave(); refreshView(); },
     onMarkAmbiguous: (row) => { applyAmbiguous(row); scheduleAutosave(); refreshView(); refreshDrawerFields(row); },
     onRerun: (row) => rerunRow(row),
@@ -134,10 +138,19 @@ function renderStorageChip(mode, target) {
   }
 }
 
+const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// Only this one topbar timestamp uses this richer "2 Aug 2026, 12:24 pm"
+// style -- everywhere else in the app (vendor last-updated, background task
+// times, drawer/table dates) uses the plain YYYY-MM-DD[ HH:MM] format.
 function formatPublishedAt(iso) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  const hour24 = d.getHours();
+  const hour12 = hour24 % 12 || 12;
+  const minutes = String(d.getMinutes()).padStart(2, "0");
+  const ampm = hour24 < 12 ? "am" : "pm";
+  return `${d.getDate()} ${SHORT_MONTHS[d.getMonth()]} ${d.getFullYear()}, ${hour12}:${minutes} ${ampm}`;
 }
 
 function dedupeKey(v) { return String(v || "").trim().toLowerCase(); }
@@ -314,6 +327,34 @@ function setRowReviewed(row, value) {
 
 function toggleRowReviewed(row) {
   setRowReviewed(row, !isRowReviewed(row));
+}
+
+// Mirrors lookup_extras._FIELD_LABELS / the evidence sidecar's 3 slots.
+const FIELD_TO_EVIDENCE_SLOT = {
+  normalized_os_detailed_name: ["detailed", "Normalized OS detailed name"],
+  normalized_os: ["normalized", "Normalized OS"],
+  eol_date: ["eol", "EOL / EOAS lifecycle"],
+  eol_status: ["eol", "EOL / EOAS lifecycle"],
+  eoas_date: ["eol", "EOL / EOAS lifecycle"],
+  eoas_status: ["eol", "EOL / EOAS lifecycle"],
+};
+
+/** A field hand-edited in the drawer no longer reflects whatever a vendor
+ * lookup (or fuzzy/AI match) originally filled it with -- without this, the
+ * evidence panel kept showing that stale "Filled from X" note forever,
+ * describing a value the user had since overridden. Returns the evidence
+ * slot's display label (for updating the drawer immediately) or null if
+ * this field has no evidence slot. */
+function markFieldManual(row, field) {
+  const mapping = FIELD_TO_EVIDENCE_SLOT[field];
+  if (!mapping) return null;
+  const [slot, label] = mapping;
+  const key = evidenceKey(row);
+  if (!key) return null;
+  state.evidence.by_os = state.evidence.by_os || {};
+  const entry = state.evidence.by_os[key] || {};
+  state.evidence.by_os[key] = { ...entry, [slot]: { method: "manual" } };
+  return label;
 }
 
 async function rerunRow(row) {
@@ -1059,10 +1100,12 @@ async function openValidateModal() {
   const reviewAckBlock = document.getElementById("review-ack-block");
   const reviewAckChip = document.getElementById("review-ack-chip");
   const reviewAckCheckbox = document.getElementById("review-ack-checkbox");
+  const reviewAckBox = reviewAckChip.querySelector(".box");
   let reviewAcknowledged = notReviewedCount === 0;
   reviewAckBlock.hidden = notReviewedCount === 0;
   reviewAckChip.classList.remove("active");
   reviewAckCheckbox.checked = false;
+  reviewAckBox.innerHTML = "";
   document.getElementById("review-warning-note").textContent =
     `${notReviewedCount} of ${totalChanged} changed row(s) haven't been marked reviewed.`;
   reviewAckChip.onclick = (event) => {
@@ -1070,6 +1113,9 @@ async function openValidateModal() {
     reviewAcknowledged = !reviewAcknowledged;
     reviewAckCheckbox.checked = reviewAcknowledged;
     reviewAckChip.classList.toggle("active", reviewAcknowledged);
+    // Without this, "active" just fills the box with solid brand color and
+    // no checkmark -- reads as a colored dot, not a checkbox.
+    reviewAckBox.innerHTML = reviewAcknowledged ? iconMarkup("check", { size: 9 }) : "";
     updateConfirmState();
   };
 

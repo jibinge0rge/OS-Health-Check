@@ -383,7 +383,12 @@ def _load_releases(
 
 
 def _version_tokens(text: str) -> list[str]:
-    return re.findall(r"\d+(?:\.\d+)*", text or "")
+    # Negative lookbehind so a compound release tag like "25H2"/"24H1" isn't
+    # split into "25"+"2" / "24"+"1" -- that stray suffix digit previously
+    # scored a perfect 100 against an unrelated hint like "2" (extracted from
+    # something like "Service Pack 2"), matching e.g. Windows XP to release
+    # "25H2" purely by coincidental digit overlap.
+    return re.findall(r"(?<![A-Za-z])\d+(?:\.\d+)*", text or "")
 
 
 def _eosl_version_hints(os_name: str) -> list[str]:

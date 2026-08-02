@@ -18,6 +18,18 @@ export function toISODate(d) {
   return d.toISOString().slice(0, 10);
 }
 
+/** YYYY-MM-DD HH:MM, local time -- the one format used everywhere a
+ * timestamp (not just a date) is shown (published-at, vendor last-updated,
+ * background task completion), so no two places in the app show the same
+ * kind of value differently (e.g. "Jul 31, 2026, 06:04 PM" vs "2026-07-31"). */
+export function formatDateTime(d) {
+  if (!d) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  const date = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${date} ${time}`;
+}
+
 export function classifyDateChip(d, kind) {
   if (!d) return "empty";
   const diffDays = (d.getTime() - Date.now()) / 86400000;
