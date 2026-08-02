@@ -53276,12 +53276,6 @@
         "method": "none"
       }
     },
-    "Red Hat Enterprises 7": {
-      "eol": {
-        "method": "manual"
-      },
-      "reviewed": true
-    },
     "Rocky Linux 10.1 6 12": {
       "eol": {
         "got": {
@@ -86896,15 +86890,33 @@
     },
     "Linux Kernel 4.x on SuSE": {
       "eol": {
-        "method": "manual"
+        "got": {
+          "eol_date": "",
+          "eoas_date": "",
+          "eol_status": "",
+          "eoas_status": "",
+          "normalized_os": "",
+          "normalized_os_detailed_name": ""
+        },
+        "method": "lookup-fallback",
+        "apiNote": "",
+        "queryUsed": "Linux Kernel 4 / Linux Kernel 4",
+        "queryField": "normalized pair",
+        "productSlug": "",
+        "releaseName": "",
+        "fallbackFrom": {
+          "os_string": "Linux Kernel 4.18.0-553.16.1.el8_10.x86_64",
+          "normalized_os": "Linux Kernel 4",
+          "normalized_os_detailed_name": "Linux Kernel 4"
+        },
+        "releaseLabel": ""
       },
       "detailed": {
         "method": "none"
       },
       "normalized": {
         "method": "none"
-      },
-      "reviewed": true
+      }
     },
     "Linux ubuntu_linux_20.04": {
       "eol": {
@@ -88373,57 +88385,28 @@
     },
     "Amazon Linux 2018.03 4 14": {
       "eol": {
+        "got": {
+          "eol_date": "1877472000",
+          "eoas_date": "1814313600",
+          "eol_status": "",
+          "eoas_status": "",
+          "normalized_os": "",
+          "normalized_os_detailed_name": ""
+        },
         "method": "api",
-        "queryUsed": "Amazon Linux 2018.03",
+        "apiNote": "",
+        "queryUsed": "Amazon Linux 2023",
         "queryField": "normalized_os",
         "productSlug": "amazon-linux",
-        "releaseName": "2018.03",
-        "releaseLabel": "AMI 2018.03",
-        "apiNote": "",
-        "got": {
-          "eol_date": "1703980800",
-          "eol_status": "",
-          "eoas_date": "1609372800",
-          "eoas_status": "",
-          "normalized_os_detailed_name": "Amazon Linux AMI 2018.03",
-          "normalized_os": "Amazon Linux 2018.03"
-        }
+        "releaseName": "2023",
+        "releaseLabel": "2023"
       },
       "detailed": {
-        "method": "api",
-        "queryUsed": "Amazon Linux 2018.03",
-        "queryField": "normalized_os",
-        "productSlug": "amazon-linux",
-        "releaseName": "2018.03",
-        "releaseLabel": "AMI 2018.03",
-        "apiNote": "",
-        "got": {
-          "eol_date": "1703980800",
-          "eol_status": "",
-          "eoas_date": "1609372800",
-          "eoas_status": "",
-          "normalized_os_detailed_name": "Amazon Linux AMI 2018.03",
-          "normalized_os": "Amazon Linux 2018.03"
-        }
+        "method": "none"
       },
       "normalized": {
-        "method": "api",
-        "queryUsed": "Amazon Linux 2018.03",
-        "queryField": "normalized_os",
-        "productSlug": "amazon-linux",
-        "releaseName": "2018.03",
-        "releaseLabel": "AMI 2018.03",
-        "apiNote": "",
-        "got": {
-          "eol_date": "1703980800",
-          "eol_status": "",
-          "eoas_date": "1609372800",
-          "eoas_status": "",
-          "normalized_os_detailed_name": "Amazon Linux AMI 2018.03",
-          "normalized_os": "Amazon Linux 2018.03"
-        }
-      },
-      "reviewed": true
+        "method": "none"
+      }
     },
     "Fortinet FortiGate 7.4.11": {
       "eol": {
@@ -103370,15 +103353,33 @@
     },
     "Linux Kernel 4.x on Rocky Linux": {
       "eol": {
-        "method": "manual"
+        "got": {
+          "eol_date": "",
+          "eoas_date": "",
+          "eol_status": "",
+          "eoas_status": "",
+          "normalized_os": "",
+          "normalized_os_detailed_name": ""
+        },
+        "method": "lookup-fallback",
+        "apiNote": "",
+        "queryUsed": "Linux Kernel 4 / Linux Kernel 4",
+        "queryField": "normalized pair",
+        "productSlug": "",
+        "releaseName": "",
+        "fallbackFrom": {
+          "os_string": "Linux Kernel 4.18.0-553.16.1.el8_10.x86_64",
+          "normalized_os": "Linux Kernel 4",
+          "normalized_os_detailed_name": "Linux Kernel 4"
+        },
+        "releaseLabel": ""
       },
       "detailed": {
         "method": "none"
       },
       "normalized": {
         "method": "none"
-      },
-      "reviewed": true
+      }
     },
     "Linux enterprise_linux_8.10 x64": {
       "eol": {
@@ -109233,15 +109234,33 @@
     },
     "Linux Kernel 4.x on AlmaLinux release": {
       "eol": {
-        "method": "manual"
+        "got": {
+          "eol_date": "",
+          "eoas_date": "",
+          "eol_status": "",
+          "eoas_status": "",
+          "normalized_os": "",
+          "normalized_os_detailed_name": ""
+        },
+        "method": "lookup-fallback",
+        "apiNote": "",
+        "queryUsed": "Linux Kernel 4 / Linux Kernel 4",
+        "queryField": "normalized pair",
+        "productSlug": "",
+        "releaseName": "",
+        "fallbackFrom": {
+          "os_string": "Linux Kernel 4.18.0-553.16.1.el8_10.x86_64",
+          "normalized_os": "Linux Kernel 4",
+          "normalized_os_detailed_name": "Linux Kernel 4"
+        },
+        "releaseLabel": ""
       },
       "detailed": {
         "method": "none"
       },
       "normalized": {
         "method": "none"
-      },
-      "reviewed": true
+      }
     },
     "Microsoft Windows 10 Enterprise 19044": {
       "eol": {
@@ -123090,7 +123109,13 @@
       "normalized": {
         "method": "none"
       }
+    },
+    "Red Hat Enterprises 7": {
+      "eol": {
+        "method": "manual"
+      },
+      "reviewed": true
     }
   },
-  "updated_at": "2026-08-02T14:27:49"
+  "updated_at": "2026-08-02T12:24:49"
 }
