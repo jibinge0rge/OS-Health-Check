@@ -49,8 +49,8 @@ export const state = {
     os: { mode: "all", text: "" },
     detailed: { mode: "all", text: "" },
     norm: { mode: "all", text: "" },
-    eol: { mode: "all", from: "", to: "", status: "any" },
-    eoas: { mode: "all", from: "", to: "", status: "any" },
+    eol: { from: "", to: "" },
+    eoas: { from: "", to: "" },
     src: "All",
   },
 

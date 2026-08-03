@@ -149,6 +149,7 @@ export function attachProgressView(task, { bodyEl, footerEl, backgroundLabel = "
 
   const originalBody = bodyEl.innerHTML;
   const originalFooter = footerEl.innerHTML;
+  let autoCloseTimer = null;
 
   function renderBody() {
     const pct = task.pct;
@@ -177,6 +178,11 @@ export function attachProgressView(task, { bodyEl, footerEl, backgroundLabel = "
     } else {
       footerEl.innerHTML = `<button class="btn primary" id="progress-close-btn" type="button">Close</button>`;
       footerEl.querySelector("#progress-close-btn").onclick = () => closeModal();
+      // Successful runs close themselves once the final state is visible for
+      // a moment -- error/cancelled stay open since those need reading.
+      if (task.status === "complete" && autoCloseTimer === null) {
+        autoCloseTimer = setTimeout(() => closeModal(), 900);
+      }
     }
   }
 
@@ -188,6 +194,7 @@ export function attachProgressView(task, { bodyEl, footerEl, backgroundLabel = "
   const unsub = subscribeTasks(renderAll);
   activeDetach = () => {
     unsub();
+    clearTimeout(autoCloseTimer);
     bodyEl.innerHTML = originalBody;
     footerEl.innerHTML = originalFooter;
   };

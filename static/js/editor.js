@@ -5,12 +5,17 @@ import { api, streams } from "./api.js";
 import { iconMarkup } from "./icons.js";
 import { parseRowDate, classifyDateChip, formatRelative } from "./date_utils.js";
 import { initFiltersPanel, toggleFiltersPanel, matchesColumnFilters, activeFilterCount, clearAllColumnFilters } from "./filters_panel.js";
-import { initDrawer, openDrawer, closeDrawer, isDrawerOpenFor, refreshDrawerFields, refreshDrawerReviewedState, refreshDrawerEvidence } from "./drawer.js";
+import { initDrawer, openDrawer, closeDrawer, isDrawerOpenFor, refreshDrawerFields, refreshDrawerReviewedState, refreshDrawerEvidence, markDrawerFieldManual } from "./drawer.js";
 import { openModal, closeModal, showToast, runProgress } from "./modals.js";
 import { getTasks, hasActive } from "./tasks.js";
 
 const CSV_HEADERS = ["os_string", "normalized_os_detailed_name", "normalized_os", "eol_date", "eol_status", "eoas_date", "eoas_status"];
 const PAGE_SIZE_OPTIONS = [50, 100, 250, 500, 1000];
+const EXPORT_FORMATS = [
+  ["csv", "CSV"],
+  ["excel", "Excel"],
+  ["parquet", "Parquet"],
+];
 
 let diff = { added: [], edited: [], deleted: [], unresolved: 0 };
 let addedSet = new Set();
@@ -51,10 +56,16 @@ const el = {
 export async function initEditor() {
   el.columnFiltersBtn.querySelector("#sliders-icon").innerHTML = iconMarkup("sliders", { size: 14 });
   el.search.parentElement.querySelector("#toolbar-search-icon").innerHTML = iconMarkup("search", { size: 14 });
+  document.getElementById("export-chevron-icon").innerHTML = iconMarkup("chevron-down", { size: 12 });
+  document.getElementById("bulk-export-chevron-icon").innerHTML = iconMarkup("chevron-down", { size: 12 });
 
   initFiltersPanel({ onFilterChange: () => { clearSelection(); renderAll(); } });
   initDrawer({
-    onFieldChange: () => scheduleAutosave(),
+    onFieldChange: (row, field) => {
+      const label = markFieldManual(row, field);
+      if (label) markDrawerFieldManual(row, label);
+      scheduleAutosave();
+    },
     onSameAsOs: (row) => { applySameAsOs(row); scheduleAutosave(); refreshView(); },
     onMarkAmbiguous: (row) => { applyAmbiguous(row); scheduleAutosave(); refreshView(); refreshDrawerFields(row); },
     onRerun: (row) => rerunRow(row),
@@ -71,7 +82,7 @@ export async function initEditor() {
   el.columnFiltersBtn.addEventListener("click", () => toggleFiltersPanel());
   el.refreshBtn.addEventListener("click", () => openRefreshModal());
   el.addOsBtn.addEventListener("click", () => openAddOsModal());
-  el.exportBtn.addEventListener("click", () => exportRows(visibleRowsUnpaged()));
+  el.exportBtn.addEventListener("click", () => openExportMenu(el.exportBtn, visibleRowsUnpaged));
   document.getElementById("clear-filters-btn").addEventListener("click", () => {
     state.search = ""; el.search.value = ""; state.chip = "all";
     clearAllColumnFilters(); clearSelection(); renderAll();
@@ -89,7 +100,7 @@ export async function initEditor() {
   document.getElementById("bulk-revert-btn").addEventListener("click", bulkRevert);
   document.getElementById("bulk-mark-reviewed-btn").addEventListener("click", bulkMarkReviewed);
   document.getElementById("bulk-mark-unreviewed-btn").addEventListener("click", bulkMarkUnreviewed);
-  document.getElementById("bulk-export-btn").addEventListener("click", () => exportRows(selectedRows()));
+  document.getElementById("bulk-export-btn").addEventListener("click", (event) => openExportMenu(event.currentTarget, selectedRows));
   document.getElementById("bulk-delete-btn").addEventListener("click", bulkDelete);
   document.getElementById("bulk-clear-btn").addEventListener("click", clearSelection);
 
@@ -134,10 +145,19 @@ function renderStorageChip(mode, target) {
   }
 }
 
+const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// Only this one topbar timestamp uses this richer "2 Aug 2026, 12:24 pm"
+// style -- everywhere else in the app (vendor last-updated, background task
+// times, drawer/table dates) uses the plain YYYY-MM-DD[ HH:MM] format.
 function formatPublishedAt(iso) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  const hour24 = d.getHours();
+  const hour12 = hour24 % 12 || 12;
+  const minutes = String(d.getMinutes()).padStart(2, "0");
+  const ampm = hour24 < 12 ? "am" : "pm";
+  return `${d.getDate()} ${SHORT_MONTHS[d.getMonth()]} ${d.getFullYear()}, ${hour12}:${minutes} ${ampm}`;
 }
 
 function dedupeKey(v) { return String(v || "").trim().toLowerCase(); }
@@ -316,6 +336,34 @@ function toggleRowReviewed(row) {
   setRowReviewed(row, !isRowReviewed(row));
 }
 
+// Mirrors lookup_extras._FIELD_LABELS / the evidence sidecar's 3 slots.
+const FIELD_TO_EVIDENCE_SLOT = {
+  normalized_os_detailed_name: ["detailed", "Normalized OS detailed name"],
+  normalized_os: ["normalized", "Normalized OS"],
+  eol_date: ["eol", "EOL / EOAS lifecycle"],
+  eol_status: ["eol", "EOL / EOAS lifecycle"],
+  eoas_date: ["eol", "EOL / EOAS lifecycle"],
+  eoas_status: ["eol", "EOL / EOAS lifecycle"],
+};
+
+/** A field hand-edited in the drawer no longer reflects whatever a vendor
+ * lookup (or fuzzy/AI match) originally filled it with -- without this, the
+ * evidence panel kept showing that stale "Filled from X" note forever,
+ * describing a value the user had since overridden. Returns the evidence
+ * slot's display label (for updating the drawer immediately) or null if
+ * this field has no evidence slot. */
+function markFieldManual(row, field) {
+  const mapping = FIELD_TO_EVIDENCE_SLOT[field];
+  if (!mapping) return null;
+  const [slot, label] = mapping;
+  const key = evidenceKey(row);
+  if (!key) return null;
+  state.evidence.by_os = state.evidence.by_os || {};
+  const entry = state.evidence.by_os[key] || {};
+  state.evidence.by_os[key] = { ...entry, [slot]: { method: "manual" } };
+  return label;
+}
+
 async function rerunRow(row) {
   showToast("Re-running lookup…");
   try {
@@ -342,14 +390,93 @@ async function rerunRow(row) {
   }
 }
 
-function exportRows(list) {
+// Themed replacement for a native <select> -- only one export menu open at
+// a time, closes on outside click/Escape/scroll-reflow, matching the
+// pattern date_range_picker.js already established for popovers.
+let openExportMenuState = null;
+
+function openExportMenu(triggerEl, getRows) {
+  if (openExportMenuState) {
+    const wasThis = openExportMenuState.triggerEl === triggerEl;
+    openExportMenuState.close();
+    if (wasThis) return;
+  }
+  triggerEl.classList.add("is-open");
+
+  const menu = document.createElement("div");
+  menu.className = "action-menu";
+  menu.innerHTML = EXPORT_FORMATS.map(
+    ([fmt, label]) => `<button type="button" class="action-menu-item" data-format="${fmt}">${label}</button>`
+  ).join("");
+  document.body.appendChild(menu);
+  menu.querySelectorAll("[data-format]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      close();
+      exportRows(getRows(), btn.dataset.format);
+    });
+  });
+
+  const onDocClick = (event) => {
+    if (!menu.contains(event.target) && event.target !== triggerEl) close();
+  };
+  const onKeydown = (event) => { if (event.key === "Escape") close(); };
+  const onReflow = () => position();
+  document.addEventListener("click", onDocClick, true);
+  document.addEventListener("keydown", onKeydown);
+  window.addEventListener("resize", onReflow);
+  window.addEventListener("scroll", onReflow, true);
+
+  function close() {
+    triggerEl.classList.remove("is-open");
+    menu.remove();
+    document.removeEventListener("click", onDocClick, true);
+    document.removeEventListener("keydown", onKeydown);
+    window.removeEventListener("resize", onReflow);
+    window.removeEventListener("scroll", onReflow, true);
+    if (openExportMenuState && openExportMenuState.triggerEl === triggerEl) openExportMenuState = null;
+  }
+
+  function position() {
+    const rect = triggerEl.getBoundingClientRect();
+    const menuRect = menu.getBoundingClientRect();
+    let left = rect.left;
+    if (left + menuRect.width > window.innerWidth - 8) left = window.innerWidth - menuRect.width - 8;
+    let top = rect.bottom + 4;
+    if (top + menuRect.height > window.innerHeight - 8) top = rect.top - menuRect.height - 4;
+    menu.style.left = `${Math.max(8, left)}px`;
+    menu.style.top = `${Math.max(8, top)}px`;
+  }
+
+  openExportMenuState = { triggerEl, close };
+  position();
+}
+
+async function exportRows(list, format = "csv") {
+  if (!list.length) { showToast("Nothing to export."); return; }
+  if (format === "csv") {
+    downloadCsv(list);
+    return;
+  }
+  try {
+    const { blob, filename } = await api.exportRowsAsFile(format, list);
+    downloadBlob(blob, filename || `eol_lookup_export.${format === "excel" ? "xlsx" : "parquet"}`);
+  } catch (error) {
+    showToast(`Export failed: ${error.message}`);
+  }
+}
+
+function downloadCsv(list) {
   const csvHeaderLine = CSV_HEADERS.join(",");
   const lines = list.map((row) => CSV_HEADERS.map((h) => csvEscape(row[h])).join(","));
   const blob = new Blob([csvHeaderLine + "\n" + lines.join("\n") + "\n"], { type: "text/csv" });
+  downloadBlob(blob, "eol_lookup_export.csv");
+}
+
+function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "eol_lookup_export.csv";
+  a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -1059,10 +1186,12 @@ async function openValidateModal() {
   const reviewAckBlock = document.getElementById("review-ack-block");
   const reviewAckChip = document.getElementById("review-ack-chip");
   const reviewAckCheckbox = document.getElementById("review-ack-checkbox");
+  const reviewAckBox = reviewAckChip.querySelector(".box");
   let reviewAcknowledged = notReviewedCount === 0;
   reviewAckBlock.hidden = notReviewedCount === 0;
   reviewAckChip.classList.remove("active");
   reviewAckCheckbox.checked = false;
+  reviewAckBox.innerHTML = "";
   document.getElementById("review-warning-note").textContent =
     `${notReviewedCount} of ${totalChanged} changed row(s) haven't been marked reviewed.`;
   reviewAckChip.onclick = (event) => {
@@ -1070,6 +1199,9 @@ async function openValidateModal() {
     reviewAcknowledged = !reviewAcknowledged;
     reviewAckCheckbox.checked = reviewAcknowledged;
     reviewAckChip.classList.toggle("active", reviewAcknowledged);
+    // Without this, "active" just fills the box with solid brand color and
+    // no checkmark -- reads as a colored dot, not a checkbox.
+    reviewAckBox.innerHTML = reviewAcknowledged ? iconMarkup("check", { size: 9 }) : "";
     updateConfirmState();
   };
 

@@ -5,8 +5,14 @@ import { openModal, promptModal, runProgress, showToast } from "./modals.js";
 
 // Shown in the filename field's placeholder, and saved as the actual value
 // server-side (update_azure_settings/update_aws_settings) when that field is
-// left blank -- keep these two in sync.
-const DEFAULT_UPLOAD_FILENAME = "manual_eol_lookup.csv";
+// left blank -- keep these two in sync. No extension here: the server always
+// appends one based on upload_format, never takes one from this field.
+const DEFAULT_UPLOAD_FILENAME = "manual_eol_lookup";
+const FORMAT_OPTIONS = [
+  ["csv", "CSV"],
+  ["parquet", "Parquet"],
+];
+const FORMAT_EXTENSIONS = { csv: ".csv", parquet: ".parquet" };
 
 const PROVIDERS = {
   azure: {
@@ -15,6 +21,7 @@ const PROVIDERS = {
       { key: "account_name", label: "Storage account", placeholder: "e.g. mystorageaccount" },
       { key: "container_name", label: "Container", placeholder: "e.g. lookup-exports" },
       { key: "blob_name", label: "Blob path", placeholder: `Optional — defaults to ${DEFAULT_UPLOAD_FILENAME}` },
+      { key: "upload_format", label: "File format", type: "segmented", options: FORMAT_OPTIONS },
     ],
     authLabel: "Azure CLI (az login)",
     get: api.getAzureSettings, put: api.putAzureSettings, uploadStream: streams.azureUpload,
@@ -25,11 +32,23 @@ const PROVIDERS = {
       { key: "bucket", label: "Bucket", placeholder: "e.g. my-lookup-bucket" },
       { key: "region", label: "Region", placeholder: "e.g. us-east-1" },
       { key: "key", label: "Key", placeholder: `Optional — defaults to ${DEFAULT_UPLOAD_FILENAME}` },
+      { key: "upload_format", label: "File format", type: "segmented", options: FORMAT_OPTIONS },
     ],
     authLabel: "AWS CLI (aws configure)",
     get: api.getAwsSettings, put: api.putAwsSettings, uploadStream: streams.awsUpload,
   },
 };
+
+/** The base name (whatever's in blob_name/key, minus any extension the user
+ * typed anyway) plus the extension for the chosen format -- mirrors
+ * app.py's _upload_destination_name so the UI shows exactly what will
+ * actually get uploaded. */
+function resolvedFileName(profile, nameKey) {
+  const raw = String(profile?.[nameKey] || DEFAULT_UPLOAD_FILENAME).trim() || DEFAULT_UPLOAD_FILENAME;
+  const stripped = raw.replace(/\.(csv|parquet)$/i, "");
+  const format = profile?.upload_format || "csv";
+  return `${stripped}${FORMAT_EXTENSIONS[format] || ".csv"}`;
+}
 
 let activeProvider = "azure";
 let stores = { azure: { active_profile_id: "", profiles: [] }, aws: { active_profile_id: "", profiles: [] } };
@@ -84,18 +103,42 @@ function renderProfileUI() {
 
   const profile = store.profiles.find((p) => p.id === activeProfileId);
   document.getElementById("profile-active-name").textContent = profile ? profile.name : "No profile selected";
-  document.getElementById("profile-upload-btn").textContent = `Upload to ${provider.label}`;
 
   const fieldsWrap = document.getElementById("profile-fields");
   fieldsWrap.innerHTML = provider.fields
-    .map((f) => `<div class="profile-field"><label>${f.label}</label><input type="text" data-field="${f.key}" placeholder="${escapeHtml(f.placeholder || "")}" value="${escapeHtml(profile?.[f.key] || "")}" /></div>`)
+    .map((f) => {
+      if (f.type === "segmented") {
+        const current = profile?.[f.key] || f.options[0][0];
+        const segmentsHtml = f.options
+          .map(([val, label]) => `<button type="button" class="segment ${val === current ? "active" : ""}" data-value="${val}">${escapeHtml(label)}</button>`)
+          .join("");
+        return `<div class="profile-field"><label>${f.label}</label><div class="segmented" data-field="${f.key}">${segmentsHtml}</div></div>`;
+      }
+      return `<div class="profile-field"><label>${f.label}</label><input type="text" data-field="${f.key}" placeholder="${escapeHtml(f.placeholder || "")}" value="${escapeHtml(profile?.[f.key] || "")}" /></div>`;
+    })
     .join("") + `<div class="profile-field"><label>Auth</label><input type="text" value="${provider.authLabel}" disabled /></div>`;
+
+  // Segmented fields apply immediately (mirrors the Data/Draft mode toggle)
+  // instead of waiting for Save, so the upload button's filename preview
+  // below stays in sync as soon as the format changes.
+  fieldsWrap.querySelectorAll(".segmented[data-field]").forEach((group) => {
+    group.querySelectorAll(".segment").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (!profile) return;
+        profile[group.dataset.field] = btn.dataset.value;
+        renderProfileUI();
+      });
+    });
+  });
 
   const hasProfile = Boolean(profile);
   document.getElementById("profile-upload-btn").disabled = !hasProfile;
-  const deleteBtn = document.getElementById("profile-delete-btn");
-  deleteBtn.disabled = !hasProfile || store.profiles.length <= 1;
-  deleteBtn.title = hasProfile && store.profiles.length <= 1 ? "At least one profile must remain — edit or overwrite it instead." : "";
+  document.getElementById("profile-delete-btn").disabled = !hasProfile;
+
+  const nameKey = activeProvider === "azure" ? "blob_name" : "key";
+  document.getElementById("profile-upload-btn").textContent = hasProfile
+    ? `Upload to ${provider.label} as ${resolvedFileName(profile, nameKey)}`
+    : `Upload to ${provider.label}`;
 }
 
 async function createProfile() {
@@ -111,7 +154,7 @@ async function createProfile() {
   const store = stores[activeProvider];
   const id = `new-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   const blank = { id, name };
-  provider.fields.forEach((f) => { blank[f.key] = ""; });
+  provider.fields.forEach((f) => { blank[f.key] = f.type === "segmented" ? f.options[0][0] : ""; });
   store.profiles.push(blank);
   activeProfileId = id;
   renderProviderCards();
@@ -122,7 +165,7 @@ async function saveActiveProfile() {
   const store = stores[activeProvider];
   const profile = store.profiles.find((p) => p.id === activeProfileId);
   if (!profile) return;
-  document.querySelectorAll("#profile-fields [data-field]").forEach((input) => {
+  document.querySelectorAll("#profile-fields input[data-field]").forEach((input) => {
     profile[input.dataset.field] = input.value.trim();
   });
   store.active_profile_id = activeProfileId;
@@ -142,8 +185,7 @@ async function deleteActiveProfile() {
   store.profiles = store.profiles.filter((p) => p.id !== activeProfileId);
   if (store.active_profile_id === activeProfileId) store.active_profile_id = store.profiles[0]?.id || "";
   try {
-    stores[activeProvider] = store.profiles.length ? await PROVIDERS[activeProvider].put(store) : store;
-    if (!store.profiles.length) await PROVIDERS[activeProvider].put({ active_profile_id: "", profiles: [] }).catch(() => {});
+    stores[activeProvider] = await PROVIDERS[activeProvider].put(store);
   } catch (error) {
     showToast(`Delete failed: ${error.message}`);
   }

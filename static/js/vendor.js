@@ -5,6 +5,7 @@ import { api, streams } from "./api.js";
 import { iconMarkup } from "./icons.js";
 import { openModal, runProgress, showToast } from "./modals.js";
 import { getTasks, waitForTask } from "./tasks.js";
+import { formatDateTime } from "./date_utils.js";
 
 const PAGE_SIZE_OPTIONS = [50, 100, 250, 500, 1000];
 
@@ -84,7 +85,7 @@ async function selectSource(sourceId) {
   document.getElementById("vendor-footer").hidden = false;
   const productCount = status.product_count ?? status.total_products ?? 0;
   const releaseCount = status.release_count ?? rows.length;
-  const lastUpdated = status.last_updated ? new Date(status.last_updated).toLocaleString() : "never";
+  const lastUpdated = status.last_updated ? formatDateTime(new Date(status.last_updated)) : "never";
   document.getElementById("vendor-meta").textContent = `Last updated ${lastUpdated} · ${productCount} products · ${releaseCount} releases`;
 
   allRows = rows;

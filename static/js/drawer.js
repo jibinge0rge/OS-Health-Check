@@ -4,6 +4,7 @@ import { state, isDraft } from "./state.js";
 import { api } from "./api.js";
 import { iconMarkup } from "./icons.js";
 import { parseRowDate, toISODate } from "./date_utils.js";
+import { initSingleDatePicker } from "./date_range_picker.js";
 
 const DATE_FIELDS = new Set(["eol_date", "eoas_date"]);
 
@@ -12,7 +13,7 @@ const DATE_FIELDS = new Set(["eol_date", "eoas_date"]);
 function toDisplayValue(field, raw) {
   if (!DATE_FIELDS.has(field)) return raw ?? "";
   const d = parseRowDate(raw);
-  return d ? toISODate(d) : (raw ?? "");
+  return d ? toISODate(d) : "";
 }
 
 function toStoredValue(field, displayValue) {
@@ -31,19 +32,46 @@ const evidenceListEl = document.getElementById("drawer-evidence-list");
 
 let currentRow = null;
 let handlers = {};
+// eol_date/eoas_date are custom calendar triggers (date_range_picker.js),
+// not <input> elements -- they're wired up once here and updated via
+// .setValue()/.setDisabled() instead of the generic text-input handling
+// below, so they get the same theme-matched calendar as the column filters
+// (a native <input type="date">'s popup can't be restyled to match dark
+// mode, and can't offer an explicit "clear" affordance consistently).
+const datePickers = {};
+
+function setFieldValue(field, rawValue) {
+  const display = toDisplayValue(field, rawValue);
+  if (DATE_FIELDS.has(field)) {
+    datePickers[field]?.setValue(display);
+    return;
+  }
+  const input = panel.querySelector(`[data-drawer-field="${field}"]`);
+  if (input) input.value = display;
+}
 
 export function initDrawer(cb) {
   handlers = cb || {};
   document.getElementById("drawer-close-btn").innerHTML = iconMarkup("x", { size: 14 });
   document.getElementById("drawer-close-btn").addEventListener("click", closeDrawer);
 
-  panel.querySelectorAll("[data-drawer-field]").forEach((input) => {
+  panel.querySelectorAll("input[data-drawer-field]").forEach((input) => {
+    const field = input.dataset.drawerField;
     input.addEventListener("change", () => {
       if (!currentRow || input.readOnly) return;
-      const field = input.dataset.drawerField;
       const stored = toStoredValue(field, input.value);
       currentRow[field] = stored;
-      input.value = toDisplayValue(field, stored);
+      setFieldValue(field, stored);
+      handlers.onFieldChange?.(currentRow, field, stored);
+    });
+  });
+
+  DATE_FIELDS.forEach((field) => {
+    const trigger = panel.querySelector(`[data-drawer-field="${field}"]`);
+    datePickers[field] = initSingleDatePicker(trigger, "", (iso) => {
+      if (!currentRow) return;
+      const stored = toStoredValue(field, iso);
+      currentRow[field] = stored;
       handlers.onFieldChange?.(currentRow, field, stored);
     });
   });
@@ -94,14 +122,14 @@ export async function openDrawer(row) {
   if (isDraft()) updateReviewedButton(row);
 
   const editable = isDraft();
-  panel.querySelectorAll("[data-drawer-field]").forEach((input) => {
+  panel.querySelectorAll("input[data-drawer-field]").forEach((input) => {
     const field = input.dataset.drawerField;
-    input.value = toDisplayValue(field, row[field]);
-    if (field === "matched_by") {
-      input.readOnly = true;
-    } else {
-      input.readOnly = !editable;
-    }
+    setFieldValue(field, row[field]);
+    input.readOnly = field === "matched_by" ? true : !editable;
+  });
+  DATE_FIELDS.forEach((field) => {
+    setFieldValue(field, row[field]);
+    datePickers[field]?.setDisabled(!editable);
   });
 
   evidenceListEl.innerHTML = `<p class="modal-note">Loading evidence…</p>`;
@@ -146,12 +174,35 @@ export function refreshDrawerEvidence(row, detail) {
   renderEvidenceDetail(row, detail);
 }
 
+/** Called right after a field is hand-edited (its evidence slot has already
+ * been set to method "manual" -- see editor.js's onFieldChange) so the
+ * drawer reflects that immediately instead of keep showing whatever the
+ * field was last actually looked up as. Patches just that one entry rather
+ * than re-fetching/re-rendering the whole list, since the summary text for
+ * "manual" is a fixed string (matches lookup_extras._METHOD_SUMMARIES),
+ * not something that needs the server's full evidence-formatting logic. */
+export function markDrawerFieldManual(row, fieldLabel) {
+  if (!isDrawerOpenFor(row)) return;
+  const entryEl = [...evidenceListEl.querySelectorAll(".evidence-entry")].find(
+    (el) => el.querySelector(".evidence-field-name")?.textContent === fieldLabel
+  );
+  if (!entryEl) return;
+  const chip = entryEl.querySelector(".evidence-method-chip");
+  const detail = entryEl.querySelector(".evidence-detail");
+  if (chip) {
+    chip.textContent = "manual";
+    chip.classList.remove("none");
+  }
+  if (detail) detail.textContent = "Edited by hand in this session.";
+}
+
 export function refreshDrawerFields(row) {
   if (!isDrawerOpenFor(row)) return;
-  panel.querySelectorAll("[data-drawer-field]").forEach((input) => {
+  panel.querySelectorAll("input[data-drawer-field]").forEach((input) => {
     const field = input.dataset.drawerField;
-    if (field !== "matched_by") input.value = toDisplayValue(field, row[field]);
+    if (field !== "matched_by") setFieldValue(field, row[field]);
   });
+  DATE_FIELDS.forEach((field) => setFieldValue(field, row[field]));
 }
 
 function escapeHtml(value) {

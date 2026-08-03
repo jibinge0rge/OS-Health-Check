@@ -44,10 +44,49 @@
   padding: 0 8px; font-size: 11px; color: var(--fg2);
 }
 .text-input.small { height: 26px; }
-.date-range-row { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; color: var(--fg3); font-size: 11px; }
-.date-range-row input { flex: 1 1 0; }
-.status-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.status-row select { width: auto; flex: 0 0 90px; }
+
+/* ---------- Custom date-range picker (column filters) ---------- */
+.date-range-trigger {
+  display: block; width: 100%; height: 26px; border-radius: 8px;
+  border: 1px solid var(--c-border-strong); background: var(--c-surface);
+  padding: 0 8px; font-size: 11px; text-align: left; color: var(--fg-dis);
+  cursor: pointer;
+}
+.date-range-trigger.has-value { color: var(--fg1); }
+.date-range-trigger:hover, .date-range-trigger.is-open { border-color: var(--brand); }
+
+.date-range-popover {
+  position: fixed; z-index: 300;
+  width: 240px; padding: 10px;
+  background: var(--c-surface); border: 1px solid var(--c-border);
+  border-radius: 10px; box-shadow: var(--pop);
+}
+.date-range-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.date-range-nav {
+  width: 22px; height: 22px; border-radius: 6px; border: none;
+  background: transparent; color: var(--fg2); cursor: pointer; font-size: 14px; line-height: 1;
+}
+.date-range-nav:hover { background: var(--hover); }
+.date-range-month-label { font: 600 12px/16px var(--font-sans); color: var(--fg1); }
+.date-range-weekdays, .date-range-grid { display: grid; grid-template-columns: repeat(7, 1fr); }
+.date-range-weekdays span { text-align: center; font-size: 10px; color: var(--fg3); padding: 2px 0; }
+.date-range-day {
+  height: 26px; border: none; background: transparent; color: var(--fg1);
+  font-size: 11px; border-radius: 6px; cursor: pointer; font-variant-numeric: tabular-nums;
+}
+.date-range-day:hover { background: var(--hover); }
+.date-range-day.is-blank { visibility: hidden; cursor: default; }
+.date-range-day.is-today { color: var(--brand); font-weight: 700; }
+.date-range-day.is-in-range { background: var(--tint); border-radius: 0; }
+.date-range-day.is-range-start, .date-range-day.is-range-end {
+  background: var(--brand); color: var(--on-brand); font-weight: 600;
+}
+.date-range-footer {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--c-border-subtle);
+}
+.date-range-hint { font-size: 10px; color: var(--fg3); }
+.date-range-footer .btn { height: 24px; padding: 0 8px; font-size: 11px; flex: none; }
 
 /* ---------- Drawer ---------- */
 .drawer-header { align-items: flex-start; }
@@ -61,6 +100,15 @@
 }
 .side-panel[data-editable="true"] .value-box { border-color: var(--c-border-strong); background: var(--c-surface); }
 .value-box[readonly] { border-color: var(--c-border); background: var(--c-raised); }
+/* The eol_date/eoas_date fields are date-range-trigger buttons (the same
+   custom calendar as column filters), not <input>s -- match the other
+   drawer fields' 30px height instead of the filter panel's slimmer 26px. */
+.value-box.date-range-trigger { height: 30px; font-size: 12px; }
+.value-box.date-range-trigger.is-disabled {
+  border-color: var(--c-border); background: var(--c-raised);
+  color: var(--fg-dis); cursor: default;
+}
+.value-box.date-range-trigger.is-disabled.has-value { color: var(--fg2); }
 
 .drawer-evidence { padding: 14px; margin-top: 8px; }
 .evidence-entry { padding: 10px 0; border-top: 1px solid var(--c-border-subtle); }
