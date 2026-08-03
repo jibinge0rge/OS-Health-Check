@@ -12,7 +12,7 @@ import threading
 import time
 import uuid
 from collections.abc import AsyncIterator, Iterator
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager, suppress
 from datetime import datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -196,9 +196,87 @@ VALID_VENDOR_SOURCES = {
 ACTIVE_VENDOR_SYNC_JOBS: dict[str, threading.Event] = {}
 
 # Serialize/track "Refresh EOL/EOAS" streaming jobs separately from vendor
-# scrapes so a bulk lookup refresh doesn't queue behind a vendor DB sync.
+# scrapes so a bulk lookup refresh doesn't queue behind a vendor DB sync --
+# in the same process. Across processes, see the cross-instance lock below:
+# Add OS / Refresh EOL/EOAS still can't run while a vendor sync is in
+# progress *anywhere* sharing this database, because they read the exact
+# vendor tables a sync deletes+reinserts into, per product.
 LOOKUP_REFRESH_LOCK = asyncio.Lock()
 ACTIVE_LOOKUP_REFRESH_JOBS: dict[str, threading.Event] = {}
+
+# How often a vendor sync's cross-instance lock heartbeat is refreshed while
+# it runs -- independent of whether the underlying scrape reports its own
+# progress, so a slow-but-healthy sync never has its lock stolen by another
+# instance's staleness timeout (lookup_db._SYNC_LOCK_STALE_AFTER_SECONDS).
+# Must stay well below that timeout.
+_SYNC_LOCK_HEARTBEAT_INTERVAL_SECONDS = 30
+
+
+def acquire_vendor_sync_lock_or_409(label: str) -> str | None:
+    """Cross-instance guard around *starting* a vendor sync -- call this
+    before any response/stream has begun, so a 409 here is always a clean
+    HTTP error response, never a broken half-started SSE stream (see
+    vendor_lookup_sync_stream, which must acquire before returning its
+    StreamingResponse rather than inside the generator). A no-op in file
+    mode (there's only ever one instance, nothing to race against).
+
+    Returns the acquired holder token (pass to
+    hold_vendor_sync_lock_heartbeat), or None in file mode.
+    """
+    if not _USE_DB:
+        return None
+    holder = lookup_db.db_acquire_sync_lock(label)
+    if holder is None:
+        status = lookup_db.db_sync_lock_status()
+        blocker = status["label"] if status else "Another vendor lookup update"
+        raise HTTPException(
+            status_code=409,
+            detail=f"{blocker} is running in another environment sharing this database. Please wait for it to finish.",
+        )
+    return holder
+
+
+@asynccontextmanager
+async def hold_vendor_sync_lock_heartbeat(holder: str | None):
+    """Heartbeats and releases an already-acquired cross-instance sync lock
+    for the duration of the actual sync work. A no-op when ``holder`` is
+    None (file mode, or acquire_vendor_sync_lock_or_409 wasn't applicable)."""
+    if holder is None:
+        yield
+        return
+
+    async def _heartbeat_loop() -> None:
+        while True:
+            await asyncio.sleep(_SYNC_LOCK_HEARTBEAT_INTERVAL_SECONDS)
+            await asyncio.to_thread(lookup_db.db_heartbeat_sync_lock, holder)
+
+    heartbeat_task = asyncio.create_task(_heartbeat_loop())
+    try:
+        yield
+    finally:
+        heartbeat_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await heartbeat_task
+        await asyncio.to_thread(lookup_db.db_release_sync_lock, holder)
+
+
+def raise_if_vendor_sync_running() -> None:
+    """Cross-instance guard for Add OS / Refresh EOL/EOAS: both read the
+    exact vendor tables a sync deletes+reinserts into, per product, so
+    running either while a sync is in progress -- even from a different app
+    instance sharing this database -- risks reading a torn/incomplete
+    result. A no-op in file mode (single instance, no shared DB to race)."""
+    if not _USE_DB:
+        return
+    status = lookup_db.db_sync_lock_status()
+    if status:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{status['label']} is running in another environment sharing this database. "
+                "Please wait for it to finish before adding an OS or refreshing EOL/EOAS."
+            ),
+        )
 
 
 class LookupRow(BaseModel):
@@ -1830,8 +1908,14 @@ async def lookup_rows_refresh_events(rows: list[dict]) -> AsyncIterator[str]:
 async def vendor_lookup_sync_events(
     source_id: str,
     options: dict[str, object] | None,
+    sync_lock_holder: str | None,
 ) -> AsyncIterator[str]:
-    """Stream scrape progress so the UI can show N of M processed, not just a spinner."""
+    """Stream scrape progress so the UI can show N of M processed, not just a
+    spinner. ``sync_lock_holder`` must already be acquired by the caller
+    (vendor_lookup_sync_stream) before this generator starts -- acquiring it
+    in here instead would mean a 409 could fire *after* the "started" SSE
+    event has already gone out, corrupting the stream instead of producing a
+    clean HTTP error response."""
     job_id = uuid.uuid4().hex
     cancel_event = threading.Event()
     ACTIVE_VENDOR_SYNC_JOBS[job_id] = cancel_event
@@ -1863,7 +1947,7 @@ async def vendor_lookup_sync_events(
     try:
         yield sse_event({"type": "started", "job_id": job_id})
 
-        async with VENDOR_SYNC_LOCK:
+        async with VENDOR_SYNC_LOCK, hold_vendor_sync_lock_heartbeat(sync_lock_holder):
             worker = threading.Thread(target=run_sync, daemon=True)
             worker.start()
             try:
@@ -2156,8 +2240,12 @@ async def validate_lookup(payload: LookupPayload) -> dict[str, object]:
 
 @app.post("/api/lookup/row/refresh")
 async def refresh_lookup_row(payload: RowRefreshRequest) -> dict[str, object]:
-    # A manual, single-row re-run is always allowed -- the Settings toggle
-    # only blocks refreshing the whole draft/data in one shot.
+    # A manual, single-row re-run is always allowed w.r.t. the Settings
+    # toggle -- that only blocks refreshing the whole draft/data in one
+    # shot. It's still blocked while a vendor sync is running anywhere
+    # sharing this database, though (see raise_if_vendor_sync_running):
+    # this reads the exact vendor tables a sync deletes+reinserts into.
+    raise_if_vendor_sync_running()
     row = payload.row.model_dump()
     evidence_by_os: dict[str, object] = {}
     await asyncio.to_thread(refresh_rows_lifecycle_chunk, [row], evidence_by_os)
@@ -2174,6 +2262,7 @@ async def refresh_lookup_row(payload: RowRefreshRequest) -> dict[str, object]:
 
 @app.post("/api/lookup/rows/refresh")
 async def refresh_lookup_rows(payload: RowsRefreshRequest) -> dict[str, object]:
+    raise_if_vendor_sync_running()
     rows = [item.model_dump() for item in payload.rows]
     evidence_by_os: dict[str, object] = {}
     product_cache: dict[str, dict[str, object]] = {}
@@ -2189,6 +2278,10 @@ async def refresh_lookup_rows_stream(payload: RowsRefreshRequest) -> StreamingRe
     """Streamed, non-persisting variant of the endpoint above -- large
     batches (Add-OS pipeline, bulk selection refresh) get real per-chunk
     progress instead of one long silent wait with no feedback."""
+    # Checked here, before the stream starts -- not inside
+    # lookup_rows_refresh_events, where a 409 after "started" has already
+    # gone out would corrupt the stream instead of a clean error response.
+    raise_if_vendor_sync_running()
     rows = [item.model_dump() for item in payload.rows]
     return StreamingResponse(
         lookup_rows_refresh_events(rows),
@@ -2212,6 +2305,10 @@ async def refresh_lookup_stream(payload: LookupRefreshStreamRequest) -> Streamin
             status_code=409,
             detail="A lookup refresh is already running. Please wait for it to finish.",
         )
+    # Checked here, before the stream starts -- not inside events(), where a
+    # 409 after "started" has already gone out would corrupt the stream
+    # instead of a clean error response.
+    raise_if_vendor_sync_running()
 
     async def events() -> AsyncIterator[str]:
         job_id = uuid.uuid4().hex
@@ -2583,7 +2680,8 @@ async def eosl_sync() -> dict[str, object]:
             status_code=409,
             detail="A vendor lookup update is already running. Please wait for it to finish.",
         )
-    async with VENDOR_SYNC_LOCK:
+    holder = await asyncio.to_thread(acquire_vendor_sync_lock_or_409, "Vendor sync: eosl.date")
+    async with VENDOR_SYNC_LOCK, hold_vendor_sync_lock_heartbeat(holder):
         try:
             result = await asyncio.to_thread(eosl_sync_os_database)
         except Exception as error:  # noqa: BLE001 - surface scrape failures to UI
@@ -2694,7 +2792,8 @@ async def vendor_lookup_sync(
     options: dict[str, object] = {}
     if payload and payload.manufacturers is not None:
         options["manufacturers"] = payload.manufacturers
-    async with VENDOR_SYNC_LOCK:
+    holder = await asyncio.to_thread(acquire_vendor_sync_lock_or_409, f"Vendor sync: {source_id}")
+    async with VENDOR_SYNC_LOCK, hold_vendor_sync_lock_heartbeat(holder):
         try:
             result = await asyncio.to_thread(
                 vendor_sync_source,
@@ -2724,11 +2823,15 @@ async def vendor_lookup_sync_stream(
             status_code=409,
             detail="A vendor lookup update is already running. Please wait for it to finish.",
         )
+    # Acquired here, before the stream starts, not inside vendor_lookup_sync_events
+    # -- a 409 after the "started" SSE event has already gone out would corrupt
+    # the stream instead of producing a clean HTTP error response.
+    holder = await asyncio.to_thread(acquire_vendor_sync_lock_or_409, f"Vendor sync: {source_id}")
     options: dict[str, object] = {}
     if payload and payload.manufacturers is not None:
         options["manufacturers"] = payload.manufacturers
     return StreamingResponse(
-        vendor_lookup_sync_events(source_id, options or None),
+        vendor_lookup_sync_events(source_id, options or None, holder),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -2780,7 +2883,8 @@ async def junos_sync() -> dict[str, object]:
             status_code=409,
             detail="A vendor lookup update is already running. Please wait for it to finish.",
         )
-    async with VENDOR_SYNC_LOCK:
+    holder = await asyncio.to_thread(acquire_vendor_sync_lock_or_409, "Vendor sync: junos")
+    async with VENDOR_SYNC_LOCK, hold_vendor_sync_lock_heartbeat(holder):
         try:
             result = await asyncio.to_thread(sync_junos_database)
         except Exception as error:  # noqa: BLE001 - surface scrape failures to UI
@@ -2820,7 +2924,8 @@ async def suse_sync() -> dict[str, object]:
             status_code=409,
             detail="A vendor lookup update is already running. Please wait for it to finish.",
         )
-    async with VENDOR_SYNC_LOCK:
+    holder = await asyncio.to_thread(acquire_vendor_sync_lock_or_409, "Vendor sync: suse")
+    async with VENDOR_SYNC_LOCK, hold_vendor_sync_lock_heartbeat(holder):
         try:
             result = await asyncio.to_thread(sync_suse_database)
         except Exception as error:  # noqa: BLE001 - surface scrape failures to UI

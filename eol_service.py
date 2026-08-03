@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timezone
@@ -10,7 +11,7 @@ from typing import Any
 
 import requests
 
-from normalization_service import vendors_compatible
+from normalization_service import is_placeholder_os_value, vendors_compatible
 from version_match import score_release_against_hint
 
 BASE_URL = "https://endoflife.date/api"
@@ -325,6 +326,12 @@ _NON_VERSION_HINTS = frozenset({"16", "32", "64", "86", "128", "256"})
 # Accept only strong release matches (exact or multi-segment prefix).
 _MIN_RELEASE_SCORE = 80
 
+# How close a release's prospective new normalized name must be to the row's
+# existing one for _pick_release_by_prior_value to accept it as "the same
+# release, endoflife.date just renamed it" rather than a genuinely different
+# release. See that function's docstring.
+_PRIOR_VALUE_SIMILARITY_THRESHOLD = 0.95
+
 # "-bit"/" bit"/"bit" (any amount of space/hyphen, or none) right after the
 # number -- "64-bit", "64 bit", "64bit", "(64-bit)".
 _BITNESS_SUFFIX_RE = re.compile(r"^[\s-]*bit\b", re.I)
@@ -377,6 +384,41 @@ def extract_version_hints(os_name: str) -> list[str]:
                 continue
         seen.add(value)
         hints.append(value)
+
+    # "<dotted version> (<build number>)" -- e.g. "Windows 10.0 (14393)" -- is
+    # a common inventory-tool rendering of one combined build number
+    # ("10.0.14393") split across a trailing parenthetical. Without this, the
+    # two halves are extracted as independent, disconnected hints above:
+    # "10.0" alone is a genuine numeric *prefix* of every Windows 10/11 build
+    # (they all start "10.0."), so it ties across the ENTIRE family, and the
+    # bare "14393" never scores against a build number at all --
+    # score_release_against_hint only recognizes prefix relationships, never
+    # "hint is the trailing segment of a longer dotted release" -- so every
+    # such row fell back to whichever release has the conservatively-earliest
+    # EOL, regardless of which specific build was actually named. Adding the
+    # combined dotted hint alongside the two separate ones lets an exact
+    # match win outright over the family-wide tie.
+    for match in re.finditer(r"(\d+(?:\.\d+)+)\s*\((\d+)\)", text):
+        combined = f"{match.group(1)}.{match.group(2)}"
+        if combined not in seen:
+            seen.add(combined)
+            hints.append(combined)
+
+    # Same idea, no parentheses -- e.g. "Windows 10.0 22631 64-bit". The
+    # trailing number must already be a *kept* hint (present in `hints`
+    # above) before combining: that's what stops this from ever absorbing a
+    # genuine bitness/SP marker -- the "64" in "64-bit" was already excluded
+    # from `hints` by the bitness check above, so it's never a candidate
+    # here, only the real build number ("22631") is. Restricted to 4+ digit
+    # trailing numbers (real build numbers are always long) to keep this
+    # from firing on short, likely-unrelated trailing digits.
+    for match in re.finditer(r"(\d+(?:\.\d+)+)\s+(\d{4,})\b", text):
+        prefix, trailing = match.group(1), match.group(2)
+        if trailing in hints:
+            combined = f"{prefix}.{trailing}"
+            if combined not in seen:
+                seen.add(combined)
+                hints.append(combined)
     return hints
 
 
@@ -565,10 +607,64 @@ def pick_release(
       release "14" and release "11"), that's a sign the query itself names
       more than one distinct product/version -- refuse rather than silently
       picking whichever happens to have the earliest date.
+    - If that strict pass finds nothing at all, a bare/dot-less hint (e.g.
+      "15") gets one more try against a release literally named "<hint>.0"
+      (see the dot-zero fallback below) before finally giving up.
     """
     if not releases or not hints:
         return {}
 
+    result = _pick_release_with_hints(releases, hints, os_text)
+    if result:
+        return result
+
+    return _pick_release_by_dot_zero_release_name(releases, hints)
+
+
+def _pick_release_by_dot_zero_release_name(releases: list[dict[str, Any]], hints: list[str]) -> dict[str, Any]:
+    """Fallback for a bare, dot-less hint (e.g. "15") against a catalog whose
+    release for that exact version is named "<hint>.0" (e.g. "15.0") rather
+    than the bare number itself. Real case: os_string "SUSE Linux Enterprise
+    Server 15 SP7" -> extract_version_hints drops the SP-marker digit and
+    yields a bare "15" alone, while endoflife.date's actual SLES release for
+    this row is named "15.0" -- a bare hint can't score against *any*
+    multi-part release name by design (the "bare major must not guess" rule
+    above), even though "15" and "15.0" plainly mean the same release.
+
+    Deliberately NOT implemented by just appending ".0" and re-running the
+    general scoring pipeline: that pipeline's genuine "numeric prefix" rule
+    (a 90-point score) would then let a synthesized "15.0" hint match any
+    LONGER build/release string that merely *starts* with "15.0..." -- e.g.
+    Windows' own NT kernel numbering is "10.0.NNNNN" for every 10/11 build,
+    so a bare "Windows 10" query (correctly refused everywhere else in this
+    module -- see test_windows_build_number_matches_via_latest_name) would
+    wrongly resolve to a specific build via a fake "10.0" hint prefix-
+    matching "10.0.26100" etc. Instead, this only accepts an EXACT string
+    match against a release's own ``name``/``label`` (never ``latest.name``,
+    which is where those long build numbers live), and only when exactly
+    one release matches -- a genuinely ambiguous catalog (several
+    candidates) still refuses, same as everywhere else in this module.
+    """
+    bare_hints = {hint for hint in hints if hint.isdigit()}
+    if not bare_hints:
+        return {}
+    dot_zero_targets = {f"{hint}.0" for hint in bare_hints}
+
+    matches = [
+        release
+        for release in releases
+        if _clean(release.get("name")) in dot_zero_targets or _clean(release.get("label")) in dot_zero_targets
+    ]
+    if len(matches) != 1:
+        return {}
+    return matches[0]
+
+
+def _pick_release_with_hints(
+    releases: list[dict[str, Any]],
+    hints: list[str],
+    os_text: str,
+) -> dict[str, Any]:
     best_score = 0
     best_candidates: list[dict[str, Any]] = []
     for release in releases:
@@ -603,7 +699,88 @@ def pick_release(
         if not shared:
             return {}
 
+        # A tie is only safe to conservative-merge (earliest EOL/EOAS) when
+        # every tied release was matched via an EXACT signal (100) -- either
+        # the literal same build/name, or the compound-token rule's "every
+        # token present" full match. A tie that only ever reached the
+        # *weaker* prefix-match score (90, from score_release_against_hint)
+        # means the hint was coarser than every tied release's own version,
+        # not that they're "several editions of one confirmed thing." Real
+        # incident: a bare "10.0" hint is a genuine numeric prefix of EVERY
+        # Windows 10/11 build (they all start "10.0."), so it tied across
+        # the entire family and conservative-merged to whichever release
+        # has the earliest EOL -- "Windows 10.0" alone (no build number at
+        # all) was resolving to "Microsoft Windows 10 1507" as if that were
+        # a confirmed match. If the hint can't even pin down ONE specific
+        # release, several different releases sharing that same coarse
+        # hint is not "safe to average away" -- it's simply "we don't know
+        # which one," and must refuse instead. (A single, non-tied 90-score
+        # match is unaffected -- see e.g. "RHEL 7.4" resolving to release
+        # "7" -- this only guards the *multi-candidate* case.)
+        if best_score < 100:
+            return {}
+
     return _conservative_release(best_candidates)
+
+
+def _text_similarity(a: str, b: str) -> float:
+    a_clean = _clean(a).casefold()
+    b_clean = _clean(b).casefold()
+    if not a_clean or not b_clean:
+        return 0.0
+    return difflib.SequenceMatcher(None, a_clean, b_clean).ratio()
+
+
+def _pick_release_by_prior_value(
+    releases: list[dict[str, Any]],
+    product_label: str,
+    prior_detailed: str,
+    prior_normalized: str,
+) -> dict[str, Any]:
+    """Fallback for when ``pick_release``'s version-hint scoring finds
+    nothing at all, used only when the row already has a prior normalized
+    value on record to compare against.
+
+    endoflife.date's own catalog gets more precise over time -- a release
+    once named e.g. "15" can later be renamed "15.2" once the maintainers
+    start tracking service packs individually. A hint set that used to score
+    a clean match against the old, coarser release name no longer scores
+    against any of today's more specific releases at all (a bare major must
+    never match a multi-part release -- see ``pick_release``'s "bare major"
+    rule), so the row would otherwise sit permanently unresolved despite
+    endoflife.date clearly still tracking it, just under a more specific name.
+
+    This only fires when exactly ONE release's prospective new name (product
+    label + release label/name, the same shape ``build_normalization_from_product``
+    writes) is a near-exact (>=95%) textual match to what the row already
+    had. If the catalog now lists *several* similarly-named releases (e.g.
+    multiple SUSE service packs all close to a bare "15"), that's genuine
+    ambiguity this fallback must refuse rather than guess -- same philosophy
+    as the tie-break rules in ``pick_release`` above.
+    """
+    prior_values = [
+        value for value in (prior_detailed, prior_normalized)
+        if value and not is_placeholder_os_value(value)
+    ]
+    if not prior_values:
+        return {}
+
+    matches: list[dict[str, Any]] = []
+    for release in releases:
+        prospective = (
+            join_labels(product_label, _clean(release.get("label"))),
+            join_labels(product_label, _presentable_release_name(release)),
+        )
+        best = max(
+            (_text_similarity(prior, candidate) for prior in prior_values for candidate in prospective),
+            default=0.0,
+        )
+        if best >= _PRIOR_VALUE_SIMILARITY_THRESHOLD:
+            matches.append(release)
+
+    if len(matches) != 1:
+        return {}
+    return matches[0]
 
 
 def fetch_product(slug: str) -> dict[str, Any]:
@@ -766,16 +943,24 @@ def lookup_os_eol(
     # too preserves the safer product-slug resolution above while restoring
     # the precision needed to pick or correct the specific release.
     release_hints = list(dict.fromkeys(extract_version_hints(os_string) + extract_version_hints(cleaned_name)))
+    product_label = _clean(product_result.get("label"))
     selected_release = pick_release(
         releases,
         release_hints,
         os_text=f"{os_string} {cleaned_name}",
     )
     if not selected_release:
+        # Ordinary hint scoring found nothing -- try the prior-value fallback
+        # before giving up (see _pick_release_by_prior_value: only fires when
+        # exactly one release is a near-exact rename of what the row already
+        # had, e.g. a coarser "15" catalog entry becoming "15.2").
+        selected_release = _pick_release_by_prior_value(
+            releases, product_label, normalized_os_detailed_name, normalized_os
+        )
+    if not selected_release:
         empty_result["api_note"] = "No matching release found in endoflife.date product data"
         return empty_result
 
-    product_label = _clean(product_result.get("label"))
     source = _clean(os_string)
     if source and product_label and not vendors_compatible(source, product_label):
         # Wrong product family (e.g. AlmaLinux for Oracle Linux). Retry once with OS string.

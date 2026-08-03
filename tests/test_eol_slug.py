@@ -434,5 +434,196 @@ class PickReleaseRefusesMixedIndependentHintsTests(unittest.TestCase):
         self.assertEqual(picked.get("name"), "11-24h2-w")
 
 
+class PickReleaseTieRequiresExactScoreTests(unittest.TestCase):
+    """Real incident: os_string "Windows 10.0" (no build number at all) was
+    resolving to "Microsoft Windows 10 1507" as a confirmed match. Root
+    cause: "10.0" is a genuine numeric *prefix* of EVERY Windows 10/11 build
+    (they all start "10.0."), so every release in the catalog ties at the
+    SAME 90-point (prefix, not exact) score -- and the existing shared-hint
+    tie-break considered this safe to conservative-merge, since every tied
+    release genuinely IS explained by the same hint. But "explained by the
+    same hint" isn't the same as "confirmed" when that hint is coarser than
+    every tied release's own version: a tie must only conservative-merge
+    when every tied release was matched via an EXACT signal (100) -- the
+    literal same build/name, or the compound-token rule's full match --
+    never merely the weaker 90-point prefix score."""
+
+    def test_multiple_releases_tied_only_via_prefix_score_refuse(self) -> None:
+        releases = [
+            {"name": "10-1507", "latest": {"name": "10.0.10240"}, "eolFrom": "2017-05-09"},
+            {"name": "10-1607", "latest": {"name": "10.0.14393"}, "eolFrom": "2018-10-09"},
+        ]
+        self.assertEqual(pick_release(releases, ["10.0"], os_text="Windows 10.0"), {})
+
+    def test_single_non_tied_prefix_match_is_unaffected(self) -> None:
+        """The guard only applies to a multi-candidate tie -- a UNIQUE
+        90-scoring match (nothing else in the catalog ties with it) is
+        unaffected, e.g. RHEL's own coarse-hint-vs-release-family shape."""
+        releases = [{"name": "7"}, {"name": "8"}, {"name": "9"}]
+        picked = pick_release(releases, extract_version_hints("Red Hat Linux 7.4"))
+        self.assertEqual(picked.get("name"), "7")
+
+    def test_exact_score_ties_still_conservative_merge(self) -> None:
+        """Sanity check the guard doesn't over-refuse: a tie where every
+        candidate scores a genuine 100 (compound-token full match) must
+        still resolve via the existing earliest-EOL conservative merge."""
+        releases = [
+            {"name": "11-24h2-e", "label": "11 24H2 (E)", "latest": {"name": "10.0.26100"}, "eolFrom": "2027-10-12"},
+            {"name": "11-24h2-w", "label": "11 24H2 (W)", "latest": {"name": "10.0.26100"}, "eolFrom": "2026-10-13"},
+        ]
+        hints = extract_version_hints("Microsoft Windows 11 24H2")
+        picked = pick_release(releases, hints, os_text="Microsoft Windows 11 24H2")
+        self.assertEqual(picked.get("name"), "11-24h2-w")
+
+
+class ParenthesizedBuildNumberHintTests(unittest.TestCase):
+    """Real incident: "Windows 10.0 (14393)", "Windows 10.0 (15063)", etc.
+    were all resolving to the SAME release (whichever has the earliest EOL)
+    regardless of the actual build number in parens. Root cause: "10.0" and
+    "14393" were extracted as two independent, disconnected hints -- "10.0"
+    alone is a genuine numeric prefix of EVERY Windows 10/11 build (they all
+    start "10.0."), so it ties across the whole family, and the bare
+    "14393" never scored against a build number at all (only a prefix
+    relationship is recognized, never "hint is the trailing segment of a
+    longer release"). extract_version_hints must synthesize the combined
+    "10.0.14393" hint so an exact match can win outright."""
+
+    RELEASES = [
+        {"name": "10-1507", "label": "10 1507", "latest": {"name": "10.0.10240"}, "eolFrom": "2017-05-09"},
+        {"name": "10-1607", "label": "10 1607", "latest": {"name": "10.0.14393"}, "eolFrom": "2018-10-09"},
+        {"name": "10-1703", "label": "10 1703", "latest": {"name": "10.0.15063"}, "eolFrom": "2019-10-08"},
+        {"name": "10-1709", "label": "10 1709", "latest": {"name": "10.0.16299"}, "eolFrom": "2019-10-08"},
+        {"name": "10-1809", "label": "10 1809", "latest": {"name": "10.0.17763"}, "eolFrom": "2029-01-09"},
+        {"name": "10-1909", "label": "10 1909", "latest": {"name": "10.0.18363"}, "eolFrom": "2022-05-10"},
+    ]
+
+    def test_synthesizes_the_combined_build_number_hint(self) -> None:
+        self.assertEqual(
+            extract_version_hints("Windows 10.0 (14393)"),
+            ["10.0", "14393", "10.0.14393"],
+        )
+
+    def test_each_parenthesized_build_resolves_to_its_own_release(self) -> None:
+        cases = {
+            "14393": "10-1607",
+            "15063": "10-1703",
+            "16299": "10-1709",
+            "17763": "10-1809",
+            "18363": "10-1909",
+        }
+        for build, expected_name in cases.items():
+            with self.subTest(build=build):
+                os_string = f"Windows 10.0 ({build})"
+                picked = pick_release(self.RELEASES, extract_version_hints(os_string), os_text=os_string)
+                self.assertEqual(picked.get("name"), expected_name)
+
+    def test_bare_dotted_version_with_no_build_refuses_rather_than_guesses(self) -> None:
+        """A query with NO build number at all must refuse outright, not
+        conservative-merge to the earliest-EOL release among the tied
+        family -- "10.0" alone ties every Windows 10/11 release via the
+        same 90-point prefix score (never an exact/compound-token 100), so
+        it isn't safe evidence for even the most conservative guess. See
+        PickReleaseTieRequiresExactScoreTests for the general rule."""
+        picked = pick_release(self.RELEASES, extract_version_hints("Windows 10.0"), os_text="Windows 10.0")
+        self.assertEqual(picked, {})
+
+
+class BareTrailingBuildNumberHintTests(unittest.TestCase):
+    """Same root cause as ParenthesizedBuildNumberHintTests, no parens this
+    time: "Windows 10.0 22631 64-bit" -- the trailing build number sits
+    right after the dotted version with just a space, no parentheses."""
+
+    RELEASES = [
+        {"name": "10-1507", "label": "10 1507", "latest": {"name": "10.0.10240"}, "eolFrom": "2017-05-09"},
+        {"name": "11-22h2", "label": "11 22H2", "latest": {"name": "10.0.22621"}, "eolFrom": "2024-10-08"},
+        {"name": "11-23h2", "label": "11 23H2", "latest": {"name": "10.0.22631"}, "eolFrom": "2025-11-11"},
+    ]
+
+    def test_synthesizes_the_combined_build_number_hint(self) -> None:
+        self.assertEqual(
+            extract_version_hints("Windows 10.0 22631 64-bit"),
+            ["10.0", "22631", "10.0.22631"],
+        )
+
+    def test_resolves_to_the_exact_matching_release(self) -> None:
+        os_string = "Windows 10.0 22631 64-bit"
+        picked = pick_release(self.RELEASES, extract_version_hints(os_string), os_text=os_string)
+        self.assertEqual(picked.get("name"), "11-23h2")
+
+    def test_genuine_bitness_marker_is_never_absorbed_into_the_version(self) -> None:
+        """"64" in "64-bit" is excluded from `hints` entirely by the
+        existing bitness check -- it must never become "10.0.64", since
+        that isn't a real build number at all."""
+        hints = extract_version_hints("Windows 10.0 64-bit")
+        self.assertEqual(hints, ["10.0"])
+        self.assertNotIn("10.0.64", hints)
+
+    def test_short_trailing_numbers_are_not_combined(self) -> None:
+        """Restricted to 4+ digit trailing numbers (real build numbers are
+        always long) -- a short, likely-unrelated trailing number (e.g. a
+        stray "4" in "AlmaLinux 8.10 4 18") must not be blindly combined."""
+        hints = extract_version_hints("AlmaLinux 8.10 4 18")
+        self.assertNotIn("8.10.4", hints)
+
+
+class PickReleaseDotZeroFallbackTests(unittest.TestCase):
+    """Real incident: os_string "SUSE Linux Enterprise Server 15 SP7" ->
+    extract_version_hints drops the SP-marker digit and yields a bare "15",
+    but endoflife.date's actual release for this product is named "15.0" --
+    a bare hint can never score against a multi-part release name by design
+    (the "bare major must not guess" rule), so this genuinely-resolvable row
+    went unmatched. pick_release's dot-zero fallback retries with an
+    explicit ".0" appended to any bare hint, only after the strict pass
+    finds nothing at all."""
+
+    def test_suse_sp7_bare_hint_matches_the_dot_zero_release(self) -> None:
+        releases = [{"name": "15.0", "label": "15.0", "eolFrom": "2028-07-31", "eoasFrom": "2031-07-31"}]
+        hints = extract_version_hints("SUSE Linux Enterprise Server 15 SP7")
+        self.assertEqual(hints, ["15"])  # the SP7 digit is dropped as a service-pack marker
+        picked = pick_release(releases, hints, os_text="SUSE Linux Enterprise Server 15 SP7")
+        self.assertEqual(picked.get("name"), "15.0")
+
+    def test_fallback_is_not_product_specific(self) -> None:
+        """Same shape, unrelated product -- confirms this isn't hardcoded to SUSE."""
+        releases = [{"name": "9.0", "label": "9.0", "eolFrom": "2030-01-01"}]
+        picked = pick_release(releases, ["9"], os_text="Some Product 9")
+        self.assertEqual(picked.get("name"), "9.0")
+
+    def test_bare_hint_still_matches_a_genuinely_bare_release_without_the_fallback(self) -> None:
+        """Sanity check: an exact bare-to-bare match succeeds on the strict
+        first pass and must not need (or be affected by) the fallback."""
+        releases = [{"name": "15", "label": "15"}, {"name": "16", "label": "16"}]
+        picked = pick_release(releases, ["15"], os_text="Product 15")
+        self.assertEqual(picked.get("name"), "15")
+
+    def test_multiple_similarly_plausible_dotted_releases_still_refuse(self) -> None:
+        """Several specific releases that are each only a WEAK ("shared
+        major only") match against the synthesized "<n>.0" hint must not
+        suddenly become a confident guess -- e.g. a bare "15" against a
+        catalog that only has 15.1/15.2/15.3 (no bare "15" or "15.0" release
+        at all) stays exactly as unresolved as before this fallback existed."""
+        releases = [
+            {"name": "15.1", "label": "15.1"},
+            {"name": "15.2", "label": "15.2"},
+            {"name": "15.3", "label": "15.3"},
+        ]
+        self.assertEqual(pick_release(releases, ["15"], os_text="Product 15"), {})
+
+    def test_android_14_11_still_refuses_with_the_fallback_active(self) -> None:
+        """Regression guard: the dot-zero fallback must not reopen the
+        "Android 14-11" false-match bug (see
+        PickReleaseRefusesMixedIndependentHintsTests) -- appending ".0" to
+        each of the two independent bare hints must still fail the
+        shared-hint tie-break, since neither release's winning score is ever
+        explained by a ".0"-suffixed hint (only by its own exact bare hint,
+        and those aren't shared across the tie)."""
+        releases = [
+            {"name": "14", "label": "14 'Upside Down Cake'", "eolFrom": "2024-06-10"},
+            {"name": "11", "label": "11 'Red Velvet Cake'", "eolFrom": "2021-09-08"},
+        ]
+        hints = extract_version_hints("Android 14-11")
+        self.assertEqual(pick_release(releases, hints, os_text="Android 14-11"), {})
+
+
 if __name__ == "__main__":
     unittest.main()

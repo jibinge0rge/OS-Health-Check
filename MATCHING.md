@@ -30,6 +30,8 @@ Everything here is driven from three fields already on a row:
    - [Resolving the product](#resolving-the-product-resolve_product_slug)
    - [Extracting version hints](#extracting-version-hints-extract_version_hints)
    - [Picking a release (`pick_release` / `_pick_release`)](#picking-a-release-pick_release--_pick_release)
+   - [Prior-value fallback](#prior-value-fallback-_pick_release_by_prior_value)
+   - [Dot-zero fallback](#dot-zero-fallback-_pick_release_by_dot_zero_release_name)
    - [Vendor compatibility gate](#vendor-compatibility-gate-vendors_compatible)
 5. [Source 2 — the local vendor cascade](#source-2--the-local-vendor-cascade)
    - [eosl.date (local mirror)](#eosldate-local-mirror-eosl_servicepy)
@@ -261,6 +263,26 @@ Exclusions (all deliberate, each added after a real false-match):
   of digits) as two separate hints — and that stray `"2"` has, in the past,
   coincidentally matched something completely unrelated (e.g. a `"Service
   Pack 2"` hint on a totally different OS).
+- **A build number is combined with the dotted version right before it,
+  parenthesized or not** — `"Windows 10.0 (14393)"` yields `["10.0",
+  "14393", "10.0.14393"]`; `"Windows 10.0 22631 64-bit"` yields `["10.0",
+  "22631", "10.0.22631"]` (the bare-number form is restricted to 4+ digit
+  numbers that already survived the exclusions above, so a genuine bitness
+  marker like the `"64"` in `"64-bit"` is never absorbed). A real incident:
+  without the combined hint, `"10.0"` alone is a genuine numeric *prefix* of
+  every Windows 10/11 build (`score_release_against_hint` scores a prefix
+  match 90 regardless of which specific build follows), so it ties across
+  the **entire** Windows 10/11 family — and the bare build number alone
+  never breaks that tie, because the scoring function only recognizes a
+  hint being a *prefix* of a release's version, never the *trailing*
+  segment of one. Every row shaped this way was silently resolving to
+  whichever release happens to have the conservatively-earliest EOL (e.g.
+  `1507`), regardless of the actual build named — and this compounded with
+  a second bug, since a bare `"Windows 10.0"` with no build number at all
+  was *also* resolving this way (see the exact-score tie-break requirement,
+  below). The synthesized combined hint exact-matches its one true release
+  (score 100), which strictly outscores the family-wide tie (90) and
+  resolves it correctly.
 
 ### Picking a release (`pick_release` / `_pick_release`)
 
@@ -314,7 +336,7 @@ guess.
 **Ties.** More than one release can legitimately tie for the best score —
 most commonly because several editions/channels share the exact same raw
 build (`latest.name`), or several editions share the same marketing name
-tokens. Three tie-breakers are tried, in order:
+tokens. Four tie-breakers are tried, in order:
 
 1. **Edition narrowing** (`_edition_label_substring`) — if `os_text`
    contains an edition/channel marker (`"IoT"`, or `"Enterprise"`/literal
@@ -335,14 +357,21 @@ tokens. Three tie-breakers are tried, in order:
    different releases each independently matched by a different hint**, and
    `pick_release` refuses outright (returns nothing) rather than guess one.
    See the `"Android 14-11"` example below.
-3. **Conservative merge — "least date" picking** (`_conservative_release`) —
-   any tie that *does* share a common hint (after edition narrowing) is
-   resolved by assuming the **worst case**: the tied release with the
-   **earliest** EOL date is used as the base result, and its EOL/EOAS dates
-   are the *minimum* across every tied release. The reasoning: if we
-   genuinely can't tell which of several editions this OS actually is,
-   support should never be reported as lasting *longer* than it might
-   actually be.
+3. **Exact-score requirement** — even when every tied release *does* share a
+   hint, the tie is only safe to merge when that shared best score is a
+   genuine **100** (an exact string match, or the compound-token rule's
+   "every token present" full match) — never the *weaker* 90-point numeric
+   prefix score. A hint that only ever reaches 90 against a release is, by
+   definition, *coarser* than that release's own version — "explained by the
+   same hint" isn't the same as "confirmed" when the hint itself doesn't
+   pin down any one release. See the `"Windows 10.0"` example below.
+4. **Conservative merge — "least date" picking** (`_conservative_release`) —
+   a tie that survives both checks above is resolved by assuming the
+   **worst case**: the tied release with the **earliest** EOL date is used
+   as the base result, and its EOL/EOAS dates are the *minimum* across every
+   tied release. The reasoning: if we genuinely can't tell which of several
+   editions this OS actually is, support should never be reported as
+   lasting *longer* than it might actually be.
 
 **Example — exact/build match, no tie:**
 Query `"Windows 10.0.19045"` → hint `"10.0.19045"` → the `10-22h2` release's
@@ -390,6 +419,26 @@ existed, silently produced `"Android 11"` — a specific, confident, and
 wrong answer for a string that plausibly names two different versions at
 once).
 
+**Example — a tie that must refuse because the shared hint isn't specific
+enough (regression-tested):**
+Query `"Windows 10.0"` (no build number at all) → hint `["10.0"]` only.
+Scoring: `"10.0"` (2-part) is a genuine numeric *prefix* of `[10, 0, 10240]`,
+`[10, 0, 14393]`, `[10, 0, 15063]`, … — **every** Windows 10/11 release's
+`latest.name` starts `"10.0."` — so it scores exactly 90 against the entire
+catalog at once. Every one of those releases ties at the same score, and
+the shared-hint check passes (they genuinely are all explained by the same
+`"10.0"` hint) — but the exact-score requirement above catches this: 90 is
+the weaker *prefix* score, never the genuine 100 an exact match or
+compound-token full match would give. `pick_release` returns nothing rather
+than conservative-merging to whichever release has the earliest EOL (which,
+before this fix, silently produced `"Microsoft Windows 10 1507"` for a
+query that named no build at all). A row with a real build number attached —
+`"Windows 10.0 (14393)"`, `"Windows 10.0 22631 64-bit"` — still resolves
+correctly: `extract_version_hints` combines the dotted version with an
+adjacent parenthesized or bare trailing build number into one hint
+(`"10.0.14393"`, `"10.0.22631"`), which scores a genuine 100 against its one
+true release, strictly beating the rest of the family's 90-point tie.
+
 > **Why hints are merged from *both* fields, not just the one queried:**
 > Windows' own `normalized_os` is deliberately coarse/family-level (e.g.
 > `"Microsoft Windows 11"`, no build) — see
@@ -402,6 +451,90 @@ once).
 > specifically so the raw `os_string`'s build number (or, as of this fix,
 > release name) is never lost just because a coarser normalized value was
 > preferred for product resolution.
+
+### Prior-value fallback (`_pick_release_by_prior_value`)
+
+endoflife.date's own catalog gets more precise over time — a release once
+tracked generically (e.g. SUSE Linux Enterprise Server's `"15"`) can later be
+split into per-service-pack releases (`"15.2"`, `"15.3"`, …) once the
+maintainers start tracking them individually. A row resolved against the old,
+coarser name has `normalized_os`/`normalized_os_detailed_name` ending in
+`"...15"`; a refresh's extracted hints are then just a bare `"15"`, which
+correctly scores **0** against every one of today's multi-part releases (the
+"bare major must not guess" rule above) — so the row would go permanently
+unresolved despite endoflife.date clearly still tracking that exact OS, just
+under a more specific name.
+
+When ordinary hint scoring (`pick_release`) finds nothing, `lookup_os_eol`
+tries one more fallback before giving up: for each release, build its
+*prospective* new name the same way `build_normalization_from_product` would
+(product label + release label/name) and compare it against whatever the row
+already had on record (`normalized_os_detailed_name`/`normalized_os`), using
+a plain textual similarity ratio (`difflib.SequenceMatcher`). If **exactly
+one** release's prospective name is a near-exact (**≥ 95%**) match to the
+row's existing value, that release is adopted — endoflife.date's fresh name
+and dates overwrite the row's stale ones, the same as any other resolved
+match (`_apply_lifecycle_result` in `app.py` already overwrites unconditionally
+whenever a lookup produces a name/date, regardless of what was there before).
+
+This only ever fires when the row already has *some* prior normalized value
+to anchor to (a placeholder/junk value, or a blank one, doesn't count) — a
+brand-new, never-matched row still goes through ordinary hint scoring or
+nothing at all, exactly as before. And it only accepts when the match is
+**unambiguous**: if the catalog now lists *several* similarly-named releases
+(e.g. multiple SUSE service packs all close to a bare `"15"`), that's genuine
+ambiguity — this fallback refuses rather than guess, same philosophy as
+`pick_release`'s own tie-break rules.
+
+**Example:** row has `normalized_os = "SUSE Linux Enterprise Server 15"`.
+endoflife.date's `sles` product now only lists release `"15.2"` (no bare
+`"15"` release anymore). Hint scoring: bare `"15"` vs multi-part `"15.2"` →
+score 0 → `pick_release` returns nothing. Fallback: only one release exists,
+and `"SUSE Linux Enterprise Server 15.2"` (its prospective new name) is a
+96.9% textual match to the row's existing `"SUSE Linux Enterprise Server
+15"` → accepted. Row's normalized fields and dates update to the `15.2`
+release. If the catalog instead listed `15.1`, `15.2`, *and* `15.3` (all
+similarly close to the old bare `"15"`), the fallback would refuse — genuine
+ambiguity about which specific service pack this row actually is.
+
+This fallback is specific to `eol_service.py` (the direct endoflife.date
+API) — the vendor cascade sources each have their own, unrelated
+`_pick_release` implementations and are not affected.
+
+### Dot-zero fallback (`_pick_release_by_dot_zero_release_name`)
+
+A second, narrower fallback, tried only after both the strict pass above
+*and* the prior-value fallback find nothing: a bare, dot-less version hint
+(e.g. `"15"`) can never score against a multi-part release name (the "bare
+major must not guess" rule) — but endoflife.date sometimes only lists that
+exact release as `"<version>.0"`.
+
+**Example:** `os_string = "SUSE Linux Enterprise Server 15 SP7"`.
+`extract_version_hints` drops the SP-marker digit (per the "lone SP/R/U/Pack
+digit" exclusion) and yields a bare `"15"` alone. endoflife.date's actual
+SLES release for this row is named `"15.0"` — a bare `"15"` hint scores 0
+against it (multi-part release), even though `"15"` and `"15.0"` plainly
+mean the same release.
+
+This fallback checks, for a bare hint `"15"`, whether **exactly one**
+release's own `name` or `label` (never `latest.name`, the raw build field)
+is *literally* `"15.0"`. If so, that release is accepted; if zero or more
+than one release matches, it refuses — same "never guess among ambiguous
+candidates" philosophy as everywhere else in this module.
+
+**Deliberately not implemented as "append `.0` and re-run the normal scoring
+pipeline"** — that pipeline's genuine numeric-prefix rule (a 90-point score)
+would let a synthesized `"15.0"` hint match any *longer* release/build
+string that merely starts with `"15.0…"`. Windows' own NT kernel numbering
+is `"10.0.NNNNN"` for every 10/11 build, so a bare `"Windows 10"` query
+(correctly refused everywhere else in this module) would wrongly resolve to
+a specific build via a fake `"10.0"` hint prefix-matching `"10.0.26100"`,
+etc. — a real regression caught by this exact scenario while building the
+fallback. Restricting the check to an *exact* string match on `name`/`label`
+only avoids this entirely.
+
+Not product-specific — applies to any product via a bare numeric hint, not
+just SUSE.
 
 ### Vendor compatibility gate (`vendors_compatible`)
 
@@ -590,6 +723,8 @@ When a source resolves a row (`_apply_lifecycle_result` in `app.py`):
 | Bare single-part hint never matches a multi-part release | `score_release_against_hint` | `"Windows 10"` (bare) picking one specific Windows 10 build/release at random |
 | Compound-token full match requires *every* token, and only when there's more than one | `eol_service.py::_release_score` | a bare major alone claiming a specific name-based release the same way the rule above prevents it for builds |
 | A tie only conservative-merges when every tied release shares a common explaining hint | `pick_release`/`_release_required_hints` | `"Android 14-11"` (hints `"14"`+`"11"`, each independently matching a *different* release) silently resolving to whichever tied release has the earliest date, as if that were confirmed |
+| A tie only conservative-merges when the shared score is a genuine 100, never the weaker 90-point prefix score | `pick_release` (exact-score requirement) | A bare `"10.0"` hint (a genuine numeric prefix of every Windows 10/11 build) tying the entire family and resolving to whichever has the earliest EOL, as if a query naming no build number at all had confirmed a specific one |
+| A parenthesized or bare trailing build number is combined with the dotted version right before it into one hint | `extract_version_hints` | `"Windows 10.0 (14393)"`/`(15063)`/`(16299)`/`(17763)`/`(18363)`/`"22631 64-bit"` all resolving to the SAME earliest-EOL release regardless of the actual build named |
 | Ties resolved by edition first, then (only if still sharing a hint) earliest-date | `pick_release`/`_conservative_release` | reporting longer support than an ambiguous edition might actually have |
 | A resolved status with no date still counts as real lifecycle data | `app.py::_row_has_lifecycle_data` | a genuinely resolved `eol_status`/`eoas_status` (e.g. `isEol: false`, no `eolFrom`) being silently dropped because only dates were checked |
 | Full product name must literally appear in the query (≥95, except SUSE's edition-aware 60) | every `_resolve_product_slug` | a short/generic query fragment being treated as "contained in" an unrelated, much longer product name |
@@ -599,6 +734,8 @@ When a source resolves a row (`_apply_lifecycle_result` in `app.py`):
 | Juniper X-train mismatch refused | `junos_service.py::_version_match_score` | `15.1X49` matching a hint that actually names `15.1X53` |
 | Ambiguous OS rows skipped entirely | `is_ambiguous_row` | writing a real date onto a row whose product literally can't be determined |
 | No hints at all → no match | every `pick_release`/`_pick_release` | ever guessing the first/latest release when there's no version evidence whatsoever |
+| Prior-value fallback only accepts an unambiguous (single-candidate) ≥95% textual rename | `eol_service.py::_pick_release_by_prior_value` | a coarser old catalog entry (e.g. SUSE `"15"`) becoming permanently unmatchable once endoflife.date splits it into specific releases (`"15.2"`, …), while still refusing to guess among several similarly-named candidates |
+| Dot-zero fallback only accepts an *exact* `name`/`label` match on `"<bare hint>.0"`, never routed through the general scoring pipeline's prefix rule | `eol_service.py::_pick_release_by_dot_zero_release_name` | a bare hint like `"15"` (e.g. from "SUSE Linux Enterprise Server 15 SP7") never matching endoflife.date's `"15.0"`-named release, while NOT letting a synthesized `"10.0"` hint prefix-match a long build number like Windows' `"10.0.26100"` |
 
 ---
 
@@ -726,3 +863,4 @@ content equality.
 | `score_release_against_hint` shared-major-only | 55 | Both sides multi-part, share only the leading number — weak, tie-only signal |
 | Compound-token full match (name/label) | 100 | Every embedded token of a multi-token release name present among the hints |
 | `_normalize_ai_provider` default fuzzy threshold | 95 | Default confidence bar for AI/fuzzy Add-OS matching (configurable in Settings, 50–100) |
+| `_PRIOR_VALUE_SIMILARITY_THRESHOLD` (eol_service.py) | 0.95 (95%) | Minimum textual similarity between a row's existing normalized name and a release's prospective new name for the prior-value fallback to adopt it |

@@ -20,6 +20,7 @@ same idiom tests/test_layer23_switch.py already uses for the vendor caches.
 from __future__ import annotations
 
 import json
+import secrets
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
@@ -70,6 +71,18 @@ CREATE TABLE IF NOT EXISTS backups (
 
 _ensured_schemas: set[str] = set()
 
+# Cross-instance vendor-sync lock, stored as meta rows so every app instance
+# sharing this database (not just this process) sees whether a sync is
+# running -- see db_acquire_sync_lock.
+_SYNC_LOCK_HOLDER_KEY = "sync_lock_holder"
+_SYNC_LOCK_LABEL_KEY = "sync_lock_label"
+_SYNC_LOCK_HEARTBEAT_KEY = "sync_lock_heartbeat_at"
+
+# A holder must refresh its heartbeat more often than this (see app.py's
+# _SYNC_LOCK_HEARTBEAT_INTERVAL_SECONDS) or the lock is treated as abandoned
+# (its holding process crashed/was killed) and another instance may steal it.
+_SYNC_LOCK_STALE_AFTER_SECONDS = 180
+
 
 class PublishConflictError(Exception):
     """Data has been published again since the draft's expected_revision."""
@@ -90,6 +103,13 @@ def ensure_schema(schema: str = SCHEMA) -> None:
         connection.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(schema)))
         connection.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema)))
         connection.execute(_DDL)
+        # The sync lock's holder row must already exist before its first use
+        # -- SELECT ... FOR UPDATE can't lock a row that isn't there yet, and
+        # without this, two instances' very first acquire attempt could race.
+        connection.execute(
+            "INSERT INTO meta (key, value) VALUES (%s, '') ON CONFLICT (key) DO NOTHING",
+            (_SYNC_LOCK_HOLDER_KEY,),
+        )
         connection.commit()
     _ensured_schemas.add(schema)
 
@@ -322,6 +342,91 @@ def db_publish(
 def db_published_at(schema: str = SCHEMA) -> str:
     with _connect(schema) as connection:
         return _get_meta(connection, "published_at", "")
+
+
+def _sync_lock_is_stale(heartbeat_at: str) -> bool:
+    if not heartbeat_at:
+        return True
+    try:
+        age_seconds = (datetime.now() - datetime.fromisoformat(heartbeat_at)).total_seconds()
+    except ValueError:
+        return True
+    return age_seconds > _SYNC_LOCK_STALE_AFTER_SECONDS
+
+
+def db_acquire_sync_lock(label: str, schema: str = SCHEMA) -> str | None:
+    """Cross-instance vendor-sync lock: with multiple app instances sharing
+    one Postgres database, a plain in-process asyncio.Lock only protects
+    the instance running the sync -- another instance has no idea it's
+    happening, and can start its own sync (or an Add OS / Refresh EOL/EOAS,
+    which read the exact vendor tables a sync deletes+reinserts into per
+    product) at the same time, risking a torn/incomplete read.
+
+    ``SELECT ... FOR UPDATE`` on the holder row serializes concurrent
+    acquire attempts across instances -- the second transaction blocks
+    until the first commits, then re-reads the now-current value, so only
+    one instance can ever win a live lock. A heartbeat + staleness timeout
+    (rather than relying on connection/session lifetime) recovers
+    automatically if a holder process crashes mid-sync without releasing.
+
+    Returns an opaque holder token (pass it to db_release_sync_lock /
+    db_heartbeat_sync_lock), or None if another instance already holds a
+    live (non-stale) lock.
+    """
+    with _connect(schema) as connection:
+        row = connection.execute(
+            "SELECT value FROM meta WHERE key = %s FOR UPDATE", (_SYNC_LOCK_HOLDER_KEY,)
+        ).fetchone()
+        current_holder = row["value"] if row else ""
+        if current_holder and not _sync_lock_is_stale(_get_meta(connection, _SYNC_LOCK_HEARTBEAT_KEY, "")):
+            return None
+
+        holder = secrets.token_hex(16)
+        _set_meta(connection, _SYNC_LOCK_HOLDER_KEY, holder)
+        _set_meta(connection, _SYNC_LOCK_LABEL_KEY, label)
+        _set_meta(connection, _SYNC_LOCK_HEARTBEAT_KEY, datetime.now().isoformat(timespec="seconds"))
+        return holder
+
+
+def db_heartbeat_sync_lock(holder: str, schema: str = SCHEMA) -> bool:
+    """Refresh the lock's heartbeat while a sync is still running. Returns
+    False if the lock was lost (another instance's staleness timeout fired
+    and it took over) -- callers should treat that as a signal to stop."""
+    with _connect(schema) as connection:
+        row = connection.execute(
+            "SELECT value FROM meta WHERE key = %s FOR UPDATE", (_SYNC_LOCK_HOLDER_KEY,)
+        ).fetchone()
+        if not row or row["value"] != holder:
+            return False
+        _set_meta(connection, _SYNC_LOCK_HEARTBEAT_KEY, datetime.now().isoformat(timespec="seconds"))
+        return True
+
+
+def db_release_sync_lock(holder: str, schema: str = SCHEMA) -> None:
+    """Only clears the lock if ``holder`` still owns it -- a lock already
+    stolen by another instance (after this holder went stale) must not be
+    released out from under its new owner."""
+    with _connect(schema) as connection:
+        row = connection.execute(
+            "SELECT value FROM meta WHERE key = %s FOR UPDATE", (_SYNC_LOCK_HOLDER_KEY,)
+        ).fetchone()
+        if not row or row["value"] != holder:
+            return
+        _set_meta(connection, _SYNC_LOCK_HOLDER_KEY, "")
+        _set_meta(connection, _SYNC_LOCK_LABEL_KEY, "")
+        _set_meta(connection, _SYNC_LOCK_HEARTBEAT_KEY, "")
+
+
+def db_sync_lock_status(schema: str = SCHEMA) -> dict[str, str] | None:
+    """Read-only check for whether a vendor sync is running somewhere (this
+    instance or another) -- used to block Add OS / Refresh EOL/EOAS / starting
+    another vendor sync while one is in progress. None if no live lock is held."""
+    with _connect(schema) as connection:
+        holder = _get_meta(connection, _SYNC_LOCK_HOLDER_KEY, "")
+        heartbeat_at = _get_meta(connection, _SYNC_LOCK_HEARTBEAT_KEY, "")
+        if not holder or _sync_lock_is_stale(heartbeat_at):
+            return None
+        return {"label": _get_meta(connection, _SYNC_LOCK_LABEL_KEY, ""), "heartbeat_at": heartbeat_at}
 
 
 def describe_target() -> str:
