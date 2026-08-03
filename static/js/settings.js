@@ -43,11 +43,29 @@ function renderRefreshOrderChips(sources) {
 }
 
 async function renderVendorTab() {
-  const [{ sources }, settingsPayload] = await Promise.all([
+  const [{ sources }, settingsPayload, appSettings] = await Promise.all([
     api.vendorSources(),
     api.vendorSettingsGet().catch(() => ({ sources: {} })),
+    api.getSettings(),
   ]);
   renderRefreshOrderChips(sources);
+
+  const refreshToggle = document.getElementById("refresh-eol-enabled-toggle");
+  refreshToggle.checked = appSettings.refresh_eol_enabled;
+  refreshToggle.onchange = async () => {
+    // ai_enabled/ai_provider aren't Optional in the update request (a bool
+    // field can't mean "omit to leave unchanged"), so they must be echoed
+    // here too -- otherwise saving this toggle would silently reset AI
+    // match back to its defaults, the same reason the AI tab's own saves
+    // echo refresh_eol_enabled back (see renderAiTab).
+    await api.putSettings({
+      refresh_eol_enabled: refreshToggle.checked,
+      ai_enabled: appSettings.ai_enabled,
+      ai_provider: appSettings.ai_provider,
+    });
+    showToast(`Refresh EOL/EOAS ${refreshToggle.checked ? "enabled" : "disabled"}.`);
+  };
+
   const wrap = document.getElementById("settings-vendor-cards");
   wrap.innerHTML = sources
     .map(
@@ -112,7 +130,7 @@ async function renderAiTab() {
   const toggle = document.getElementById("ai-enabled-toggle");
   toggle.checked = settings.ai_enabled;
   toggle.onchange = async () => {
-    await api.putSettings({ ai_enabled: toggle.checked, ai_provider: settings.ai_provider, ai_match_prompt: null });
+    await api.putSettings({ refresh_eol_enabled: settings.refresh_eol_enabled, ai_enabled: toggle.checked, ai_provider: settings.ai_provider, ai_match_prompt: null });
     showToast(`AI match ${toggle.checked ? "enabled" : "disabled"}.`);
   };
 
@@ -131,7 +149,7 @@ async function renderAiTab() {
     .join("");
   document.getElementById("ai-provider-chips").querySelectorAll("[data-provider]").forEach((chip) => {
     chip.addEventListener("click", async () => {
-      await api.putSettings({ ai_enabled: toggle.checked, ai_provider: chip.dataset.provider, ai_match_prompt: null });
+      await api.putSettings({ refresh_eol_enabled: settings.refresh_eol_enabled, ai_enabled: toggle.checked, ai_provider: chip.dataset.provider, ai_match_prompt: null });
       renderAiTab();
     });
   });
@@ -143,6 +161,7 @@ async function renderAiTab() {
   const saveModel = async (value) => {
     const model = value.trim() || settings.default_ai_models?.[activeProvider] || "";
     await api.putSettings({
+      refresh_eol_enabled: settings.refresh_eol_enabled,
       ai_enabled: toggle.checked,
       ai_provider: activeProvider,
       ai_match_prompt: null,
@@ -193,6 +212,7 @@ async function renderAiTab() {
     confidenceSlider.value = clamped;
     confidenceValue.textContent = `${clamped}%`;
     await api.putSettings({
+      refresh_eol_enabled: settings.refresh_eol_enabled,
       ai_enabled: toggle.checked,
       ai_provider: settings.ai_provider,
       ai_match_prompt: null,
@@ -204,12 +224,12 @@ async function renderAiTab() {
   const promptArea = document.getElementById("ai-prompt-textarea");
   promptArea.value = settings.ai_match_prompt || settings.default_ai_match_prompt;
   document.getElementById("ai-prompt-save-btn").onclick = async () => {
-    await api.putSettings({ ai_enabled: toggle.checked, ai_provider: settings.ai_provider, ai_match_prompt: promptArea.value });
+    await api.putSettings({ refresh_eol_enabled: settings.refresh_eol_enabled, ai_enabled: toggle.checked, ai_provider: settings.ai_provider, ai_match_prompt: promptArea.value });
     showToast("AI match prompt saved.");
   };
   document.getElementById("ai-prompt-reset-btn").onclick = async () => {
     promptArea.value = settings.default_ai_match_prompt;
-    await api.putSettings({ ai_enabled: toggle.checked, ai_provider: settings.ai_provider, ai_match_prompt: "" });
+    await api.putSettings({ refresh_eol_enabled: settings.refresh_eol_enabled, ai_enabled: toggle.checked, ai_provider: settings.ai_provider, ai_match_prompt: "" });
     showToast("Reset to default prompt.");
   };
 }

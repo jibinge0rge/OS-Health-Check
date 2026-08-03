@@ -144,8 +144,8 @@ export async function* streamEvents(url, body, { signal } = {}) {
 }
 
 export const streams = {
-  refreshLookup: (rows, evidence, source, opts) =>
-    streamEvents("/api/lookup/refresh/stream", { rows, evidence, source }, opts),
+  refreshLookup: (rows, evidence, source, opts, isPartialRefresh = false) =>
+    streamEvents("/api/lookup/refresh/stream", { rows, evidence, source, is_partial_refresh: isPartialRefresh }, opts),
   refreshRowsBatch: (rows, opts) =>
     streamEvents("/api/lookup/rows/refresh/stream", { rows }, opts),
   validatePublish: (rows, evidence, backupSuffix, conflictResolutions, opts) =>

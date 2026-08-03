@@ -110,6 +110,15 @@
 }
 .value-box.date-range-trigger.is-disabled.has-value { color: var(--fg2); }
 
+.drawer-changelog { padding: 14px; margin-top: 8px; border-top: 1px solid var(--c-border-subtle); }
+.changelog-entry { padding: 8px 0; border-top: 1px solid var(--c-border-subtle); }
+.changelog-entry:first-child { border-top: none; }
+.changelog-field-name { font: 500 11px/16px var(--font-sans); color: var(--fg1); }
+.changelog-values { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 2px; font-size: 11px; }
+.changelog-from { color: var(--fg-dis); text-decoration: line-through; }
+.changelog-arrow { color: var(--fg3); }
+.changelog-to { color: var(--brand); font-weight: 500; }
+
 .drawer-evidence { padding: 14px; margin-top: 8px; }
 .evidence-entry { padding: 10px 0; border-top: 1px solid var(--c-border-subtle); }
 .evidence-entry:first-child { border-top: none; }

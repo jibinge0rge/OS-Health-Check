@@ -3,13 +3,22 @@
 import { state, setState, rows as currentRows, isDraft, isData } from "./state.js";
 import { api, streams } from "./api.js";
 import { iconMarkup } from "./icons.js";
-import { parseRowDate, classifyDateChip, formatRelative } from "./date_utils.js";
+import { parseRowDate, classifyDateChip, formatRelative, toISODate } from "./date_utils.js";
 import { initFiltersPanel, toggleFiltersPanel, matchesColumnFilters, activeFilterCount, clearAllColumnFilters } from "./filters_panel.js";
 import { initDrawer, openDrawer, closeDrawer, isDrawerOpenFor, refreshDrawerFields, refreshDrawerReviewedState, refreshDrawerEvidence, markDrawerFieldManual } from "./drawer.js";
 import { openModal, closeModal, showToast, runProgress } from "./modals.js";
 import { getTasks, hasActive } from "./tasks.js";
 
 const CSV_HEADERS = ["os_string", "normalized_os_detailed_name", "normalized_os", "eol_date", "eol_status", "eoas_date", "eoas_status"];
+const DATE_FIELDS = new Set(["eol_date", "eoas_date"]);
+const FIELD_LABELS = {
+  normalized_os_detailed_name: "Normalized OS detailed name",
+  normalized_os: "Normalized OS",
+  eol_date: "EOL date",
+  eol_status: "EOL status",
+  eoas_date: "EOAS date",
+  eoas_status: "EOAS status",
+};
 const PAGE_SIZE_OPTIONS = [50, 100, 250, 500, 1000];
 const EXPORT_FORMATS = [
   ["csv", "CSV"],
@@ -21,6 +30,7 @@ let diff = { added: [], edited: [], deleted: [], unresolved: 0 };
 let addedSet = new Set();
 let editedSet = new Set();
 let dataByOs = new Map();
+let refreshEolEnabled = true;
 let page = 1;
 let pageSizeIndex = 1;
 let saveTimer = null;
@@ -36,6 +46,7 @@ const el = {
   quickChips: document.getElementById("quick-chips"),
   addOsBtn: document.getElementById("add-os-btn"),
   refreshBtn: document.getElementById("refresh-eol-btn"),
+  bulkRefreshBtn: document.getElementById("bulk-refresh-btn"),
   exportBtn: document.getElementById("export-btn"),
   columnFiltersBtn: document.getElementById("column-filters-btn"),
   filterBadge: document.getElementById("filter-count-badge"),
@@ -69,10 +80,11 @@ export async function initEditor() {
     onSameAsOs: (row) => { applySameAsOs(row); scheduleAutosave(); refreshView(); },
     onMarkAmbiguous: (row) => { applyAmbiguous(row); scheduleAutosave(); refreshView(); refreshDrawerFields(row); },
     onRerun: (row) => rerunRow(row),
-    onRevert: (row) => { revertRow(row); scheduleAutosave(); refreshView(); },
+    onRevert: (row) => { revertRow(row); scheduleAutosave(); refreshView(); refreshDrawerFields(row); },
     onToggleReviewed: (row) => { toggleRowReviewed(row); scheduleAutosave(); refreshDrawerReviewedState(row); refreshView(); },
     isReviewed: (row) => isRowReviewed(row),
     isChanged: (row) => isChangedRow(row),
+    getChangedFields: (row) => changedFields(row),
   });
 
   el.segData.addEventListener("click", () => switchSource("data"));
@@ -94,7 +106,7 @@ export async function initEditor() {
   // the same progress bar as the toolbar's Refresh EOL/EOAS, so a large
   // selection shows live per-chunk progress instead of going quiet for
   // however long the whole batch takes.
-  document.getElementById("bulk-refresh-btn").addEventListener("click", openRefreshModal);
+  el.bulkRefreshBtn.addEventListener("click", openRefreshModal);
   document.getElementById("bulk-same-as-os-btn").addEventListener("click", bulkSameAsOs);
   document.getElementById("bulk-ambiguous-btn").addEventListener("click", bulkMarkAmbiguous);
   document.getElementById("bulk-revert-btn").addEventListener("click", bulkRevert);
@@ -112,8 +124,23 @@ export async function initEditor() {
     page = 1; renderTable();
   });
 
-  await loadData();
+  await Promise.all([loadData(), loadRefreshEolSetting()]);
   renderAll();
+}
+
+async function loadRefreshEolSetting() {
+  const settings = await api.getSettings().catch(() => ({ refresh_eol_enabled: true }));
+  refreshEolEnabled = settings.refresh_eol_enabled !== false;
+}
+
+/** initEditor() only runs once at app startup, so a Settings change made
+ * later in the same session never touched the editor's cached flag until a
+ * full page reload -- the toolbar button kept looking clickable even after
+ * being disabled. Called from main.js whenever the Lookup editor screen is
+ * navigated to, so the button reflects the current setting every time. */
+export async function syncRefreshEolSetting() {
+  await loadRefreshEolSetting();
+  updateRefreshButtonsState();
 }
 
 async function loadData() {
@@ -161,6 +188,43 @@ function formatPublishedAt(iso) {
 }
 
 function dedupeKey(v) { return String(v || "").trim().toLowerCase(); }
+
+// Boolean-ish status cells ("true"/"false") compare case-insensitively --
+// mirrors lookup_extras.py's _comparable_cell, which the server's own
+// Draft-vs-Data diff already uses, so "edited" here means the same thing
+// it means there.
+function comparableCell(value) {
+  const text = String(value ?? "").trim();
+  const lowered = text.toLowerCase();
+  return lowered === "true" || lowered === "false" ? lowered : text;
+}
+
+function displayFieldValue(field, value) {
+  const text = String(value ?? "").trim();
+  if (!text) return "(empty)";
+  if (DATE_FIELDS.has(field)) {
+    const parsed = parseRowDate(text);
+    return parsed ? toISODate(parsed) : text;
+  }
+  return text;
+}
+
+/** Which fields differ between a Draft row and its Data baseline, formatted
+ * for display -- the same 7-column comparison compute_lookup_diff does
+ * server-side (lookup_extras.py), just per-field instead of a single
+ * whole-row bool, since that's all the server tells the client today. */
+function changedFields(row) {
+  const baseline = dataByOs.get(dedupeKey(row.os_string));
+  if (!baseline) return [];
+  return CSV_HEADERS.filter(
+    (header) => header !== "os_string" && comparableCell(row[header]) !== comparableCell(baseline[header])
+  ).map((header) => ({
+    field: header,
+    label: FIELD_LABELS[header] || header,
+    from: displayFieldValue(header, baseline[header]),
+    to: displayFieldValue(header, row[header]),
+  }));
+}
 
 /** Return to Data after Exit draft / Delete draft / Publish — resets the
  * quick chip so the table doesn't look empty (Data has no "changed" chip). */
@@ -365,6 +429,8 @@ function markFieldManual(row, field) {
 }
 
 async function rerunRow(row) {
+  // A manual, single-row re-run is always allowed -- the Settings toggle
+  // only blocks refreshing the whole draft/data in one shot.
   showToast("Re-running lookup…");
   try {
     const result = await api.refreshRow(row);
@@ -495,6 +561,21 @@ function updateBulkBar() {
   const n = state.selected.size;
   el.bulkBar.hidden = !(isDraft() && n > 0);
   el.bulkCount.textContent = `${n} selected`;
+  updateRefreshButtonsState();
+}
+
+/** Refresh EOL/EOAS being disabled in Settings only blocks the "refresh
+ * everything" action -- a manual re-run on one row (the drawer) or a
+ * deliberate bulk-selected refresh must always still work, so only the
+ * toolbar button gets disabled, and only while nothing is selected (with a
+ * selection active, that same button refreshes just the selection, same as
+ * the bulk bar's own button, which is never disabled by this setting). */
+function updateRefreshButtonsState() {
+  const blanketDisabled = !refreshEolEnabled && state.selected.size === 0;
+  el.refreshBtn.disabled = blanketDisabled;
+  el.refreshBtn.title = blanketDisabled
+    ? "Refresh EOL/EOAS is disabled in Settings for the whole draft — select rows to refresh just those."
+    : "";
 }
 
 /** Select-all applies to the filtered set, not the whole file (matches the
@@ -850,7 +931,13 @@ function renderRow(row) {
   let flag = "";
   if (isDraft()) {
     if (addedSet.has(key)) flag = `<span class="row-flag new">NEW</span>`;
-    else if (editedSet.has(key)) flag = `<span class="row-flag edited">EDITED</span>`;
+    else if (editedSet.has(key)) {
+      const changes = changedFields(row);
+      const tooltip = changes.length
+        ? changes.map((c) => `${c.label}: ${c.from} → ${c.to}`).join("\n")
+        : "Edited";
+      flag = `<span class="row-flag edited" title="${escapeHtml(tooltip)}">EDITED</span>`;
+    }
   }
 
   // Only rows that actually changed need a review control -- an unchanged
@@ -912,6 +999,15 @@ function escapeHtml(value) {
 // ---------- Refresh EOL/EOAS modal ----------
 
 async function openRefreshModal() {
+  // A disabled setting only blocks refreshing the whole draft/data in one
+  // shot -- a deliberate bulk selection must still go through, whether it
+  // was triggered from the bulk bar's own button or this same toolbar
+  // button (both call this function; behavior already branches on
+  // state.selected below).
+  if (!refreshEolEnabled && state.selected.size === 0) {
+    showToast("Refresh EOL/EOAS is disabled in Settings for the whole draft — select rows to refresh just those.");
+    return;
+  }
   if (hasActive("refresh")) {
     showToast("A refresh is already running — see Background tasks.");
     return;
@@ -928,7 +1024,8 @@ async function openRefreshModal() {
   // every excluded row from the persisted draft, not just skip enriching
   // it. The server already skips ambiguous rows internally (never queries
   // a lifecycle source with them); this just makes the count honest about it.
-  const targets = state.selected.size ? selectedRows() : state.draftRows;
+  const isPartialRefresh = state.selected.size > 0;
+  const targets = isPartialRefresh ? selectedRows() : state.draftRows;
   const ambiguousCount = targets.filter((row) => row.normalized_os_detailed_name === "Ambiguous OS").length;
   const enrichableCount = targets.length - ambiguousCount;
   document.getElementById("refresh-summary").textContent = ambiguousCount
@@ -943,7 +1040,7 @@ async function openRefreshModal() {
       kind: "refresh",
       label: "Refresh EOL/EOAS",
       bodyEl, footerEl,
-      eventGenerator: streams.refreshLookup(targets, state.evidence, "draft"),
+      eventGenerator: streams.refreshLookup(targets, state.evidence, "draft", undefined, isPartialRefresh),
       // No inline .catch() -- tasks.js's cancelTask() awaits this to know
       // whether the cancel actually landed, re-enabling the Cancel button
       // if it rejects (job already gone, network error, etc.).

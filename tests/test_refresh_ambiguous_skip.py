@@ -167,6 +167,42 @@ class ApplyLifecycleResultCorrectsStaleNamesTests(unittest.TestCase):
         self.assertEqual(entry["normalized"]["method"], "api")
 
 
+class ApplyLifecycleResultWritesStatusOnlyResultsTests(unittest.TestCase):
+    """Regression: a result with a resolved status but no date (e.g.
+    endoflife.date's "isEol": false with no eolFrom -- a fully valid,
+    confirmed answer per resolve_lifecycle_status) was never written to the
+    row at all, because the wipe-prevention guard only checked eol_date/
+    eoas_date and missed status-only results entirely. Real case: "Android
+    16" resolves to release "16" with eol_status="false" and no eol_date --
+    that "false" must land on the row, not silently vanish."""
+
+    def test_status_only_result_is_written_to_a_blank_row(self) -> None:
+        row = _row("Android 16")
+        result = {
+            "eol_date": "", "eol_status": "false", "eoas_date": "", "eoas_status": "",
+            "normalized_os_detailed_name": "Android OS 16 'Baklava'",
+            "normalized_os": "Android OS 16", "source": "api",
+        }
+        app._apply_lifecycle_result(row, result, {})
+        self.assertEqual(row["eol_status"], "false")
+        self.assertEqual(row["eol_date"], "")
+
+    def test_status_only_result_counts_as_resolved_for_the_cascade_gate(self) -> None:
+        row = _row("Android 16")
+        with (
+            patch.object(app, "lookup_os_eol_batch") as mock_eol_batch,
+            patch.object(app, "lookup_vendor_batch") as mock_vendor_batch,
+        ):
+            mock_eol_batch.return_value = [
+                {"eol_date": "", "eol_status": "false", "eoas_date": "", "eoas_status": "",
+                 "normalized_os_detailed_name": "Android OS 16 'Baklava'",
+                 "normalized_os": "Android OS 16", "source": "api"}
+            ]
+            app.refresh_rows_lifecycle_chunk([row], {})
+            mock_vendor_batch.assert_not_called()
+        self.assertEqual(row["eol_status"], "false")
+
+
 class ApplyLifecycleResultKeepsStaleDatesTests(unittest.TestCase):
     """Regression: a genuine no-match result used to unconditionally wipe
     eol_date/eol_status/eoas_date/eoas_status to blank, even when the row

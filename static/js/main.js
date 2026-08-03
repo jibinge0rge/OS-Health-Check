@@ -1,7 +1,7 @@
 import { state, setRailCollapsed, applyPersistedAppearance } from "./state.js";
 import { iconMarkup } from "./icons.js";
 import { initModals } from "./modals.js";
-import { initEditor } from "./editor.js";
+import { initEditor, syncRefreshEolSetting } from "./editor.js";
 import { initVendor } from "./vendor.js";
 import { initSettings } from "./settings.js";
 import { initDeploy } from "./deploy.js";
@@ -43,6 +43,10 @@ function showScreen(name) {
     markAllRead();
     document.querySelector("#notif-bell .dot").hidden = true;
   }
+  // A Refresh EOL/EOAS setting change made elsewhere in this session never
+  // reaches the editor's cached flag on its own (initEditor() only runs
+  // once) -- re-check every time this screen is actually opened.
+  if (name === "editor") syncRefreshEolSetting();
 }
 
 document.querySelectorAll(".rail-item[data-screen]").forEach((btn) => {

@@ -380,5 +380,59 @@ class ResolveProductSlugTests(unittest.TestCase):
         self.assertNotIn("Server Windows Server", normalization["normalized_os"])
 
 
+class BitnessMarkerContextTests(unittest.TestCase):
+    """Real incident: Android reached major version 16 ('Baklava', 2025), but
+    16/32/64/86/128/256 were unconditionally treated as architecture/bitness
+    noise, so a bare "Android 16" query could never extract "16" as a hint at
+    all and permanently failed to match. The exclusion must only apply when
+    the surrounding text actually reads as a bitness marker."""
+
+    def test_bare_major_matching_a_bitness_number_is_kept(self) -> None:
+        self.assertEqual(extract_version_hints("Android 16"), ["16"])
+        self.assertEqual(extract_version_hints("Fedora 32"), ["32"])
+
+    def test_genuine_bitness_markers_are_still_excluded(self) -> None:
+        self.assertEqual(extract_version_hints("Windows 7 (32-bit)"), ["7"])
+        self.assertEqual(extract_version_hints("Windows 7 (64-bit)"), ["7"])
+        self.assertEqual(
+            extract_version_hints("Windows Server 2016 Standard 64 bit Edition Version 1607"),
+            ["2016", "1607"],
+        )
+
+
+class PickReleaseRefusesMixedIndependentHintsTests(unittest.TestCase):
+    """Real incident: "Android 14-11" extracts two independent hints ("14"
+    and "11"), each of which alone exactly matches a DIFFERENT, unrelated
+    Android release -- release "14" via hint "14" alone, release "11" via
+    hint "11" alone. The old tie-break couldn't tell this apart from the
+    Windows 24H2 case (where every tied edition needs the SAME shared
+    "11"+"24" pair) and silently picked whichever tied release had the
+    earliest EOL date -- "Android 11" -- as if that were a confirmed match.
+    A tie must only be conservative-merged when every tied release is
+    explained by a hint (or hint-set) shared across all of them."""
+
+    def test_two_independently_matched_releases_refuse_rather_than_guess(self) -> None:
+        releases = [
+            {"name": "14", "label": "14 'Upside Down Cake'", "eolFrom": "2024-06-10"},
+            {"name": "11", "label": "11 'Red Velvet Cake'", "eolFrom": "2021-09-08"},
+        ]
+        hints = extract_version_hints("Android 14-11")
+        self.assertEqual(sorted(hints), ["11", "14"])
+        self.assertEqual(pick_release(releases, hints, os_text="Android 14-11"), {})
+
+    def test_shared_hint_tie_still_conservative_merges(self) -> None:
+        """Sanity check that the fix above doesn't over-refuse: a tie where
+        every candidate genuinely shares the same explaining hint(s) (the
+        Windows 24H2 shape) must still resolve via the existing "earliest
+        date" conservative merge."""
+        releases = [
+            {"name": "11-24h2-e", "label": "11 24H2 (E)", "latest": {"name": "10.0.26100"}, "eolFrom": "2027-10-12"},
+            {"name": "11-24h2-w", "label": "11 24H2 (W)", "latest": {"name": "10.0.26100"}, "eolFrom": "2026-10-13"},
+        ]
+        hints = extract_version_hints("Microsoft Windows 11 24H2")
+        picked = pick_release(releases, hints, os_text="Microsoft Windows 11 24H2")
+        self.assertEqual(picked.get("name"), "11-24h2-w")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -226,13 +226,28 @@ extract_version_hints("Cisco IOS 15.0(2)SE8")
 # -> ["15.0", "2"]          (parenthesised segments don't stop separate hints;
 #                            the trailing "8" in "SE8" is preceded by a letter,
 #                            so the negative lookbehind excludes it too)
+
+extract_version_hints("Android 16")
+# -> ["16"]                 bare "16" is a real major version here -- see below
+
+extract_version_hints("Windows 7 (64-bit)")
+# -> ["7"]                  "64" is excluded -- it reads as a bitness marker in context
 ```
 
 Exclusions (all deliberate, each added after a real false-match):
 
-- **Bitness / architecture numbers are dropped** — `16`, `32`, `64`, `86`,
-  `128`, `256` never become hints (a `"64-bit"` query must never be treated
-  as "version 64").
+- **Bitness / architecture numbers are dropped, but only in bitness
+  *context*** — `16`, `32`, `64`, `86`, `128`, `256` are excluded when the
+  text right around them actually reads as an architecture marker
+  (`_looks_like_bitness_marker`: immediately followed by `bit`/`-bit`/` bit`,
+  or immediately preceded by `x` as in `x86`/`x64`). A bare one of these
+  numbers with no such context is kept, because it's also a completely
+  legitimate major version on its own — Android's own major version reached
+  **16** ('Baklava') in 2025, and product version numbers keep climbing over
+  time. Blanket-excluding every bare `16`/`32`/`64`/… regardless of context
+  used to make any product whose version happened to land on one of them
+  (e.g. `"Android 16"`) permanently unmatchable, since `extract_version_hints`
+  would give it zero usable hints at all, forever.
 - **`N.x` ranges are dropped** — `"3.x or later"` is a range, not a specific
   version 3.
 - **Lone SP/R/U/Pack digits are dropped** — the trailing digit in `SP2`,
@@ -299,7 +314,7 @@ guess.
 **Ties.** More than one release can legitimately tie for the best score —
 most commonly because several editions/channels share the exact same raw
 build (`latest.name`), or several editions share the same marketing name
-tokens. Two tie-breakers are tried, in order:
+tokens. Three tie-breakers are tried, in order:
 
 1. **Edition narrowing** (`_edition_label_substring`) — if `os_text`
    contains an edition/channel marker (`"IoT"`, or `"Enterprise"`/literal
@@ -307,11 +322,24 @@ tokens. Two tie-breakers are tried, in order:
    contains that same substring. IoT is checked before Enterprise, since a
    string naming both (`"Windows 11 IoT Enterprise LTSC"`) should prefer the
    more specific IoT release.
-2. **Conservative merge — "least date" picking** (`_conservative_release`) —
-   any tie left after edition narrowing (or when no edition was named at
-   all) is resolved by assuming the **worst case**: the tied release with
-   the **earliest** EOL date is used as the base result, and its EOL/EOAS
-   dates are the *minimum* across every tied release. The reasoning: if we
+2. **Shared-hint check** (`_release_required_hints`) — a tie is only safe to
+   resolve further when every tied release is actually explained by the
+   *same* hint (or hint-set). For each still-tied release, this works out
+   which hint(s) are responsible for its winning score: if any single hint
+   alone reaches that score, the release's requirement is just that hint (or
+   the set of hints that individually qualify); if the match only came
+   through the compound-token "every token present" rule, the requirement is
+   that release's own token set. If the **intersection** across every tied
+   release's requirement is empty — no hint is common to all of them — the
+   tie isn't "several editions of one thing," it's **two or more genuinely
+   different releases each independently matched by a different hint**, and
+   `pick_release` refuses outright (returns nothing) rather than guess one.
+   See the `"Android 14-11"` example below.
+3. **Conservative merge — "least date" picking** (`_conservative_release`) —
+   any tie that *does* share a common hint (after edition narrowing) is
+   resolved by assuming the **worst case**: the tied release with the
+   **earliest** EOL date is used as the base result, and its EOL/EOAS dates
+   are the *minimum* across every tied release. The reasoning: if we
    genuinely can't tell which of several editions this OS actually is,
    support should never be reported as lasting *longer* than it might
    actually be.
@@ -345,6 +373,22 @@ Releases `11-23h2-e` and `11-23h2-w` share the same build `10.0.22631`.
 Query `"...Windows 11 Enterprise multi-session 10.0.22631 Build 22631..."` →
 both tie on the build match → `os_text` contains `"Enterprise"` → narrowed to
 `11-23h2-e` specifically, *not* the earliest-date fallback.
+
+**Example — a tie that must refuse instead of guess (regression-tested):**
+Query `"Android 14-11"` → hints `["14", "11"]` (two independent digit runs —
+the hyphen isn't a dot, so this is never one compound version). Android
+release `"14"` scores 100 against hint `"14"` alone; release `"11"` scores
+100 against hint `"11"` alone — both hit the same top score, so they tie.
+But **no hint is shared between them**: release `14`'s requirement is
+`{"14"}`, release `11`'s requirement is `{"11"}`, and their intersection is
+empty. This is not "several editions of one release" (like the 24H2 case
+above, where every tied candidate needs the *same* `"11"`+`"24"` pair) — it's
+two genuinely different, unrelated releases each independently explained by
+a different piece of the query. `pick_release` returns nothing rather than
+picking whichever has the earliest EOL date (which, before this rule
+existed, silently produced `"Android 11"` — a specific, confident, and
+wrong answer for a string that plausibly names two different versions at
+once).
 
 > **Why hints are merged from *both* fields, not just the one queried:**
 > Windows' own `normalized_os` is deliberately coarse/family-level (e.g.
@@ -511,9 +555,14 @@ row that was flagged specifically *because* its product can't be determined.
 
 When a source resolves a row (`_apply_lifecycle_result` in `app.py`):
 
-- `eol_date` / `eol_status` / `eoas_date` / `eoas_status` are always
-  overwritten with whatever this lookup produced (a genuine no-match leaves
-  these blank in the result, so the row's existing values are left alone).
+- `eol_date` / `eol_status` / `eoas_date` / `eoas_status` are overwritten
+  **only when this lookup actually resolved a lifecycle state**
+  (`_row_has_lifecycle_data`, true for an explicit date *or* an explicit
+  true/false status with no date — a genuinely confirmed "not end-of-life"
+  answer per `resolve_lifecycle_status` counts the same as a date would). A
+  genuine no-match leaves the row's existing values alone entirely, rather
+  than wiping perfectly good, previously-resolved dates just because this
+  particular refresh run's cascade happened to find nothing.
 - `normalized_os_detailed_name` / `normalized_os` are overwritten **only
   when the lookup actually produced a name** for that field — a match
   names one specific release, so refusing to correct an already-non-blank
@@ -534,13 +583,15 @@ When a source resolves a row (`_apply_lifecycle_result` in `app.py`):
 
 | Rule | Where | Prevents |
 |---|---|---|
-| Bitness numbers (16/32/64/86/128/256) never become version hints | `extract_version_hints` and every source's own hint extractor | `"64-bit"` being read as "version 64" |
+| Bitness numbers (16/32/64/86/128/256) only excluded in bitness *context* | `extract_version_hints`/`_release_name_tokens` (`_looks_like_bitness_marker`) | `"64-bit"` being read as "version 64" — **without** also making a real version number that happens to be 16/32/64/… (e.g. `"Android 16"`) permanently unmatchable |
 | `N.x` ranges are dropped | same | `"3.x or later"` being read as version 3 |
 | Lone SP/R/U/Pack digit dropped | same | `"Service Pack 2"` / `"SP2"` / `"R2"` / `"U1"` contributing a bogus version 2 hint |
 | Compound tag doesn't leak a trailing digit | same (negative lookbehind) | `"24H2"` also yielding a spurious `"2"` hint |
 | Bare single-part hint never matches a multi-part release | `score_release_against_hint` | `"Windows 10"` (bare) picking one specific Windows 10 build/release at random |
 | Compound-token full match requires *every* token, and only when there's more than one | `eol_service.py::_release_score` | a bare major alone claiming a specific name-based release the same way the rule above prevents it for builds |
-| Ties resolved by edition first, then earliest-date | `pick_release`/`_conservative_release` | reporting longer support than an ambiguous edition might actually have |
+| A tie only conservative-merges when every tied release shares a common explaining hint | `pick_release`/`_release_required_hints` | `"Android 14-11"` (hints `"14"`+`"11"`, each independently matching a *different* release) silently resolving to whichever tied release has the earliest date, as if that were confirmed |
+| Ties resolved by edition first, then (only if still sharing a hint) earliest-date | `pick_release`/`_conservative_release` | reporting longer support than an ambiguous edition might actually have |
+| A resolved status with no date still counts as real lifecycle data | `app.py::_row_has_lifecycle_data` | a genuinely resolved `eol_status`/`eoas_status` (e.g. `isEol: false`, no `eolFrom`) being silently dropped because only dates were checked |
 | Full product name must literally appear in the query (≥95, except SUSE's edition-aware 60) | every `_resolve_product_slug` | a short/generic query fragment being treated as "contained in" an unrelated, much longer product name |
 | Vendor compatibility gate | `vendors_compatible`, checked before product-field selection and again after product resolution | Cisco IOS ↔ Apple iOS, VMware ↔ Microsoft, Cisco Firepower ↔ Google Container-Optimized OS, and similar cross-vendor false matches |
 | Generic family guard (`linux`/`windows`/`unix`) | `eosl_service.py::_query_targets_generic_family` | a vague `"Other ... Linux"` string silently absorbing into the generic Linux kernel product page |

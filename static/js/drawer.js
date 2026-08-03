@@ -29,6 +29,8 @@ const panel = document.getElementById("drawer-panel");
 const titleEl = document.getElementById("drawer-title");
 const actionsEl = document.getElementById("drawer-actions");
 const evidenceListEl = document.getElementById("drawer-evidence-list");
+const changelogEl = document.getElementById("drawer-changelog");
+const changelogListEl = document.getElementById("drawer-changelog-list");
 
 let currentRow = null;
 let handlers = {};
@@ -62,6 +64,7 @@ export function initDrawer(cb) {
       const stored = toStoredValue(field, input.value);
       currentRow[field] = stored;
       setFieldValue(field, stored);
+      renderChangelog(currentRow);
       handlers.onFieldChange?.(currentRow, field, stored);
     });
   });
@@ -72,6 +75,7 @@ export function initDrawer(cb) {
       if (!currentRow) return;
       const stored = toStoredValue(field, iso);
       currentRow[field] = stored;
+      renderChangelog(currentRow);
       handlers.onFieldChange?.(currentRow, field, stored);
     });
   });
@@ -131,6 +135,8 @@ export async function openDrawer(row) {
     setFieldValue(field, row[field]);
     datePickers[field]?.setDisabled(!editable);
   });
+
+  renderChangelog(row);
 
   evidenceListEl.innerHTML = `<p class="modal-note">Loading evidence…</p>`;
   try {
@@ -203,6 +209,33 @@ export function refreshDrawerFields(row) {
     if (field !== "matched_by") setFieldValue(field, row[field]);
   });
   DATE_FIELDS.forEach((field) => setFieldValue(field, row[field]));
+  renderChangelog(row);
+}
+
+/** "Changed from Data" section -- only meaningful in Draft, where a row can
+ * actually differ from the Data it was forked from. `handlers.getChangedFields`
+ * (editor.js's changedFields) does the field-by-field comparison; this just
+ * renders whatever it returns. */
+function renderChangelog(row) {
+  const changes = isDraft() ? handlers.getChangedFields?.(row) || [] : [];
+  changelogEl.hidden = changes.length === 0;
+  if (!changes.length) {
+    changelogListEl.innerHTML = "";
+    return;
+  }
+  changelogListEl.innerHTML = changes
+    .map(
+      (change) => `
+      <div class="changelog-entry">
+        <div class="changelog-field-name">${escapeHtml(change.label)}</div>
+        <div class="changelog-values">
+          <span class="changelog-from">${escapeHtml(change.from)}</span>
+          <span class="changelog-arrow">→</span>
+          <span class="changelog-to">${escapeHtml(change.to)}</span>
+        </div>
+      </div>`
+    )
+    .join("");
 }
 
 function escapeHtml(value) {

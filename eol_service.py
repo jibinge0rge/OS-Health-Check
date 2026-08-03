@@ -313,18 +313,45 @@ def pick_api_os_value_with_field(
     return "", ""
 
 
-# Numbers that look like versions but are almost always architecture / bitness.
+# Numbers that *can* be architecture/bitness markers ("64-bit", "x86") rather
+# than a real product version -- but a bare one of these is also a completely
+# legitimate major version on its own (Android reached major version 16 in
+# 2025; product version numbers keep climbing over time), so this set alone
+# must never be enough to exclude a value -- see _looks_like_bitness_marker,
+# which only excludes one of these when the surrounding text actually reads
+# as a bitness marker.
 _NON_VERSION_HINTS = frozenset({"16", "32", "64", "86", "128", "256"})
 
 # Accept only strong release matches (exact or multi-segment prefix).
 _MIN_RELEASE_SCORE = 80
 
+# "-bit"/" bit"/"bit" (any amount of space/hyphen, or none) right after the
+# number -- "64-bit", "64 bit", "64bit", "(64-bit)".
+_BITNESS_SUFFIX_RE = re.compile(r"^[\s-]*bit\b", re.I)
+
+
+def _looks_like_bitness_marker(text: str, match: re.Match[str]) -> bool:
+    """True when a candidate bitness number (16/32/64/86/128/256) is actually
+    being used as an architecture/bitness marker in this text ("64-bit",
+    "32 bit", "x86", "x64") rather than a genuine product version. Real
+    incident: Android's own major version reached 16 ('Baklava', 2025) --
+    excluding every bare "16" unconditionally left "Android 16" completely
+    unmatchable, forever, no matter how the product itself versions from
+    here on."""
+    suffix = text[match.end() : match.end() + 6]
+    if _BITNESS_SUFFIX_RE.match(suffix):
+        return True
+    prefix = text[max(0, match.start() - 1) : match.start()]
+    return prefix.lower() == "x"
+
 
 def extract_version_hints(os_name: str) -> list[str]:
     """Numeric version tokens suitable for release matching.
 
-    Drops architecture bitness and lone service-pack / update markers
-    (``SP3``, ``R2``, ``U1``) so they cannot drive a false release pick.
+    Drops architecture bitness (only when the surrounding text actually
+    reads as one -- see ``_looks_like_bitness_marker``) and lone
+    service-pack / update markers (``SP3``, ``R2``, ``U1``) so they cannot
+    drive a false release pick.
     """
     text = str(os_name or "")
     hints: list[str] = []
@@ -334,7 +361,9 @@ def extract_version_hints(os_name: str) -> list[str]:
     # eosl_service.py / microsoft_lifecycle_service.py's _version_tokens.
     for match in re.finditer(r"(?<![A-Za-z])\d+(?:\.\d+)*", text):
         value = match.group()
-        if value in seen or value in _NON_VERSION_HINTS:
+        if value in seen:
+            continue
+        if value in _NON_VERSION_HINTS and _looks_like_bitness_marker(text, match):
             continue
         # "3.x or later" is a range, not version 3.
         if re.search(rf"(?<!\d){re.escape(value)}\.x\b", text, re.I):
@@ -363,13 +392,19 @@ def _release_name_tokens(text: str) -> list[str]:
     microsoft_lifecycle_service.py use for release names) lets a name-based
     match succeed instead of only ever matching via the raw build number.
     Negative lookbehind keeps a compound tag like "24H2" from also yielding
-    a stray trailing "2" token.
+    a stray trailing "2" token. Same bitness-marker context check as
+    ``extract_version_hints`` -- a release token that happens to equal one
+    of the bitness numbers (e.g. a product versioned "16") is still a real
+    version unless the surrounding text actually reads as "16-bit"/"x16".
     """
-    return [
-        token
-        for token in re.findall(r"(?<![A-Za-z])\d+(?:\.\d+)*", text or "")
-        if token not in _NON_VERSION_HINTS
-    ]
+    text = text or ""
+    tokens: list[str] = []
+    for match in re.finditer(r"(?<![A-Za-z])\d+(?:\.\d+)*", text):
+        token = match.group()
+        if token in _NON_VERSION_HINTS and _looks_like_bitness_marker(text, match):
+            continue
+        tokens.append(token)
+    return tokens
 
 
 def _release_score(release_name: str, hints: list[str]) -> int:
@@ -463,6 +498,48 @@ def _conservative_release(candidates: list[dict[str, Any]]) -> dict[str, Any]:
     return merged
 
 
+def _release_candidate_strings(release: dict[str, Any]) -> list[str]:
+    release_name = str(release.get("name", "") or "")
+    release_label = str(release.get("label", "") or "")
+    candidates = [release_name]
+    if release_label and release_label != release_name:
+        candidates.append(release_label)
+    latest_name = _release_latest_name(release)
+    if latest_name:
+        candidates.append(latest_name)
+    return candidates
+
+
+def _release_required_hints(candidates: list[str], hints: list[str], target_score: int) -> frozenset[str]:
+    """Which hint(s) actually explain this release's winning score.
+
+    Used to tell "several editions tied because they all match the SAME
+    signal" (safe to conservative-merge -- see the Windows 24H2 case, where
+    every tied edition needs the exact same "11"+"24" pair) apart from "two
+    DIFFERENT releases each independently matched by a DIFFERENT hint" (a
+    sign the query itself names more than one distinct product/version --
+    e.g. "Android 14-11" matching release "14" via hint "14" alone AND
+    release "11" via hint "11" alone). The former shares a hint across every
+    tied candidate; the latter doesn't share anything at all.
+    """
+    single_hint_matches = {
+        hint
+        for hint in hints
+        if max((score_release_against_hint(name, hint) for name in candidates), default=0) >= target_score
+    }
+    if single_hint_matches:
+        return frozenset(single_hint_matches)
+    # No single hint alone reaches the score -- the compound-token "every
+    # token present" rule fired instead (see _release_score), whose required
+    # set is simply the release's own extracted tokens.
+    required: set[str] = set()
+    for name in candidates:
+        tokens = _release_name_tokens(name)
+        if len(tokens) > 1 and all(token in hints for token in tokens):
+            required.update(tokens)
+    return frozenset(required)
+
+
 def pick_release(
     releases: list[dict[str, Any]],
     hints: list[str],
@@ -479,9 +556,15 @@ def pick_release(
       resolve via the name alone.
     - Multiple releases tied for the best score (one build shared by several
       editions/channels): if ``os_text`` names an edition (Enterprise/(E)/IoT),
-      narrow to releases whose label matches it first. Any remaining tie (or
-      no edition named at all) falls back to a conservative merge: earliest
-      EOL/EOAS among the tied releases.
+      narrow to releases whose label matches it first. Any remaining tie
+      falls back to a conservative merge: earliest EOL/EOAS among the tied
+      releases -- but ONLY when every tied release is actually explained by
+      the same shared hint(s). If the tie is instead made up of genuinely
+      different releases each matched via their OWN, non-overlapping hint
+      (e.g. "Android 14-11" -> hints ["14", "11"] independently matching
+      release "14" and release "11"), that's a sign the query itself names
+      more than one distinct product/version -- refuse rather than silently
+      picking whichever happens to have the earliest date.
     """
     if not releases or not hints:
         return {}
@@ -489,14 +572,7 @@ def pick_release(
     best_score = 0
     best_candidates: list[dict[str, Any]] = []
     for release in releases:
-        release_name = str(release.get("name", "") or "")
-        release_label = str(release.get("label", "") or "")
-        candidates = [release_name]
-        if release_label and release_label != release_name:
-            candidates.append(release_label)
-        latest_name = _release_latest_name(release)
-        if latest_name:
-            candidates.append(latest_name)
+        candidates = _release_candidate_strings(release)
         score = max((_release_score(name, hints) for name in candidates), default=0)
         if score > best_score:
             best_score = score
@@ -517,6 +593,15 @@ def pick_release(
             ]
             if edition_matches:
                 best_candidates = edition_matches
+
+    if len(best_candidates) > 1:
+        required_sets = [
+            _release_required_hints(_release_candidate_strings(release), hints, best_score)
+            for release in best_candidates
+        ]
+        shared = set(required_sets[0]).intersection(*required_sets[1:]) if required_sets else set()
+        if not shared:
+            return {}
 
     return _conservative_release(best_candidates)
 

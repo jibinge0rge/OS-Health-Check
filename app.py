@@ -436,11 +436,16 @@ class RowsRefreshRequest(BaseModel):
 
 
 class LookupRefreshStreamRequest(BaseModel):
-    """Whole-table 'Refresh EOL/EOAS' with streamed progress. Persists on completion."""
+    """Whole-table (or bulk-selected) 'Refresh EOL/EOAS' with streamed progress. Persists on completion."""
 
     rows: list[LookupRow] = Field(default_factory=list)
     evidence: dict[str, object] = Field(default_factory=dict)
     source: str = "draft"
+    # True when `rows` is a deliberate bulk selection, not the whole
+    # draft/data -- the Settings "Refresh EOL/EOAS" toggle only blocks the
+    # latter (see refresh_lookup_stream), so the client must say which this
+    # is rather than the server guessing from row count alone.
+    is_partial_refresh: bool = False
 
 
 class LookupValidateStreamRequest(LookupPayload):
@@ -459,6 +464,10 @@ def _clean_ai_models(value: object) -> dict[str, str]:
 
 
 class AppSettings(BaseModel):
+    # Kill switch for the "Refresh EOL/EOAS" feature (toolbar, bulk bar, and
+    # the row drawer's "Re-run lookup") -- doesn't touch Add OS's own lookup
+    # step, which isn't a "refresh" of existing data.
+    refresh_eol_enabled: bool = True
     ai_enabled: bool = False
     ai_provider: str = "openai"
     # Empty means use DEFAULT_AI_MATCH_PROMPT at match time.
@@ -498,6 +507,7 @@ class AppSettings(BaseModel):
 class AppSettingsUpdateRequest(BaseModel):
     """Partial settings update. Omit a field to leave it unchanged."""
 
+    refresh_eol_enabled: bool = True
     ai_enabled: bool = False
     ai_provider: str = "openai"
     ai_match_prompt: str | None = None
@@ -525,6 +535,7 @@ class AppSettingsUpdateRequest(BaseModel):
 
 
 class AppSettingsResponse(BaseModel):
+    refresh_eol_enabled: bool = True
     ai_enabled: bool = False
     ai_provider: str = "openai"
     ai_available: bool = False
@@ -1158,6 +1169,7 @@ def load_app_settings() -> AppSettings:
         cleaned_prompt = ""
 
     return AppSettings(
+        refresh_eol_enabled=bool(payload.get("refresh_eol_enabled", True)),
         ai_enabled=bool(payload.get("ai_enabled", False)),
         ai_provider=normalize_ai_provider(payload.get("ai_provider", "openai")),
         ai_match_prompt=cleaned_prompt,
@@ -1230,6 +1242,7 @@ def app_settings_response() -> AppSettingsResponse:
         "openrouter": openrouter_model_name(settings.ai_models.get("openrouter")),
     }
     return AppSettingsResponse(
+        refresh_eol_enabled=settings.refresh_eol_enabled,
         ai_enabled=settings.ai_enabled,
         ai_provider=settings.ai_provider,
         ai_available=selected_ai_provider_available(settings),
@@ -1598,7 +1611,18 @@ def _apply_lifecycle_result(row: dict, result: dict, evidence_by_os: dict) -> No
 
 
 def _row_has_lifecycle_data(row: dict) -> bool:
-    return bool(str(row.get("eol_date") or "").strip() or str(row.get("eoas_date") or "").strip())
+    """True when a row/result represents a resolved lifecycle state: an
+    explicit date, OR an explicit true/false status with no date -- per
+    resolve_lifecycle_status, "isEol": false with no eolFrom date is still a
+    genuine, confirmed answer ("not end-of-life"), not "unresolved," and
+    must count the same as a date would. A blank status ("") never counts on
+    its own."""
+    return bool(
+        str(row.get("eol_date") or "").strip()
+        or str(row.get("eoas_date") or "").strip()
+        or str(row.get("eol_status") or "").strip()
+        or str(row.get("eoas_status") or "").strip()
+    )
 
 
 def _attach_matched_by(rows: list[dict], evidence_by_os: dict) -> None:
@@ -1677,7 +1701,7 @@ def refresh_rows_lifecycle_chunk(
     ]
     vendor_results = lookup_vendor_batch(vendor_items)
     for row, result in zip(still_unresolved, vendor_results):
-        if _row_has_lifecycle_data({"eol_date": result.get("eol_date"), "eoas_date": result.get("eoas_date")}):
+        if _row_has_lifecycle_data(result):
             _apply_lifecycle_result(row, result, evidence_by_os)
 
 
@@ -2106,6 +2130,8 @@ async def validate_lookup(payload: LookupPayload) -> dict[str, object]:
 
 @app.post("/api/lookup/row/refresh")
 async def refresh_lookup_row(payload: RowRefreshRequest) -> dict[str, object]:
+    # A manual, single-row re-run is always allowed -- the Settings toggle
+    # only blocks refreshing the whole draft/data in one shot.
     row = payload.row.model_dump()
     evidence_by_os: dict[str, object] = {}
     await asyncio.to_thread(refresh_rows_lifecycle_chunk, [row], evidence_by_os)
@@ -2147,6 +2173,14 @@ async def refresh_lookup_rows_stream(payload: RowsRefreshRequest) -> StreamingRe
 
 @app.post("/api/lookup/refresh/stream")
 async def refresh_lookup_stream(payload: LookupRefreshStreamRequest) -> StreamingResponse:
+    # The Settings toggle only blocks refreshing the whole draft/data in one
+    # shot -- a deliberate bulk selection (is_partial_refresh) is always
+    # allowed, same as a single-row re-run.
+    if not payload.is_partial_refresh and not load_app_settings().refresh_eol_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Refresh EOL/EOAS is disabled in Settings for the whole draft — select rows to refresh just those.",
+        )
     if LOOKUP_REFRESH_LOCK.locked():
         raise HTTPException(
             status_code=409,
@@ -2357,6 +2391,7 @@ async def update_app_settings(payload: AppSettingsUpdateRequest) -> AppSettingsR
         for provider, model in payload.ai_models.items():
             remember_custom_ai_model(provider, model)
     merged = AppSettings(
+        refresh_eol_enabled=payload.refresh_eol_enabled,
         ai_enabled=payload.ai_enabled,
         ai_provider=normalize_ai_provider(payload.ai_provider or current.ai_provider),
         ai_match_prompt=prompt,
