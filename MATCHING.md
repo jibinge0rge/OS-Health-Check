@@ -223,7 +223,9 @@ extract_version_hints("Microsoft Windows 7 Service Pack 2")
 # -> ["7"]                  ("2" is a Service Pack marker, dropped
 
 extract_version_hints("Cisco IOS 15.0(2)SE8")
-# -> ["15.0", "2", "8"]     (parenthesised segments don't stop separate hints)
+# -> ["15.0", "2"]          (parenthesised segments don't stop separate hints;
+#                            the trailing "8" in "SE8" is preceded by a letter,
+#                            so the negative lookbehind excludes it too)
 ```
 
 Exclusions (all deliberate, each added after a real false-match):
