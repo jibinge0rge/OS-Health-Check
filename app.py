@@ -22,6 +22,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from openpyxl import Workbook
 from pydantic import BaseModel, Field, field_validator
 
 from eol_service import lookup_os_eol_batch
@@ -1285,6 +1286,17 @@ def _stream_az_upload_to_queue(
         loop.call_soon_threadsafe(output_queue.put_nowait, None)
 
 
+def _write_rows_excel(rows: list[LookupRow], path: Path) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "EOL Lookup"
+    sheet.append(CSV_HEADERS)
+    for row in rows:
+        data = row.model_dump()
+        sheet.append([data[header] for header in CSV_HEADERS])
+    workbook.save(path)
+
+
 def _write_rows_parquet(rows: list[LookupRow], path: Path) -> None:
     """Lazy-imported so file-mode/CSV-only deployments never need pyarrow
     installed -- only Deploy's optional Parquet upload does."""
@@ -2245,6 +2257,48 @@ async def download_lookup(source: str = "data") -> Response:
         path=lookup_path(source),
         media_type="text/csv",
         filename="eol_lookup.csv",
+    )
+
+
+class ExportRowsRequest(BaseModel):
+    """Editor's Export button sends whatever rows are currently on screen --
+    the filtered/paged subset or a selection -- not the persisted Data/Draft
+    file, so this takes rows directly rather than a `source` name. CSV export
+    stays client-side (see export.js); only Excel/Parquet, which need a
+    server-side library, round-trip here."""
+
+    rows: list[LookupRow] = Field(default_factory=list)
+
+
+EXPORT_FILE_FORMATS = {
+    "excel": (".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", _write_rows_excel),
+    "parquet": (".parquet", "application/octet-stream", _write_rows_parquet),
+}
+
+
+@app.post("/api/export/{fmt}")
+async def export_rows(fmt: str, payload: ExportRowsRequest) -> Response:
+    if fmt not in EXPORT_FILE_FORMATS:
+        raise HTTPException(status_code=400, detail="Unsupported export format.")
+    if not payload.rows:
+        raise HTTPException(status_code=400, detail="Nothing to export.")
+
+    suffix, media_type, writer = EXPORT_FILE_FORMATS[fmt]
+    with NamedTemporaryFile(delete=False, suffix=suffix) as handle:
+        temp_path = Path(handle.name)
+    try:
+        try:
+            writer(payload.rows, temp_path)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        content = temp_path.read_bytes()
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="eol_lookup_export{suffix}"'},
     )
 
 

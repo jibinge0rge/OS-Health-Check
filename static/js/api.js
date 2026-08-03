@@ -31,6 +31,26 @@ function put(url, body) {
   });
 }
 
+// Excel/Parquet export: the response is a file, not JSON -- read it as a
+// blob and pull the filename the server chose out of Content-Disposition.
+async function postForFile(url, body) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body ?? {}),
+  });
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const parsed = await response.json();
+      detail = parsed.detail || detail;
+    } catch (_err) { /* ignore non-JSON error bodies */ }
+    throw new Error(detail || `Request to ${url} failed`);
+  }
+  const match = (response.headers.get("Content-Disposition") || "").match(/filename="?([^"]+)"?/);
+  return { blob: await response.blob(), filename: match ? match[1] : "" };
+}
+
 export const api = {
   // Lookup (Data / Draft)
   getLookup: (source = "data") => json(`/api/lookup?source=${encodeURIComponent(source)}`),
@@ -45,6 +65,7 @@ export const api = {
     post(`/api/lookup/validate/check`, { rows, evidence }),
   deleteDraft: () => json(`/api/lookup/draft`, { method: "DELETE" }),
   downloadUrl: (source = "data") => `/api/lookup/download?source=${encodeURIComponent(source)}`,
+  exportRowsAsFile: (fmt, rows) => postForFile(`/api/export/${encodeURIComponent(fmt)}`, { rows }),
   getDiff: (source = "draft") => json(`/api/lookup/diff?source=${encodeURIComponent(source)}`),
   getRowEvidence: (osString, source = "data") =>
     json(`/api/lookup/evidence?os_string=${encodeURIComponent(osString)}&source=${encodeURIComponent(source)}`),

@@ -11,6 +11,11 @@ import { getTasks, hasActive } from "./tasks.js";
 
 const CSV_HEADERS = ["os_string", "normalized_os_detailed_name", "normalized_os", "eol_date", "eol_status", "eoas_date", "eoas_status"];
 const PAGE_SIZE_OPTIONS = [50, 100, 250, 500, 1000];
+const EXPORT_FORMATS = [
+  ["csv", "CSV"],
+  ["excel", "Excel"],
+  ["parquet", "Parquet"],
+];
 
 let diff = { added: [], edited: [], deleted: [], unresolved: 0 };
 let addedSet = new Set();
@@ -51,6 +56,8 @@ const el = {
 export async function initEditor() {
   el.columnFiltersBtn.querySelector("#sliders-icon").innerHTML = iconMarkup("sliders", { size: 14 });
   el.search.parentElement.querySelector("#toolbar-search-icon").innerHTML = iconMarkup("search", { size: 14 });
+  document.getElementById("export-chevron-icon").innerHTML = iconMarkup("chevron-down", { size: 12 });
+  document.getElementById("bulk-export-chevron-icon").innerHTML = iconMarkup("chevron-down", { size: 12 });
 
   initFiltersPanel({ onFilterChange: () => { clearSelection(); renderAll(); } });
   initDrawer({
@@ -75,7 +82,7 @@ export async function initEditor() {
   el.columnFiltersBtn.addEventListener("click", () => toggleFiltersPanel());
   el.refreshBtn.addEventListener("click", () => openRefreshModal());
   el.addOsBtn.addEventListener("click", () => openAddOsModal());
-  el.exportBtn.addEventListener("click", () => exportRows(visibleRowsUnpaged()));
+  el.exportBtn.addEventListener("click", () => openExportMenu(el.exportBtn, visibleRowsUnpaged));
   document.getElementById("clear-filters-btn").addEventListener("click", () => {
     state.search = ""; el.search.value = ""; state.chip = "all";
     clearAllColumnFilters(); clearSelection(); renderAll();
@@ -93,7 +100,7 @@ export async function initEditor() {
   document.getElementById("bulk-revert-btn").addEventListener("click", bulkRevert);
   document.getElementById("bulk-mark-reviewed-btn").addEventListener("click", bulkMarkReviewed);
   document.getElementById("bulk-mark-unreviewed-btn").addEventListener("click", bulkMarkUnreviewed);
-  document.getElementById("bulk-export-btn").addEventListener("click", () => exportRows(selectedRows()));
+  document.getElementById("bulk-export-btn").addEventListener("click", (event) => openExportMenu(event.currentTarget, selectedRows));
   document.getElementById("bulk-delete-btn").addEventListener("click", bulkDelete);
   document.getElementById("bulk-clear-btn").addEventListener("click", clearSelection);
 
@@ -383,14 +390,93 @@ async function rerunRow(row) {
   }
 }
 
-function exportRows(list) {
+// Themed replacement for a native <select> -- only one export menu open at
+// a time, closes on outside click/Escape/scroll-reflow, matching the
+// pattern date_range_picker.js already established for popovers.
+let openExportMenuState = null;
+
+function openExportMenu(triggerEl, getRows) {
+  if (openExportMenuState) {
+    const wasThis = openExportMenuState.triggerEl === triggerEl;
+    openExportMenuState.close();
+    if (wasThis) return;
+  }
+  triggerEl.classList.add("is-open");
+
+  const menu = document.createElement("div");
+  menu.className = "action-menu";
+  menu.innerHTML = EXPORT_FORMATS.map(
+    ([fmt, label]) => `<button type="button" class="action-menu-item" data-format="${fmt}">${label}</button>`
+  ).join("");
+  document.body.appendChild(menu);
+  menu.querySelectorAll("[data-format]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      close();
+      exportRows(getRows(), btn.dataset.format);
+    });
+  });
+
+  const onDocClick = (event) => {
+    if (!menu.contains(event.target) && event.target !== triggerEl) close();
+  };
+  const onKeydown = (event) => { if (event.key === "Escape") close(); };
+  const onReflow = () => position();
+  document.addEventListener("click", onDocClick, true);
+  document.addEventListener("keydown", onKeydown);
+  window.addEventListener("resize", onReflow);
+  window.addEventListener("scroll", onReflow, true);
+
+  function close() {
+    triggerEl.classList.remove("is-open");
+    menu.remove();
+    document.removeEventListener("click", onDocClick, true);
+    document.removeEventListener("keydown", onKeydown);
+    window.removeEventListener("resize", onReflow);
+    window.removeEventListener("scroll", onReflow, true);
+    if (openExportMenuState && openExportMenuState.triggerEl === triggerEl) openExportMenuState = null;
+  }
+
+  function position() {
+    const rect = triggerEl.getBoundingClientRect();
+    const menuRect = menu.getBoundingClientRect();
+    let left = rect.left;
+    if (left + menuRect.width > window.innerWidth - 8) left = window.innerWidth - menuRect.width - 8;
+    let top = rect.bottom + 4;
+    if (top + menuRect.height > window.innerHeight - 8) top = rect.top - menuRect.height - 4;
+    menu.style.left = `${Math.max(8, left)}px`;
+    menu.style.top = `${Math.max(8, top)}px`;
+  }
+
+  openExportMenuState = { triggerEl, close };
+  position();
+}
+
+async function exportRows(list, format = "csv") {
+  if (!list.length) { showToast("Nothing to export."); return; }
+  if (format === "csv") {
+    downloadCsv(list);
+    return;
+  }
+  try {
+    const { blob, filename } = await api.exportRowsAsFile(format, list);
+    downloadBlob(blob, filename || `eol_lookup_export.${format === "excel" ? "xlsx" : "parquet"}`);
+  } catch (error) {
+    showToast(`Export failed: ${error.message}`);
+  }
+}
+
+function downloadCsv(list) {
   const csvHeaderLine = CSV_HEADERS.join(",");
   const lines = list.map((row) => CSV_HEADERS.map((h) => csvEscape(row[h])).join(","));
   const blob = new Blob([csvHeaderLine + "\n" + lines.join("\n") + "\n"], { type: "text/csv" });
+  downloadBlob(blob, "eol_lookup_export.csv");
+}
+
+function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "eol_lookup_export.csv";
+  a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
 }

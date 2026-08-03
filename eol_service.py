@@ -329,7 +329,10 @@ def extract_version_hints(os_name: str) -> list[str]:
     text = str(os_name or "")
     hints: list[str] = []
     seen: set[str] = set()
-    for match in re.finditer(r"\d+(?:\.\d+)*", text):
+    # Negative lookbehind so a compound release tag like "24H2" in the query
+    # itself isn't split into "24" + a stray trailing "2" -- same fix as
+    # eosl_service.py / microsoft_lifecycle_service.py's _version_tokens.
+    for match in re.finditer(r"(?<![A-Za-z])\d+(?:\.\d+)*", text):
         value = match.group()
         if value in seen or value in _NON_VERSION_HINTS:
             continue
@@ -348,9 +351,50 @@ def extract_version_hints(os_name: str) -> list[str]:
     return hints
 
 
-def _release_score(release_name: str, hint: str) -> int:
-    """Score a release name against a version hint (dot-aware, no weak majors)."""
-    return score_release_against_hint(release_name, hint)
+def _release_name_tokens(text: str) -> list[str]:
+    """Numeric tokens embedded in a release name/label/build string.
+
+    A compound slug or label (endoflife.date's Windows releases are named
+    like ``11-24h2-w`` / ``11 24H2 (W)``) doesn't parse as a single clean
+    dotted version -- version_match.py's naive dot-only split treats the
+    whole string as one non-numeric part, so it can never equal a bare hint
+    like ``24`` no matter how good a match it actually is. Pulling the
+    embedded numbers back out first (same approach eosl_service.py /
+    microsoft_lifecycle_service.py use for release names) lets a name-based
+    match succeed instead of only ever matching via the raw build number.
+    Negative lookbehind keeps a compound tag like "24H2" from also yielding
+    a stray trailing "2" token.
+    """
+    return [
+        token
+        for token in re.findall(r"(?<![A-Za-z])\d+(?:\.\d+)*", text or "")
+        if token not in _NON_VERSION_HINTS
+    ]
+
+
+def _release_score(release_name: str, hints: list[str]) -> int:
+    """Score a release name/label/build string against every hint at once.
+
+    - The whole string as one dot-aware version (a clean build like
+      ``10.0.26100``, or a plain product version like ``24.04``): scored per
+      hint via ``score_release_against_hint``, which already refuses a bare
+      single-part hint against a multi-part release ("Windows 10" must not
+      pick a specific "10.0.19045" build).
+    - A compound slug/label with more than one embedded number run
+      (endoflife.date's Windows releases: ``11-24h2-w`` / ``11 24H2 (W)`` ->
+      tokens ["11", "24"]): this counts as a full match ONLY when every one
+      of its tokens is present somewhere among the hints -- e.g. hints
+      ["11", "24"] (from a query naming both "11" and "24H2", no build
+      number at all) match it, but a single bare hint ["11"] alone must not,
+      since that's exactly the over-eager guess a bare major is meant to be
+      refused for. Requiring >1 token keeps a plain single-number name (which
+      the first bullet already scores correctly) out of this path.
+    """
+    best = max((score_release_against_hint(release_name, hint) for hint in hints), default=0)
+    tokens = _release_name_tokens(release_name)
+    if len(tokens) > 1 and all(token in hints for token in tokens):
+        best = max(best, 100)
+    return best
 
 
 def _release_latest_name(release: dict[str, Any]) -> str:
@@ -428,8 +472,11 @@ def pick_release(
 
     - No version hints → no match (never guess the first/latest release).
     - Best score must be >= ``_MIN_RELEASE_SCORE``.
-    - Scored against both ``release.name`` and ``release.latest.name`` — a hint
-      that only matches the latest build (not the release slug) still counts.
+    - Scored against ``release.name``, ``release.label``, and
+      ``release.latest.name`` -- a good match on the release's own name/label
+      (e.g. "24H2") is tried on equal footing with its raw build number, not
+      only the build number, so a query with no build number at all can still
+      resolve via the name alone.
     - Multiple releases tied for the best score (one build shared by several
       editions/channels): if ``os_text`` names an edition (Enterprise/(E)/IoT),
       narrow to releases whose label matches it first. Any remaining tie (or
@@ -443,14 +490,14 @@ def pick_release(
     best_candidates: list[dict[str, Any]] = []
     for release in releases:
         release_name = str(release.get("name", "") or "")
+        release_label = str(release.get("label", "") or "")
         candidates = [release_name]
+        if release_label and release_label != release_name:
+            candidates.append(release_label)
         latest_name = _release_latest_name(release)
         if latest_name:
             candidates.append(latest_name)
-        score = max(
-            (_release_score(name, hint) for name in candidates for hint in hints),
-            default=0,
-        )
+        score = max((_release_score(name, hints) for name in candidates), default=0)
         if score > best_score:
             best_score = score
             best_candidates = [release]
