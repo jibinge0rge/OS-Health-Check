@@ -40,7 +40,17 @@
 
     <div class="filter-section" data-filter-field="src">
       <div class="filter-section-label">Matched by</div>
-      <div class="filter-mode-chips single-select" id="matched-by-chips"></div>
+      <div class="filter-mode-chips" id="matched-by-chips"></div>
+    </div>
+
+    <div class="filter-section" data-filter-field="changed" id="changed-filter-section" hidden>
+      <div class="filter-section-label">Type of change</div>
+      <div class="segmented compact" id="changed-match-mode">
+        <button type="button" class="segment active" data-changed-match="or">OR</button>
+        <button type="button" class="segment" data-changed-match="and">AND</button>
+        <button type="button" class="segment" data-changed-match="exact">EXACT</button>
+      </div>
+      <div class="filter-mode-chips" id="changed-field-chips"></div>
     </div>
 
   </div>

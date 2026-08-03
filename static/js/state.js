@@ -51,7 +51,16 @@ export const state = {
     norm: { mode: "all", text: "" },
     eol: { from: "", to: "" },
     eoas: { from: "", to: "" },
-    src: "All",
+    // Multi-select: which "Matched by" categories to show -- [] means no
+    // restriction (every category passes).
+    src: [],
+    // Draft-only, multi-select: which field(s) a row must have changed in,
+    // compared to Data -- [] means no restriction by change type.
+    changed: [],
+    // How multiple `changed` selections combine: "or" (changed in any of
+    // them), "and" (changed in all of them, possibly others too), or
+    // "exact" (changed in exactly those fields, nothing else).
+    changedMatch: "or",
   },
 
   selected: new Set(),

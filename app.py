@@ -1762,14 +1762,40 @@ async def lookup_refresh_events(
         prune_evidence_to_rows({"by_os": evidence_by_os, "updated_at": ""}, lookup_rows), source
     )
     _attach_matched_by(rows, evidence_by_os)
-    yield sse_event(
-        {
-            "type": "complete",
-            "rows": rows,
-            "evidence": saved_evidence,
-            "source": source,
-        }
-    )
+    complete_event: dict[str, object] = {
+        "type": "complete",
+        "rows": rows,
+        "evidence": saved_evidence,
+        "source": source,
+    }
+    if source.strip().lower() == "draft":
+        # save_rows above is what actually creates the draft the very first
+        # time this runs with none existing yet (e.g. Refresh EOL/EOAS
+        # triggered with no draft open, rather than via "Edit data").
+        # DB mode's db_save_rows already stamps draft_based_on_revision as a
+        # side effect of that save; file mode has no equivalent side effect
+        # (save_rows there is a plain CSV write), so ensure_draft_base's
+        # backfill -- otherwise only ever run at publish time -- is called
+        # here too, using Data as it stands right now, before anything else
+        # has a chance to change it. Either way, the client was never told
+        # what the resulting revision is: without this, state.
+        # draftBasedOnRevision stays at its stale default and staleness.js
+        # falsely claims Data was published again the moment anyone
+        # (including nobody) checks, since it never matches the real
+        # current revision.
+        #
+        # Best-effort: the refresh itself already succeeded by this point
+        # (rows/evidence are saved), so a hiccup determining the revision
+        # (e.g. a transient DB issue) must not fail the whole request --
+        # the client just keeps whatever revision it already had, same as
+        # if this field were never added.
+        try:
+            if not _USE_DB:
+                ensure_draft_base()
+            complete_event["based_on_revision"] = read_draft_based_on_revision()
+        except Exception:
+            pass
+    yield sse_event(complete_event)
 
 
 async def lookup_rows_refresh_events(rows: list[dict]) -> AsyncIterator[str]:

@@ -132,5 +132,65 @@ class RefreshSubsetMergeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({r["os_string"] for r in saved["rows"]}, {"Ubuntu 24.04", "Windows Server 2019"})
 
 
+class RefreshCompleteEventCarriesBasedOnRevisionTests(unittest.IsolatedAsyncioTestCase):
+    """Regression: a draft created by Refresh EOL/EOAS (triggered with no
+    draft open yet, rather than via "Edit data") never told the client what
+    revision it forked from -- state.draftBasedOnRevision stayed at its
+    stale default (0), so staleness.js's `latest === state.draftBasedOnRevision`
+    check failed and falsely claimed "Data was published again since you
+    started this draft" the moment anyone checked, even though nothing was
+    ever actually published by anyone."""
+
+    async def test_complete_event_includes_the_current_based_on_revision(self) -> None:
+        row_a = _row("Ubuntu 24.04")
+
+        with (
+            patch.object(app, "load_rows", return_value=[row_a]),
+            patch.object(app, "save_rows"),
+            patch.object(app, "save_evidence", side_effect=lambda evidence, source: evidence),
+            patch.object(app, "_source_exists", return_value=True),
+            patch.object(app, "refresh_rows_lifecycle_chunk"),
+            patch.object(app, "ensure_draft_base"),
+            patch.object(app, "read_draft_based_on_revision", return_value=7),
+        ):
+            events = [
+                event
+                async for event in app.lookup_refresh_events(
+                    [row_a], {"by_os": {}, "updated_at": ""}, "draft", __import__("threading").Event()
+                )
+            ]
+
+        complete_events = [e for e in events if '"type": "complete"' in e]
+        self.assertEqual(len(complete_events), 1)
+        self.assertIn('"based_on_revision": 7', complete_events[0])
+
+    async def test_a_failure_determining_the_revision_does_not_break_the_refresh(self) -> None:
+        """Best-effort: the refresh itself already succeeded by the time the
+        revision is looked up (rows/evidence are saved above), so a hiccup
+        here (e.g. a transient DB issue) must not fail the whole request --
+        the complete event still goes out, just without this one field."""
+        row_a = _row("Ubuntu 24.04")
+
+        with (
+            patch.object(app, "load_rows", return_value=[row_a]),
+            patch.object(app, "save_rows"),
+            patch.object(app, "save_evidence", side_effect=lambda evidence, source: evidence),
+            patch.object(app, "_source_exists", return_value=True),
+            patch.object(app, "refresh_rows_lifecycle_chunk"),
+            patch.object(app, "ensure_draft_base"),
+            patch.object(app, "read_draft_based_on_revision", side_effect=RuntimeError("db unreachable")),
+        ):
+            events = [
+                event
+                async for event in app.lookup_refresh_events(
+                    [row_a], {"by_os": {}, "updated_at": ""}, "draft", __import__("threading").Event()
+                )
+            ]
+
+        complete_events = [e for e in events if '"type": "complete"' in e]
+        self.assertEqual(len(complete_events), 1)
+        self.assertNotIn("based_on_revision", complete_events[0])
+
+
 if __name__ == "__main__":
     unittest.main()

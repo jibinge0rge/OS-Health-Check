@@ -37,6 +37,11 @@
 }
 .filter-mode-chip.active { border-color: var(--brand); background: var(--tint); color: var(--brand); }
 
+/* Type of change: AND/OR/EXACT match-mode, reusing the mode-bar's Data/Draft
+   segmented-control look at a size that fits this 280px side panel. */
+.segmented.compact { padding: 1px; gap: 1px; margin-bottom: 8px; }
+.segmented.compact .segment { height: 20px; padding: 0 8px; font: 400 10px/20px var(--font-sans); }
+
 .text-input, .select-input {
   width: 100%; height: 26px; border-radius: 8px;
   border: 1px solid var(--c-border-strong);

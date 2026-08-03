@@ -4,7 +4,7 @@ import { state, setState, rows as currentRows, isDraft, isData } from "./state.j
 import { api, streams } from "./api.js";
 import { iconMarkup } from "./icons.js";
 import { parseRowDate, classifyDateChip, formatRelative, toISODate } from "./date_utils.js";
-import { initFiltersPanel, toggleFiltersPanel, matchesColumnFilters, activeFilterCount, clearAllColumnFilters } from "./filters_panel.js";
+import { initFiltersPanel, toggleFiltersPanel, matchesColumnFilters, activeFilterCount, clearAllColumnFilters, syncChangedFilterVisibility } from "./filters_panel.js";
 import { initDrawer, openDrawer, closeDrawer, isDrawerOpenFor, refreshDrawerFields, refreshDrawerReviewedState, refreshDrawerEvidence, markDrawerFieldManual } from "./drawer.js";
 import { openModal, closeModal, showToast, runProgress } from "./modals.js";
 import { getTasks, hasActive } from "./tasks.js";
@@ -70,7 +70,10 @@ export async function initEditor() {
   document.getElementById("export-chevron-icon").innerHTML = iconMarkup("chevron-down", { size: 12 });
   document.getElementById("bulk-export-chevron-icon").innerHTML = iconMarkup("chevron-down", { size: 12 });
 
-  initFiltersPanel({ onFilterChange: () => { clearSelection(); renderAll(); } });
+  initFiltersPanel({
+    onFilterChange: () => { clearSelection(); renderAll(); },
+    getChangedFields: (row) => changedFields(row),
+  });
   initDrawer({
     onFieldChange: (row, field) => {
       const label = markFieldManual(row, field);
@@ -796,6 +799,7 @@ function refreshView() {
   updateModeBar();
   renderQuickChips();
   updateBulkBar();
+  syncChangedFilterVisibility();
   el.filterBadge.hidden = activeFilterCount() === 0;
   el.filterBadge.textContent = String(activeFilterCount());
   el.columnFiltersBtn.classList.toggle("has-filters", activeFilterCount() > 0);
@@ -1052,6 +1056,13 @@ async function openRefreshModal() {
         const byOs = new Map(event.rows.map((r) => [r.os_string, r]));
         state.draftRows = state.draftRows.map((r) => byOs.get(r.os_string) || r);
         state.evidence.by_os = { ...(state.evidence.by_os || {}), ...(event.evidence?.by_os || {}) };
+        // If this refresh is what just created the draft (triggered with no
+        // draft open yet, rather than via "Edit data"), the merge-base
+        // revision was never captured on the client -- without this, the
+        // staleness banner compares against a stale default and falsely
+        // claims Data was published again by someone, even though nothing
+        // changed at all.
+        if (event.based_on_revision != null) state.draftBasedOnRevision = event.based_on_revision;
         state.draftExists = true;
         state.chip = "changed";
         setState({ source: "draft" });
