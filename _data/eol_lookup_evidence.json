@@ -1,0 +1,14 @@
+{
+  "by_os": {
+    "Android 14-11": {
+      "detailed": {
+        "method": "manual"
+      },
+      "normalized": {
+        "method": "manual"
+      },
+      "reviewed": true
+    }
+  },
+  "updated_at": "2026-08-03T07:24:46"
+}
