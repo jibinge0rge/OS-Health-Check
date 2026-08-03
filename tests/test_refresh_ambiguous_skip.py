@@ -167,6 +167,103 @@ class ApplyLifecycleResultCorrectsStaleNamesTests(unittest.TestCase):
         self.assertEqual(entry["normalized"]["method"], "api")
 
 
+class ApplyLifecycleResultKeepsStaleDatesTests(unittest.TestCase):
+    """Regression: a genuine no-match result used to unconditionally wipe
+    eol_date/eol_status/eoas_date/eoas_status to blank, even when the row
+    already carried perfectly good, previously-resolved dates -- unlike the
+    normalized-name fields just below it, which already had this guard. A
+    row that resolved fine on a past refresh would silently lose its dates
+    the moment one later refresh run's cascade happened to find nothing
+    (e.g. a vendor source temporarily missing, or endoflife.date briefly
+    unreachable), with no error surfaced anywhere."""
+
+    def test_no_match_result_leaves_existing_dates_untouched(self) -> None:
+        row = _row(
+            "Windows 11 Enterprise 10.0.22631",
+            detailed="Microsoft Windows 11 23H2 (E)",
+            normalized="Microsoft Windows 11 23H2",
+            eol="1794268800",
+            eoas="1700000000",
+        )
+        result = {
+            "eol_date": "", "eol_status": "", "eoas_date": "", "eoas_status": "",
+            "normalized_os_detailed_name": "", "normalized_os": "", "source": "api",
+        }
+        app._apply_lifecycle_result(row, result, {})
+        self.assertEqual(row["eol_date"], "1794268800")
+        self.assertEqual(row["eoas_date"], "1700000000")
+
+    def test_confirmed_match_still_overwrites_dates_normally(self) -> None:
+        """The fix must not turn this into a one-way ratchet -- a genuine new
+        match still replaces old dates, including correcting them to blank
+        when the fresh result explicitly reports a status but no date."""
+        row = _row(
+            "Windows 11 Enterprise 10.0.22631",
+            eol="1111111111",
+            eoas="1111111111",
+        )
+        result = {
+            "eol_date": "1794268800", "eol_status": "", "eoas_date": "1700000000", "eoas_status": "",
+            "normalized_os_detailed_name": "", "normalized_os": "", "source": "api",
+        }
+        app._apply_lifecycle_result(row, result, {})
+        self.assertEqual(row["eol_date"], "1794268800")
+        self.assertEqual(row["eoas_date"], "1700000000")
+
+    def test_row_with_stale_dates_still_reaches_the_vendor_cascade(self) -> None:
+        """The still_unresolved gate must key off this run's fresh
+        endoflife.date result, not the row's (no-longer-wiped) current
+        state -- otherwise a row that already has old dates would look
+        "resolved" and never even get a chance at the vendor cascade when
+        endoflife.date itself found nothing this run."""
+        row = _row(
+            "Windows Server 2019 Datacenter",
+            eol="1111111111",
+            eoas="1111111111",
+        )
+        with (
+            patch.object(app, "lookup_os_eol_batch") as mock_eol_batch,
+            patch.object(app, "lookup_vendor_batch") as mock_vendor_batch,
+        ):
+            mock_eol_batch.return_value = [
+                {"eol_date": "", "eol_status": "", "eoas_date": "", "eoas_status": "",
+                 "normalized_os_detailed_name": "", "normalized_os": "", "source": "api"}
+            ]
+            mock_vendor_batch.return_value = [
+                {"eol_date": "1893456000", "eol_status": "", "eoas_date": "1704758400", "eoas_status": "",
+                 "normalized_os_detailed_name": "Microsoft Windows Server 2019 (LTSC)",
+                 "normalized_os": "Microsoft Windows Server 2019", "source": "eosl"}
+            ]
+            app.refresh_rows_lifecycle_chunk([row], {})
+
+        mock_vendor_batch.assert_called_once()
+        self.assertEqual(row["eol_date"], "1893456000")
+        self.assertEqual(row["eoas_date"], "1704758400")
+
+    def test_row_with_stale_dates_keeps_them_when_vendor_cascade_also_misses(self) -> None:
+        row = _row(
+            "Windows Server 2019 Datacenter",
+            eol="1111111111",
+            eoas="1111111111",
+        )
+        with (
+            patch.object(app, "lookup_os_eol_batch") as mock_eol_batch,
+            patch.object(app, "lookup_vendor_batch") as mock_vendor_batch,
+        ):
+            mock_eol_batch.return_value = [
+                {"eol_date": "", "eol_status": "", "eoas_date": "", "eoas_status": "",
+                 "normalized_os_detailed_name": "", "normalized_os": "", "source": "api"}
+            ]
+            mock_vendor_batch.return_value = [
+                {"eol_date": "", "eol_status": "", "eoas_date": "", "eoas_status": "",
+                 "normalized_os_detailed_name": "", "normalized_os": "", "api_note": "no match", "source": ""}
+            ]
+            app.refresh_rows_lifecycle_chunk([row], {})
+
+        self.assertEqual(row["eol_date"], "1111111111")
+        self.assertEqual(row["eoas_date"], "1111111111")
+
+
 class AttachMatchedByTests(unittest.TestCase):
     """Regression: a row returned from Refresh/Add-OS had no matched_by
     attached at all, so the client kept whatever value the row had from the

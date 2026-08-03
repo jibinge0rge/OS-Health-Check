@@ -1555,10 +1555,21 @@ LOOKUP_REFRESH_CHUNK_SIZE = 25
 
 def _apply_lifecycle_result(row: dict, result: dict, evidence_by_os: dict) -> None:
     os_key = str(row.get("os_string") or "").strip()
-    row["eol_date"] = str(result.get("eol_date") or "")
-    row["eol_status"] = str(result.get("eol_status") or "")
-    row["eoas_date"] = str(result.get("eoas_date") or "")
-    row["eoas_status"] = str(result.get("eoas_status") or "")
+
+    # Adopt whenever this lookup actually produced lifecycle data -- not
+    # unconditionally. A genuine no-match (this refresh's cascade couldn't
+    # resolve the row at all -- e.g. a temporary vendor-source miss, or a
+    # source that used to match now returning nothing) must leave whatever
+    # eol_date/eoas_date the row already had alone, the same way the
+    # normalized-name fields below already do -- otherwise a row with
+    # perfectly good, previously-resolved dates gets them silently wiped to
+    # blank the moment one refresh run happens to find nothing, even though
+    # nothing about the row's actual OS or lifecycle changed.
+    if _row_has_lifecycle_data(result):
+        row["eol_date"] = str(result.get("eol_date") or "")
+        row["eol_status"] = str(result.get("eol_status") or "")
+        row["eoas_date"] = str(result.get("eoas_date") or "")
+        row["eoas_status"] = str(result.get("eoas_status") or "")
 
     # Adopt whenever this lookup actually produced a name -- not just when the
     # row's field was previously blank. A confirmed release match names one
@@ -1645,7 +1656,12 @@ def refresh_rows_lifecycle_chunk(
     still_unresolved: list[dict] = []
     for row, result in zip(eligible_rows, eol_results):
         _apply_lifecycle_result(row, result, evidence_by_os)
-        if not _row_has_lifecycle_data(row):
+        # Whether to still try the vendor cascade depends on whether *this*
+        # endoflife.date attempt found anything -- not on the row's current
+        # state, which (per the fix above) no longer gets wiped to blank on
+        # a miss, so a row that already had good dates would otherwise never
+        # reach the cascade at all once it stops looking "unresolved."
+        if not _row_has_lifecycle_data(result):
             still_unresolved.append(row)
 
     if not still_unresolved:
