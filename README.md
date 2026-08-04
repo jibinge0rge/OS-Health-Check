@@ -169,13 +169,15 @@ Once `LOOKUP_DB_ENABLED=true` is set (with `DATABASE_URL` pointing at Postgres),
 
 Backups happen automatically inside the same publish transaction (a `backups` table row, not a file) — query it directly with SQL if you need to recover an older Data state.
 
-**Migrating existing file-mode data into Postgres**: run the bundled one-time import script before cutting a deployment over, so you don't lose what's already published:
+**Migrating existing file-mode data into Postgres happens automatically** — no separate step needed. On every container start, `docker/entrypoint.sh` runs `docker/import_if_empty.py` before the app itself: if `LOOKUP_DB_ENABLED`+`DATABASE_URL` are set and the `lookup` schema's `data` source has zero rows, it loads in whatever's at `_data/eol_lookup.csv` (+ evidence) automatically. It's idempotent and safe to leave running forever — a no-op on every later restart once the DB has data (from that import, or a real publish), and a no-op if `_data/` is empty too, so a brand-new deployment with nothing published yet just starts clean.
+
+If you're running outside Docker, or want to force a re-import (overwriting whatever's currently in Postgres with `_data/eol_lookup.csv`), the same logic is available by hand:
 
 ```bash
-python lookup_db.py
+python lookup_db.py --force
 ```
 
-(Reads the current `_data/eol_lookup.csv` + evidence and writes them into the `lookup` schema's `data` source. Run this once, from an environment where `DATABASE_URL` is already set and `_data/` still has the file-mode content you want to keep — then set `LOOKUP_DB_ENABLED=true` on the deployment before it starts serving traffic, so it actually reads the lookup from Postgres instead of falling back to `_data/`.)
+(Without `--force`, it refuses if the `data` source already has rows — the automatic hook above already covers the "first deploy, DB is empty" case, so this is only for an explicit, deliberate overwrite.)
 
 **Non-goals, on purpose**: switching to Postgres does *not* turn Draft into a per-user thing — there's still exactly one shared Draft, same as file mode, just relocated. Two people editing that one shared Draft at the same time can still step on each other's in-progress edits (that's a separate, larger feature if it's ever wanted). Also, don't mix modes against the same deployment — pick file mode or Postgres mode per environment; running both against the same `_data/` would silently fork into two unrelated stores.
 
@@ -336,6 +338,7 @@ OS-Health-Check/
 ├── Dockerfile                   # Container image
 ├── docker-compose.yml            # App + PostgreSQL (local / Portainer)
 ├── docker/entrypoint.sh          # uvicorn startup (+ optional --reload)
+├── docker/import_if_empty.py     # Auto-imports _data/ into Postgres on first DB-mode startup
 ├── .env.example                  # Documented env vars (copy to .env)
 ├── _data/
 │   ├── eol_lookup.csv            # Canonical published lookup (file mode)

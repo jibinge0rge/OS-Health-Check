@@ -1539,6 +1539,26 @@ each with an identical `metadata`/`products`/`releases` layout (§4.5). Both
 modules share one process-global `psycopg_pool.ConnectionPool`
 (`vendor_lookups/db.py:81-91`).
 
+**Auto-import on startup** (`lookup_db.import_from_files_if_empty`, invoked
+by `docker/import_if_empty.py`, run from `docker/entrypoint.sh` before
+`exec uvicorn`): if `app._USE_DB` is on and the `data` source has **zero**
+rows in Postgres, and a bind-mounted `_data/eol_lookup.csv` exists, it's
+loaded in automatically — cutting a fresh DB-mode deployment over from
+whatever's already checked into `_data/` without a separate manual step.
+Reads the CSV/evidence sidecar directly off disk
+(`lookup_db._read_files_data_source`, via `app._read_rows_csv`/
+`app._load_evidence_file`), bypassing `_USE_DB` entirely so it works
+correctly even though `LOOKUP_DB_ENABLED` is already set at that point —
+the same reasoning that made the *old*, hand-run-only version of this
+(`_import_from_files`) require temporarily unsetting it first. Idempotent
+and safe on every container start: a no-op once the DB has rows at all
+(from this import or a real publish), and a no-op with nothing in `_data/`
+either. `_import_from_files` still exists for an explicit, forced
+re-import (`python lookup_db.py --force`) — it now refuses outright
+without `--force` if the DB already has `data` rows, since the automatic
+hook already covers the "first deploy, DB is empty" case without ever
+needing to be run by hand.
+
 ### Cross-instance vendor-sync lock
 
 With **multiple app instances pointed at the same shared Postgres

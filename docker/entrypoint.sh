@@ -3,6 +3,8 @@ set -e
 
 mkdir -p /app/_data /app/_draft /app/_backup /app/_config
 
+PYTHONPATH=/app python /app/docker/import_if_empty.py
+
 PORT="${APP_PORT:-8000}"
 RELOAD_ARGS=""
 

@@ -177,5 +177,63 @@ class LookupDbPublishTests(unittest.TestCase):
         self.assertEqual(lookup_db.db_data_revision(schema=self.schema), 1)
 
 
+@unittest.skipUnless(_pg_available(), "DATABASE_URL not set")
+class ImportFromFilesIfEmptyTests(unittest.TestCase):
+    """Tests for the docker/entrypoint.sh auto-import hook -- loads
+    _data/eol_lookup.csv into Postgres once, on first startup, without a
+    separate manual migration step. Patches lookup_db._read_files_data_source
+    (rather than touching the real _data/ directory) so these stay hermetic
+    and independent of whatever's actually checked into this repo."""
+
+    def setUp(self) -> None:
+        from unittest.mock import patch
+
+        from vendor_lookups.db import drop_schema
+
+        self.schema = _temp_schema("importhook")
+        self.drop_schema = drop_schema
+        lookup_db.ensure_schema(self.schema)
+        self.fake_rows = [row("Ubuntu 24.04", eol="2029-01-01")]
+        self.fake_evidence = {"by_os": {"Ubuntu 24.04": {"eol": {"method": "api"}}}, "updated_at": ""}
+        self.patcher = patch.object(
+            lookup_db, "_read_files_data_source", return_value=(self.fake_rows, self.fake_evidence)
+        )
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+
+    def tearDown(self) -> None:
+        self.drop_schema(self.schema)
+
+    def test_imports_when_the_data_source_is_empty(self) -> None:
+        imported = lookup_db.import_from_files_if_empty(schema=self.schema)
+        self.assertTrue(imported)
+        self.assertEqual(lookup_db.db_load_rows("data", schema=self.schema), self.fake_rows)
+        self.assertEqual(lookup_db.db_load_evidence("data", schema=self.schema)["by_os"], self.fake_evidence["by_os"])
+
+    def test_is_a_no_op_once_data_already_exists(self) -> None:
+        """The core safety property: never overwrite real published/
+        imported data on a later container restart."""
+        lookup_db.db_save_rows([row("Already Published")], "data", schema=self.schema)
+        imported = lookup_db.import_from_files_if_empty(schema=self.schema)
+        self.assertFalse(imported)
+        loaded = lookup_db.db_load_rows("data", schema=self.schema)
+        self.assertEqual([r["os_string"] for r in loaded], ["Already Published"])
+
+    def test_is_a_no_op_when_there_is_nothing_to_import(self) -> None:
+        from unittest.mock import patch
+
+        self.patcher.stop()
+        with patch.object(lookup_db, "_read_files_data_source", return_value=([], {})):
+            imported = lookup_db.import_from_files_if_empty(schema=self.schema)
+        self.patcher.start()
+        self.assertFalse(imported)
+        self.assertEqual(lookup_db.db_load_rows("data", schema=self.schema), [])
+
+    def test_running_it_twice_is_idempotent(self) -> None:
+        self.assertTrue(lookup_db.import_from_files_if_empty(schema=self.schema))
+        self.assertFalse(lookup_db.import_from_files_if_empty(schema=self.schema))
+        self.assertEqual(lookup_db.db_load_rows("data", schema=self.schema), self.fake_rows)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -439,24 +439,69 @@ def describe_target() -> str:
         return "Postgres"
 
 
-def _import_from_files() -> None:
-    """One-time migration: loads the current file-mode _data/eol_lookup.csv
-    + evidence sidecar into this DB's 'data' source, for cutting a real
-    deployment over from file-mode to DB-mode without losing what's already
-    published. Run directly: `python lookup_db.py`."""
-    import time
-
+def _read_files_data_source() -> tuple[list[dict[str, str]], dict[str, object]]:
+    """Rows + evidence for the "data" source, read directly off disk --
+    bypasses app._USE_DB entirely (unlike app.load_rows/load_evidence,
+    which route to Postgres once DB mode is on), so this is safe to call
+    even when LOOKUP_DB_ENABLED is already set, e.g. at container startup
+    before any import has happened yet."""
     import app  # local import -- avoids a circular import when app.py imports this module
 
-    if app._USE_DB:
-        # app.load_rows("data") below would silently read from (likely empty)
-        # Postgres instead of the local CSV if LOOKUP_DB_ENABLED is already
-        # on -- exactly how a prior run of this script quietly "imported" 0
-        # rows. Fail loudly instead of repeating that.
+    rows = app._read_rows_csv(app.DATA_PATH) if app.DATA_PATH.exists() else []
+    evidence = app._load_evidence_file("data")
+    return rows, evidence
+
+
+def import_from_files_if_empty(schema: str = SCHEMA) -> bool:
+    """Auto-import hook, meant to run once on every container/app startup
+    (see docker/entrypoint.sh): if this schema's "data" source doesn't
+    already have any rows in Postgres, and a local _data/eol_lookup.csv is
+    present, load it in -- the same one-time cutover _import_from_files
+    below does by hand, just automatic. Always safe to call: a no-op once
+    the DB already has data (from a prior import OR a real publish through
+    the app), and a no-op on a brand-new deployment with nothing in
+    _data/ yet either. Returns whether an import actually happened.
+
+    Always prints exactly one status line, even when it's a no-op --
+    otherwise "already has data, skipped" and "this hook never ran at all"
+    both look identical in `docker compose logs` (nothing), which makes it
+    impossible to tell the entrypoint step actually executed.
+    """
+    if db_source_exists("data", schema=schema):
+        print(f"[lookup_db] Postgres schema '{schema}' already has 'data' rows -- skipping import.")
+        return False
+
+    rows, evidence = _read_files_data_source()
+    if not rows:
+        print(f"[lookup_db] No _data/eol_lookup.csv found (or it's empty) -- nothing to import into '{schema}'.")
+        return False
+
+    print(
+        f"[lookup_db] No 'data' rows in Postgres schema '{schema}' yet -- "
+        f"importing {len(rows)} row(s) from _data/eol_lookup.csv ..."
+    )
+    db_save_rows(rows, "data", schema=schema)
+    db_save_evidence(evidence, "data", schema=schema)
+    print(f"[lookup_db] Imported {len(rows)} row(s) into Postgres schema '{schema}'.")
+    return True
+
+
+def _import_from_files(force: bool = False) -> None:
+    """Manual, explicit (re-)import: loads the current _data/eol_lookup.csv
+    + evidence sidecar into this DB's 'data' source, overwriting whatever
+    is already there. Run directly: `python lookup_db.py` (add `--force`
+    to proceed even if the DB already has 'data' rows -- otherwise this
+    refuses, since it's destructive and the automatic startup hook
+    (import_from_files_if_empty, wired into docker/entrypoint.sh) already
+    covers the common "first deploy, DB is empty" case without needing
+    this script run by hand at all)."""
+    import time
+
+    if not force and db_source_exists("data"):
         raise SystemExit(
-            "LOOKUP_DB_ENABLED is already set -- unset it (keep DATABASE_URL), "
-            "rerun this script so it reads the local CSV instead of Postgres, "
-            "then set LOOKUP_DB_ENABLED=true again afterward."
+            "Postgres schema 'lookup' already has 'data' rows -- refusing to "
+            "overwrite them. Pass --force if you really want to replace the "
+            "DB's current data with _data/eol_lookup.csv."
         )
 
     target = describe_target()
@@ -470,8 +515,7 @@ def _import_from_files() -> None:
         raise
     print(f"Connected in {time.monotonic() - t0:.2f}s.")
 
-    rows = app.load_rows("data") if app.DATA_PATH.exists() else []
-    evidence = app.load_evidence("data")
+    rows, evidence = _read_files_data_source()
 
     print(f"Importing {len(rows)} row(s) into schema '{SCHEMA}' at {target} ...")
 
@@ -484,4 +528,6 @@ def _import_from_files() -> None:
 
 
 if __name__ == "__main__":
-    _import_from_files()
+    import sys
+
+    _import_from_files(force="--force" in sys.argv[1:])
