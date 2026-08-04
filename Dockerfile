@@ -17,6 +17,7 @@ RUN pip install --upgrade pip \
     && pip install -r requirements.txt
 
 COPY docker/entrypoint.sh /entrypoint.sh
+COPY docker/import_if_empty.py /import_if_empty.py
 RUN sed -i 's/\r$//' /entrypoint.sh \
     && chmod +x /entrypoint.sh
 
