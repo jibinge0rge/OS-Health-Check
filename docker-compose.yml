@@ -4,16 +4,32 @@
 #   cp .env.example .env   # optional AI keys
 #   docker compose up --build
 #
-# Portainer: deploy this stack and set env in the UI
-#   OPENAI_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY, DATABASE_URL / POSTGRES_* , APP_PORT
+# Portainer: deploy this stack (as a Git repository stack, not the plain
+# Web Editor — it needs to build from Dockerfile and bind-mount the repo)
+# and set env in the UI:
+#   OPENAI_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY, APP_PORT
+#   DATABASE_URL, LOOKUP_DB_ENABLED=true  -- BOTH required together to move
+#     the published lookup/draft/evidence into Postgres (e.g. a managed
+#     instance like Supabase); DATABASE_URL alone is not enough, and
+#     LOOKUP_DB_ENABLED is easy to forget since it's a separate switch.
+#   POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB -- only matter if you're
+#     using the bundled `db` service below; ignored once DATABASE_URL points
+#     elsewhere (e.g. Supabase) -- see the note on the `db` service.
 #
 # The repo is bind-mounted so host/git changes reload live when UVICORN_RELOAD=true.
 # Vendor lookup caches live in PostgreSQL (named volume), not SQLite files.
 #
 # DATABASE_URL has no default here — set it in .env (it's picked up via
-# env_file below). Point it at the bundled `db` service, e.g.
+# env_file below), or via Portainer's stack environment variables (Portainer
+# writes those into a .env file alongside this compose file, so env_file
+# still picks them up). Point it at the bundled `db` service, e.g.
 #   DATABASE_URL=postgresql://oshealth:oshealth@db:5432/oshealth
-# or at any other reachable Postgres instance.
+# or at any other reachable Postgres instance (e.g. Supabase's
+# postgresql://postgres:<password>@db.<ref>.supabase.co:5432/postgres?sslmode=require).
+# If you're pointing at an external instance, the bundled `db` service below
+# is unused — it still starts (depends_on requires it healthy) but nothing
+# reads or writes to it; remove that service and the depends_on if you'd
+# rather not run a redundant local Postgres alongside it.
 
 services:
   db:
@@ -49,6 +65,9 @@ services:
     environment:
       APP_PORT: "8000"
       UVICORN_RELOAD: "${UVICORN_RELOAD:-true}"
+      DATABASE_URL: "${DATABASE_URL:-}"
+      LOOKUP_DB_ENABLED: "${LOOKUP_DB_ENABLED:-}"
+      LOOKUP_DB_MIRROR_FILES: "${LOOKUP_DB_MIRROR_FILES:-}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       OPENAI_MODEL: "${OPENAI_MODEL:-}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
