@@ -228,11 +228,50 @@ def build_evidence_entries(evidence_entry: dict | None, row: dict) -> dict:
     return {"matched_by": row_matched_by(entry, row), "entries": entries}
 
 
+def _result_has_any_resolved_value(result: dict) -> bool:
+    """True when a lookup result actually resolved *something* -- a
+    date/status, or a normalized name -- as opposed to a genuine miss that
+    still gets passed through build_eol_evidence_slot unconditionally (see
+    app.py's _apply_lifecycle_result, which always writes the 'eol' slot
+    for the endoflife.date direct-API attempt, hit or miss)."""
+    return bool(
+        str(result.get("eol_date") or "").strip()
+        or str(result.get("eol_status") or "").strip()
+        or str(result.get("eoas_date") or "").strip()
+        or str(result.get("eoas_status") or "").strip()
+        or str(result.get("normalized_os_detailed_name") or "").strip()
+        or str(result.get("normalized_os") or "").strip()
+    )
+
+
 def build_eol_evidence_slot(result: dict) -> dict:
     """Shape one endoflife.date / vendor-cascade lookup result into the 'eol'
     evidence slot, matching the schema templates/index.html already writes
-    (`buildEolProofMetaFromApi`/`buildVendorProofMetaFromApi`)."""
-    method = str(result.get("source") or "").strip().lower() or "api"
+    (`buildEolProofMetaFromApi`/`buildVendorProofMetaFromApi`).
+
+    Real incident: the endoflife.date direct-API path never sets a
+    `"source"` key on its result dict at all (only the vendor cascade
+    does, e.g. "eosl"/"junos") -- and this function used to default
+    ``method`` to `"api"` whenever `source` was empty, with NO check for
+    whether the lookup actually found anything. Since app.py's
+    `_apply_lifecycle_result` writes this slot unconditionally after the
+    endoflife.date attempt (hit or miss) -- only the vendor cascade skips
+    writing it on ITS OWN miss -- a row that missed absolutely everywhere
+    (no product resolved, no vendor fallback either) still ended up with
+    `method: "api"`, which `row_matched_by`/`classify_matched_by` reads as
+    a genuine "endoflife.date" match, not "No match". A completely
+    fictional os_string (nothing could possibly resolve it) would
+    silently show "Matched by: endoflife.date" with an evidence note
+    claiming it was "Filled from the endoflife.date lookup" -- misleading,
+    and it hid genuinely-unresolved rows from the "No match" filter.
+    ``method`` now only defaults to "api" when the result actually
+    resolved something (a date/status or a normalized name);
+    otherwise it's left empty, which `row_matched_by` already treats the
+    same way it treats "none"/"loaded" -- falls through instead of
+    reporting a confirmed source that was never real.
+    """
+    source = str(result.get("source") or "").strip().lower()
+    method = source or ("api" if _result_has_any_resolved_value(result) else "")
     return {
         "method": method,
         "queryUsed": str(result.get("query_used") or "").strip(),

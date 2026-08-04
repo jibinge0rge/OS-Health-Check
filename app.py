@@ -61,6 +61,7 @@ from normalization_service import (
     DEFAULT_FUZZY_MATCH_THRESHOLD,
     collapse_consecutive_duplicate_words,
     detect_ambiguous_os_batch,
+    find_fuzzy_pair_match,
     gemini_model_name,
     normalize_ai_provider,
     openai_model_name,
@@ -2609,30 +2610,41 @@ async def normalize_suggest(payload: NormalizeSuggestRequest) -> dict[str, objec
     if not payload.items:
         return {"results": [], "ai_skipped": False}
 
+    os_strings = [item.os_string for item in payload.items]
+    allowed_pairs = [pair.model_dump() for pair in payload.allowed_pairs]
+
+    # Local fuzzy match runs first and unconditionally -- no AI provider
+    # needed, so a row still gets matched against an existing normalized
+    # pair even with AI disabled/unconfigured. Uses DEFAULT_FUZZY_MATCH_THRESHOLD
+    # (95%), independent of payload.fuzzy_match_threshold (which only ever
+    # phrases the AI prompt's own stated confidence bar below, historically
+    # sourced from the user's ai_confidence_threshold setting -- a fuzzy
+    # accept must not get looser just because that setting is lower).
+    results: list[NormalizeSuggestResult | None] = [
+        NormalizeSuggestResult(**match) if (match := find_fuzzy_pair_match(os_string, allowed_pairs)) else None
+        for os_string in os_strings
+    ]
+
     settings = load_app_settings()
-    if not settings.ai_enabled or not selected_ai_provider_available(settings):
-        return {"results": [None for _ in payload.items], "ai_skipped": True}
-
-    suggestions = await asyncio.to_thread(
-        suggest_normalization_batch,
-        [item.os_string for item in payload.items],
-        [pair.model_dump() for pair in payload.allowed_pairs],
-        payload.fuzzy_match_threshold,
-        settings.ai_provider,
-        settings.ai_match_prompt,
-        settings.ai_models.get(settings.ai_provider),
-    )
-
-    results: list[NormalizeSuggestResult | None] = []
-    for suggestion in suggestions:
-        if suggestion is None:
-            results.append(None)
-            continue
-        results.append(NormalizeSuggestResult(**suggestion))
+    ai_available = settings.ai_enabled and selected_ai_provider_available(settings)
+    remaining_indexes = [index for index, result in enumerate(results) if result is None]
+    if remaining_indexes and ai_available:
+        suggestions = await asyncio.to_thread(
+            suggest_normalization_batch,
+            [os_strings[index] for index in remaining_indexes],
+            allowed_pairs,
+            payload.fuzzy_match_threshold,
+            settings.ai_provider,
+            settings.ai_match_prompt,
+            settings.ai_models.get(settings.ai_provider),
+        )
+        for index, suggestion in zip(remaining_indexes, suggestions):
+            if suggestion is not None:
+                results[index] = NormalizeSuggestResult(**suggestion)
 
     return {
         "results": results,
-        "ai_skipped": False,
+        "ai_skipped": not ai_available,
         "ai_provider": settings.ai_provider,
     }
 

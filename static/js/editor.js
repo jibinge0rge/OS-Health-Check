@@ -449,6 +449,21 @@ async function rerunRow(row) {
   // only blocks refreshing the whole draft/data in one shot.
   showToast("Re-running lookup…");
   try {
+    // Only when both normalized fields are blank -- same precondition as
+    // Add-OS's brand-new rows. A row that already has normalized names set
+    // keeps them exactly as-is; re-run only refreshes EOL/EOAS for it,
+    // unchanged from before. This is NOT run for bulk Refresh EOL/EOAS --
+    // that operation is about refreshing dates for already-normalized
+    // rows, not reconsidering which existing pair a row's name matches.
+    if (!row.normalized_os_detailed_name && !row.normalized_os) {
+      const allowedPairs = buildAllowedPairsFromDraft();
+      const settings = await api.getSettings().catch(() => ({ ai_enabled: false }));
+      const match = await matchAgainstExistingPairs(row.os_string, allowedPairs, settings);
+      if (match) {
+        row.normalized_os_detailed_name = match.normalized_os_detailed_name;
+        row.normalized_os = match.normalized_os;
+      }
+    }
     const result = await api.refreshRow(row);
     Object.assign(row, result.row);
     // The row's fields update above, but the evidence sidecar entry (what
@@ -1200,17 +1215,10 @@ async function* addOsPipeline(osStrings, { signal } = {}) {
       // server computes via lookup_extras.row_matched_by.
       row.matched_by = "Ambiguous";
     } else {
-      const exact = allowedPairs.find((p) => p.__key === dedupeKey(collapseConsecutiveDuplicateWords(osString)));
-      if (exact) {
-        row.normalized_os_detailed_name = collapseConsecutiveDuplicateWords(exact.normalized_os_detailed_name);
-        row.normalized_os = collapseConsecutiveDuplicateWords(exact.normalized_os);
-      } else if (settings.ai_enabled) {
-        const threshold = settings.ai_confidence_threshold ?? 85;
-        const [suggestion] = await api.normalizeSuggest([osString], allowedPairs, threshold, { signal }).then((r) => r.results).catch(() => [null]);
-        if (suggestion) {
-          row.normalized_os_detailed_name = collapseConsecutiveDuplicateWords(suggestion.normalized_os_detailed_name);
-          row.normalized_os = collapseConsecutiveDuplicateWords(suggestion.normalized_os);
-        }
+      const match = await matchAgainstExistingPairs(osString, allowedPairs, settings, { signal });
+      if (match) {
+        row.normalized_os_detailed_name = match.normalized_os_detailed_name;
+        row.normalized_os = match.normalized_os;
       }
     }
     newRows.push(row);
@@ -1240,6 +1248,32 @@ async function* addOsPipeline(osStrings, { signal } = {}) {
   if (signal?.aborted) { yield { type: "cancelled" }; return; }
 
   yield { type: "complete", rows: newRows, evidence: evidenceByOs, message: `Added ${newRows.length} row(s).` };
+}
+
+// Shared by the Add-OS pipeline above and rerunRow's blank-normalized-field
+// case below -- tries an exact match against existing Draft/Data pairs
+// first, then defers to the server for a local fuzzy match (no AI needed)
+// and, only if that doesn't find one and AI is enabled, an AI match.
+// Returns { normalized_os_detailed_name, normalized_os } or null.
+async function matchAgainstExistingPairs(osString, allowedPairs, settings, { signal } = {}) {
+  const exact = allowedPairs.find((p) => p.__key === dedupeKey(collapseConsecutiveDuplicateWords(osString)));
+  if (exact) {
+    return {
+      normalized_os_detailed_name: collapseConsecutiveDuplicateWords(exact.normalized_os_detailed_name),
+      normalized_os: collapseConsecutiveDuplicateWords(exact.normalized_os),
+    };
+  }
+  // Always calls the server now, regardless of settings.ai_enabled -- it
+  // tries a local fuzzy match against existing pairs first (no AI needed
+  // at all), and only falls through to AI internally when that doesn't
+  // find one and AI is actually enabled/configured.
+  const threshold = settings.ai_confidence_threshold ?? 85;
+  const [suggestion] = await api.normalizeSuggest([osString], allowedPairs, threshold, { signal }).then((r) => r.results).catch(() => [null]);
+  if (!suggestion) return null;
+  return {
+    normalized_os_detailed_name: collapseConsecutiveDuplicateWords(suggestion.normalized_os_detailed_name),
+    normalized_os: collapseConsecutiveDuplicateWords(suggestion.normalized_os),
+  };
 }
 
 function buildAllowedPairsFromDraft() {

@@ -6,6 +6,7 @@ Supports OpenAI and Google Gemini. Provider is selected by the caller
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import re
@@ -302,6 +303,68 @@ def pair_match_percent(os_string: str, pair: dict[str, str]) -> int:
         strict_match_percent(os_string, pair.get("normalized_os_detailed_name", "")),
         strict_match_percent(os_string, pair.get("normalized_os", "")),
     )
+
+
+def _text_similarity_percent(a: str, b: str) -> int:
+    """Character-level similarity (0-100), same technique already used for
+    catalog-rename recovery in eol_service.py's prior-value fallback --
+    unlike strict_match_percent's token-subset check (an exact-containment
+    test that scores a hard 0 the moment a single token differs, e.g.
+    "Ubuntu 22.04.3 LTS" vs "Ubuntu 22.04 LTS"), this tolerates a small
+    insertion/edit gracefully."""
+    ratio = difflib.SequenceMatcher(None, a.casefold(), b.casefold()).ratio()
+    return round(ratio * 100)
+
+
+def pair_similarity_percent(os_string: str, pair: dict[str, str]) -> int:
+    return max(
+        _text_similarity_percent(os_string, pair.get("normalized_os_detailed_name", "")),
+        _text_similarity_percent(os_string, pair.get("normalized_os", "")),
+    )
+
+
+def find_fuzzy_pair_match(
+    os_string: str,
+    allowed_pairs: list[dict[str, str]],
+    threshold: int = DEFAULT_FUZZY_MATCH_THRESHOLD,
+) -> dict[str, str] | None:
+    """Local, non-AI fuzzy match against existing normalized pairs -- no API
+    key or provider needed, so this runs even when AI matching is disabled.
+
+    Scores every candidate with ``pair_similarity_percent`` (character-level
+    ratio) and accepts the best-scoring one only when it clears
+    ``threshold`` AND passes ``ai_pair_acceptable`` -- the same hard
+    post-checks (rubbish rejection, vendor/edition/version-family
+    compatibility) already used to keep the AI step from over-matching.
+    That gate matters more than the raw ratio here: a plain character
+    ratio alone can't reliably tell "22.04.3" from "20.04" apart (both
+    read as "mostly the same string, small numeric difference"), so
+    ai_pair_acceptable's dedicated numeric version-prefix check is what
+    actually protects against accepting the wrong version, edition, or
+    vendor -- the ratio just confirms the text is close enough to be
+    worth considering in the first place.
+    """
+    cleaned = _clean(os_string)
+    if not cleaned or is_rubbish_os_value(cleaned):
+        return None
+
+    candidates = filter_pairs_for_os(cleaned, unique_allowed_pairs(allowed_pairs))
+    best_pair: dict[str, str] | None = None
+    best_score = -1
+    for pair in candidates:
+        if not ai_pair_acceptable(cleaned, pair):
+            continue
+        score = pair_similarity_percent(cleaned, pair)
+        if score > best_score:
+            best_score = score
+            best_pair = pair
+
+    if best_pair is not None and best_score >= threshold:
+        return {
+            "normalized_os_detailed_name": best_pair["normalized_os_detailed_name"],
+            "normalized_os": best_pair["normalized_os"],
+        }
+    return None
 
 
 def _edition_tokens(value: object, *, windows: bool = False) -> set[str]:
