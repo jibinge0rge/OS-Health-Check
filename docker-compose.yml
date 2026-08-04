@@ -1,12 +1,22 @@
 # OS Health Check
 #
+# One compose file, same behavior everywhere (local, Portainer, anywhere
+# else): the app runs entirely from what's baked into the image at build
+# time (COPY . . in the Dockerfile) — no bind mount. That's a deliberate
+# choice, not an oversight: a bind mount is only useful if you're actively
+# live-editing code on the exact host running the container, and it's a
+# real liability everywhere else (a Portainer host whose git checkout is
+# stale/incomplete would silently shadow the image's own good code with
+# broken/missing code — which is exactly what happened before this was
+# removed). To pick up local code changes, rebuild:
+#   docker compose up -d --build
+#
 # Local:
 #   cp .env.example .env   # optional AI keys
 #   docker compose up --build
 #
 # Portainer: deploy this stack (as a Git repository stack, not the plain
-# Web Editor — it needs to build from Dockerfile and bind-mount the repo)
-# and set env in the UI:
+# Web Editor — it needs to build from the Dockerfile) and set env in the UI:
 #   OPENAI_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY, APP_PORT
 #   DATABASE_URL, LOOKUP_DB_ENABLED=true  -- BOTH required together to move
 #     the published lookup/draft/evidence into Postgres (e.g. a managed
@@ -16,7 +26,6 @@
 #     using the bundled `db` service below; ignored once DATABASE_URL points
 #     elsewhere (e.g. Supabase) -- see the note on the `db` service.
 #
-# The repo is bind-mounted so host/git changes reload live when UVICORN_RELOAD=true.
 # Vendor lookup caches live in PostgreSQL (named volume), not SQLite files.
 #
 # DATABASE_URL has no default here — set it in .env (it's picked up via
@@ -64,7 +73,7 @@ services:
         required: false
     environment:
       APP_PORT: "8000"
-      UVICORN_RELOAD: "${UVICORN_RELOAD:-true}"
+      UVICORN_RELOAD: "${UVICORN_RELOAD:-false}"
       DATABASE_URL: "${DATABASE_URL:-}"
       LOOKUP_DB_ENABLED: "${LOOKUP_DB_ENABLED:-}"
       LOOKUP_DB_MIRROR_FILES: "${LOOKUP_DB_MIRROR_FILES:-}"
@@ -78,8 +87,6 @@ services:
       POSTGRES_USER: "${POSTGRES_USER:-oshealth}"
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-oshealth}"
       POSTGRES_DB: "${POSTGRES_DB:-oshealth}"
-    volumes:
-      - ./:/app
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/"]
       interval: 30s
