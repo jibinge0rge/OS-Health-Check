@@ -84,6 +84,7 @@ export function initDrawer(cb) {
   document.getElementById("drawer-ambiguous-btn").addEventListener("click", () => currentRow && handlers.onMarkAmbiguous?.(currentRow));
   document.getElementById("drawer-rerun-btn").addEventListener("click", () => currentRow && handlers.onRerun?.(currentRow));
   document.getElementById("drawer-revert-btn").addEventListener("click", () => currentRow && handlers.onRevert?.(currentRow));
+  document.getElementById("drawer-clear-fields-btn").addEventListener("click", () => currentRow && handlers.onClearFields?.(currentRow));
   document.getElementById("drawer-toggle-reviewed-btn").addEventListener("click", () => currentRow && handlers.onToggleReviewed?.(currentRow));
 }
 

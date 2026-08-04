@@ -84,6 +84,7 @@ export async function initEditor() {
     onMarkAmbiguous: (row) => { applyAmbiguous(row); scheduleAutosave(); refreshView(); refreshDrawerFields(row); },
     onRerun: (row) => rerunRow(row),
     onRevert: (row) => { revertRow(row); scheduleAutosave(); refreshView(); refreshDrawerFields(row); },
+    onClearFields: (row) => { clearRowFields(row); scheduleAutosave(); refreshView(); refreshDrawerFields(row); },
     onToggleReviewed: (row) => { toggleRowReviewed(row); scheduleAutosave(); refreshDrawerReviewedState(row); refreshView(); },
     isReviewed: (row) => isRowReviewed(row),
     isChanged: (row) => isChangedRow(row),
@@ -111,8 +112,10 @@ export async function initEditor() {
   // however long the whole batch takes.
   el.bulkRefreshBtn.addEventListener("click", openRefreshModal);
   document.getElementById("bulk-same-as-os-btn").addEventListener("click", bulkSameAsOs);
+  document.getElementById("bulk-set-fields-btn").addEventListener("click", openBulkSetFieldsModal);
   document.getElementById("bulk-ambiguous-btn").addEventListener("click", bulkMarkAmbiguous);
   document.getElementById("bulk-revert-btn").addEventListener("click", bulkRevert);
+  document.getElementById("bulk-clear-fields-btn").addEventListener("click", bulkClearFields);
   document.getElementById("bulk-mark-reviewed-btn").addEventListener("click", bulkMarkReviewed);
   document.getElementById("bulk-mark-unreviewed-btn").addEventListener("click", bulkMarkUnreviewed);
   document.getElementById("bulk-export-btn").addEventListener("click", (event) => openExportMenu(event.currentTarget, selectedRows));
@@ -380,6 +383,16 @@ function revertRow(row) {
   CSV_HEADERS.forEach((header) => { if (header !== "os_string") row[header] = baseline[header]; });
 }
 
+// Blanks every field except os_string -- for when a match is simply wrong
+// and the user wants to start over from scratch. Distinct from "Mark
+// Ambiguous" (a different signal: "this string names more than one
+// product, do not guess") and "Revert to Data" (recovers Data's last
+// published values, not empty).
+function clearRowFields(row) {
+  CSV_HEADERS.forEach((header) => { if (header !== "os_string") row[header] = ""; });
+  row.matched_by = "No match";
+}
+
 // ---------- Reviewed flag ----------
 // Stored as a sibling key inside the evidence sidecar's by_os[os_string]
 // entry (alongside the detailed/normalized/eol lookup slots) rather than as
@@ -603,6 +616,67 @@ function bulkSameAsOs() {
   showToast(`Set ${targets.length} row(s) to match their OS string.`);
 }
 
+/** Bulk-set normalized_os_detailed_name/normalized_os to a user-typed value
+ * across every selected row -- for when several rows are all genuinely the
+ * same OS but never got a clean matching pair (e.g. a batch of near-
+ * identical inventory strings). "Use the same value for Normalized OS"
+ * covers the common case of wanting both fields identical; unchecking it
+ * reveals a second, independent input. A blank field is left untouched on
+ * every row, so this can also set just one of the two fields in bulk.
+ * Marks each field actually written as "manual" evidence, same as typing
+ * directly into that cell would (unlike the derived "Same as OS" action,
+ * this is a genuine manually-dictated value, not derived from the row). */
+function openBulkSetFieldsModal() {
+  const targets = selectedRows();
+  if (!targets.length) return;
+
+  const detailedInput = document.getElementById("bulk-set-detailed-input");
+  const normalizedInput = document.getElementById("bulk-set-normalized-input");
+  const normalizedField = document.getElementById("bulk-set-normalized-field");
+  const sameCheckbox = document.getElementById("bulk-set-same-checkbox");
+  const sameChip = document.getElementById("bulk-set-same-chip");
+  const syncSameChipVisual = () => {
+    sameChip.classList.toggle("active", sameCheckbox.checked);
+    sameChip.querySelector(".box").innerHTML = sameCheckbox.checked ? iconMarkup("check", { size: 9 }) : "";
+  };
+
+  document.getElementById("bulk-set-fields-count").textContent =
+    `Applies to ${targets.length} selected row(s).`;
+  detailedInput.value = "";
+  normalizedInput.value = "";
+  sameCheckbox.checked = true;
+  normalizedField.hidden = true;
+  syncSameChipVisual();
+  sameCheckbox.onchange = () => {
+    normalizedField.hidden = sameCheckbox.checked;
+    syncSameChipVisual();
+  };
+
+  openModal("modal-bulk-set-fields");
+  document.getElementById("bulk-set-fields-confirm-btn").onclick = () => {
+    const detailedValue = detailedInput.value.trim();
+    const normalizedValue = sameCheckbox.checked ? detailedValue : normalizedInput.value.trim();
+    if (!detailedValue && !normalizedValue) {
+      showToast("Enter a value for at least one field.");
+      return;
+    }
+    targets.forEach((row) => {
+      if (detailedValue) {
+        row.normalized_os_detailed_name = detailedValue;
+        markFieldManual(row, "normalized_os_detailed_name");
+      }
+      if (normalizedValue) {
+        row.normalized_os = normalizedValue;
+        markFieldManual(row, "normalized_os");
+      }
+    });
+    scheduleAutosave();
+    refreshView();
+    closeModal();
+    showToast(`Set fields for ${targets.length} row(s).`);
+  };
+}
+
 function bulkRevert() {
   const targets = selectedRows();
   if (!targets.length) return;
@@ -619,6 +693,15 @@ function bulkMarkAmbiguous() {
   scheduleAutosave();
   refreshView();
   showToast(`Marked ${targets.length} row(s) as Ambiguous OS.`);
+}
+
+function bulkClearFields() {
+  const targets = selectedRows();
+  if (!targets.length) return;
+  targets.forEach(clearRowFields);
+  scheduleAutosave();
+  refreshView();
+  showToast(`Cleared fields for ${targets.length} row(s).`);
 }
 
 function bulkMarkReviewed() {

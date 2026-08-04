@@ -61,6 +61,35 @@
     </div>
   </div>
 
+  <div class="modal" id="modal-bulk-set-fields" data-width="480" hidden>
+    <div class="modal-header">
+      <div>
+        <div class="modal-eyebrow">DRAFT</div>
+        <h2 class="modal-title">Set normalized fields</h2>
+      </div>
+      <button class="icon-btn modal-close" type="button" data-close-modal aria-label="Close"></button>
+    </div>
+    <div class="modal-body" id="modal-bulk-set-fields-body">
+      <p class="modal-note" id="bulk-set-fields-count"></p>
+      <label class="field-label">Normalized detailed name</label>
+      <input type="text" class="text-input" id="bulk-set-detailed-input" placeholder="e.g. Ubuntu 24.04 LTS" />
+      <label class="checkbox-chip" id="bulk-set-same-chip">
+        <input type="checkbox" id="bulk-set-same-checkbox" checked />
+        <span class="box"></span>
+        Use the same value for Normalized OS
+      </label>
+      <div id="bulk-set-normalized-field" hidden>
+        <label class="field-label">Normalized OS</label>
+        <input type="text" class="text-input" id="bulk-set-normalized-input" placeholder="e.g. Ubuntu 24.04" />
+      </div>
+      <p class="modal-note">Leave a field blank to leave it untouched on the selected rows.</p>
+    </div>
+    <div class="modal-footer" id="modal-bulk-set-fields-footer">
+      <button class="btn" type="button" data-close-modal>Cancel</button>
+      <button class="btn primary" id="bulk-set-fields-confirm-btn" type="button">Apply to selected</button>
+    </div>
+  </div>
+
   <div class="modal" id="modal-validate" data-width="560" hidden>
     <div class="modal-header">
       <div>

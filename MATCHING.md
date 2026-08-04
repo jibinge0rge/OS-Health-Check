@@ -32,6 +32,7 @@ Everything here is driven from three fields already on a row:
    - [Picking a release (`pick_release` / `_pick_release`)](#picking-a-release-pick_release--_pick_release)
    - [Prior-value fallback](#prior-value-fallback-_pick_release_by_prior_value)
    - [Dot-zero fallback](#dot-zero-fallback-_pick_release_by_dot_zero_release_name)
+   - [Product-level release fallback](#product-level-release-fallback-_product_release_fallback_slugs)
    - [Vendor compatibility gate](#vendor-compatibility-gate-vendors_compatible)
 5. [Source 2 — the local vendor cascade](#source-2--the-local-vendor-cascade)
    - [eosl.date (local mirror)](#eosldate-local-mirror-eosl_servicepy)
@@ -98,6 +99,26 @@ queries with `"Oracle Linux 9"` (`normalized_os`, since it's vendor-compatible).
 rejected (AlmaLinux ≠ Oracle), falls through to `os_string` instead, so the
 lookup still resolves against the *correct* vendor.
 
+**A second safety net, in `lookup_os_eol` itself (`eol_service.py`,
+right after the product first resolves):** `vendors_compatible` only
+catches a *cross-vendor* mismatch — it does nothing for a normalized field
+that names the wrong product *within the same vendor*. Real incident: a
+row's `os_string="iPad 10.3.4"` had `normalized_os`/
+`normalized_os_detailed_name` previously (manually, or from before the
+`ipad`/`ipados` fix existed) set to `"Apple iOS 10"` — a real, valid Apple
+product, just the *wrong* one. Both are `"apple"` vendor, so the
+cross-vendor gate above never fires, and the lookup would confidently
+query with the stale `"Apple iOS 10"` value and pull **iOS's own EOL/EOAS
+dates** instead of iPadOS's. `lookup_os_eol` now checks: does the *raw*
+`os_string` independently resolve to a product that has a deliberate
+`_INVENTORY_PHRASE_EXTRAS` entry (currently just `ipados`, via the `"ipad"`
+alias), and does that differ from what the preferred field resolved to? If
+so, the preferred field is more likely stale than the deliberate override
+is wrong — retry with `os_string` instead. A row genuinely and correctly
+normalized to `"Apple iOS 10"` (e.g. a real iPhone) is unaffected: its raw
+`os_string` doesn't independently resolve to `ipados` at all, so nothing
+overrides it.
+
 **Important:** the value chosen here (`query_used`, shown in evidence) is
 what's used to resolve the **product**. Release-level matching (which exact
 release/build) later folds in hints from `os_string` too — see
@@ -159,9 +180,31 @@ show *why* each one failed, not just a generic "no match."
 
 ### Resolving the product (`resolve_product_slug`)
 
-endoflife.date's product catalog (~300+ products, fetched once and cached via
-`get_product_catalog`/`lru_cache`) is turned into a **phrase index**:
-for every product, its slug (e.g. `windows-server`), its display label
+endoflife.date's product catalog (~460 products total, fetched once and
+cached via `get_product_catalog`/`lru_cache`) covers far more than operating
+systems — languages, frameworks, databases, server apps, services, and
+(crucially) hardware **devices**, distinguished only by each product's own
+`"category"` field. `get_product_catalog` filters to **`category == "os"`
+only** (~66 products) before anything downstream ever sees the list — this
+app's `os_string` is specifically an OS version string, so a non-OS category
+product is never a valid match target, no matter how closely its name or
+label happens to overlap with the query text.
+
+**Real incident:** Apple's `ipad` product (`category: "device"`, tracking
+hardware generations like "iPad (9th generation)", not software) has no
+alias distinguishing it from `ipados` (`category: "os"`, the actual iPadOS
+software lifecycle) — but its own slug/label *is* the bare word `"ipad"`,
+so every real-world `"iPad <version>"`-style `os_string` (which never spells
+out "iPadOS") matched the hardware product purely by coincidence of naming,
+long before any release-level scoring even ran. Filtering by category
+removes the entire class of hardware/device/non-OS products from
+consideration at the source, rather than trying to out-prioritize each one
+individually as they're discovered. `_INVENTORY_PHRASE_EXTRAS` now maps the
+bare `"ipad"` phrase to `ipados` — safe only *because* the hardware product
+it used to collide with is excluded first.
+
+The filtered catalog is then turned into a **phrase index**: for every
+remaining product, its slug (e.g. `windows-server`), its display label
 (e.g. `"Windows Server"`), and all of its aliases become searchable phrases
 mapped back to that slug (`build_slug_index`).
 
@@ -171,7 +214,18 @@ Resolution order:
    → slug rules checked first, to force disambiguation for products whose
    generic name collides with something else in the phrase index (e.g.
    `windows[\s-]?server` → `windows-server` outranks the bare `windows`
-   product; `cisco-ios-xe` outranks generic Cisco IOS text).
+   product; `cisco-ios-xe` outranks generic Cisco IOS text). **Real
+   incident:** real-world inventory strings routinely drop the word
+   "Server" entirely for a server-only OS — `"Windows 2008 R2 Standard"`,
+   `"Win 2008 R2"`, `"Windows 2008 - Standard"` — so the literal-`"server"`
+   override above never fired, and these fell through to the generic
+   `"windows"` (client) phrase-index entry, which has no release for a
+   year it was never versioned by. A second, order-independent override
+   now catches this: two zero-width lookaheads requiring both a
+   `win`/`windows` mention *and* a server-only generation year (`2008`,
+   `2011`, `2012`, `2016`, `2019`, `2022`, `2025` — client releases are
+   only ever named `"7"`/`"8"`/`"10"`/`"11"` or `"XP"`/`"Vista"`, never a
+   year) anywhere in the text, in either order → `windows-server`.
 2. **Phrase index scan** — every phrase in the index that appears in the
    (normalized) query as a whole word/phrase is a candidate; the **longest**
    matching phrase wins (ties broken by an explicit priority number, then
@@ -197,6 +251,7 @@ space inserted (`Linux8.2` → `linux 8.2`).
 | `"red hat enterprise linux 9"` | `rhel` | priority override (handles `redhat`/`red hat` spelling variants) |
 | `"oracle linux server 9.5"` | `oracle-linux` | phrase index |
 | `"amzn2023"` (after letter/digit split → `"amzn 2023"`) | `amazon-linux` | `_INVENTORY_PHRASE_EXTRAS` alias |
+| `"ipad 10.0.2"` | `ipados` | `_INVENTORY_PHRASE_EXTRAS` alias — the hardware `ipad` product is excluded by the category filter, so this alias is unambiguous |
 
 If no slug resolves at all, the row's `api_note` is `"Product not found in
 endoflife.date registry"` and the row moves on to the vendor cascade — it is
@@ -225,15 +280,21 @@ extract_version_hints("Microsoft Windows 7 Service Pack 2")
 # -> ["7"]                  ("2" is a Service Pack marker, dropped
 
 extract_version_hints("Cisco IOS 15.0(2)SE8")
-# -> ["15.0", "2"]          (parenthesised segments don't stop separate hints;
-#                            the trailing "8" in "SE8" is preceded by a letter,
-#                            so the negative lookbehind excludes it too)
+# -> ["15.0", "2", "8", "15.0.2"]   (parenthesised segments don't stop
+#                                    separate hints; the trailing "8" in
+#                                    "SE8" IS extracted -- it's preceded by
+#                                    two letters, not a digit+letter, so the
+#                                    compound-tag lookbehind doesn't apply)
 
 extract_version_hints("Android 16")
 # -> ["16"]                 bare "16" is a real major version here -- see below
 
 extract_version_hints("Windows 7 (64-bit)")
 # -> ["7"]                  "64" is excluded -- it reads as a bitness marker in context
+
+extract_version_hints("WindowsServer2008R2")
+# -> ["2008"]               a genuine version glued directly onto the
+#                            preceding word still extracts in full -- see below
 ```
 
 Exclusions (all deliberate, each added after a real false-match):
@@ -256,13 +317,26 @@ Exclusions (all deliberate, each added after a real false-match):
   `R2`, `U1`, or spelled-out `"Service Pack 2"` is a patch marker, not a
   product version, so it's excluded when it's a single un-dotted number
   immediately preceded by one of those markers.
-- **A compound tag doesn't leak a stray digit** — `"24H2"` yields the hint
-  `"24"` only, never an extra `"2"`. Without the negative lookbehind
-  (`(?<![A-Za-z])`) in the regex, naive digit-scanning would find *both*
-  `"24"` (before the `H`) *and* `"2"` (right after it, since it's still a run
-  of digits) as two separate hints — and that stray `"2"` has, in the past,
-  coincidentally matched something completely unrelated (e.g. a `"Service
-  Pack 2"` hint on a totally different OS).
+- **A compound tag doesn't leak a stray digit, but a glued-on version still
+  extracts in full** — `"24H2"` yields the hint `"24"` only, never an extra
+  `"2"`. Naive digit-scanning would find *both* `"24"` (before the `H`) *and*
+  `"2"` (right after it, since it's still a run of digits) as two separate
+  hints — and that stray `"2"` has, in the past, coincidentally matched
+  something completely unrelated (e.g. a `"Service Pack 2"` hint on a
+  totally different OS). The regex protects against this with a negative
+  lookbehind that only excludes a digit run immediately preceded by
+  **exactly** `[digit][single-letter]` (`(?<![0-9][A-Za-z])`) — the true
+  compound-tag shape. **Real incident:** an earlier, broader version of this
+  lookbehind (`(?<![A-Za-z])`, excluding a digit run preceded by *any*
+  letter at all) also blocked genuine version numbers glued directly onto a
+  preceding word with no space — a bulk-reported inventory string
+  `"WindowsServer2008R2"` extracted the hint `"008"` (truncated, matching
+  nothing) instead of `"2008"`, because the `"r"` in `"...Server2008..."`
+  preceded it. Narrowing the lookbehind to require a digit immediately
+  before the letter (not just any letter) still excludes `"24H2"`'s stray
+  `"2"` — the `"4"` right before the `"H"` is a digit — while correctly
+  extracting `"2008"` in full from `"...Server2008..."`, where the
+  character before the `"r"` is another letter, not a digit.
 - **A build number is combined with the dotted version right before it,
   parenthesized or not** — `"Windows 10.0 (14393)"` yields `["10.0",
   "14393", "10.0.14393"]`; `"Windows 10.0 22631 64-bit"` yields `["10.0",
@@ -283,6 +357,24 @@ Exclusions (all deliberate, each added after a real false-match):
   below). The synthesized combined hint exact-matches its one true release
   (score 100), which strictly outscores the family-wide tie (90) and
   resolves it correctly.
+- **A trailing " - \<year\>" (spaced hyphen, bare 4-digit number, at the
+  very end of the string) is dropped as metadata, not a second version** —
+  only once a hint has already been captured earlier in the string. **Real
+  incident:** `"Microsoft Windows Server 2008 R2 - 2012"` names exactly
+  **one** OS — "2008 R2" — with `"- 2012"` appended as real-world inventory
+  metadata (an install/license/audit-year stamp), not a claim that the row
+  is *also* Windows Server 2012. Without this exclusion, `"2012"` was
+  extracted as a second, independent hint, tying four different releases
+  (`2008-sp2`, `2008-r2-sp1`, `2012`, `2012-r2`) with zero evidence in
+  common — correctly refusing per the "two different releases" rule, since
+  by hint alone this is indistinguishable from `"Android 14-11"` — except
+  this string only ever named one OS. The **whitespace before the hyphen is
+  what keeps this narrow**: `"Android 14-11"` (hyphen glued directly
+  between two digits, no spaces) is a fundamentally different shape — two
+  independent version hints — and is completely unaffected. A dash-year
+  appearing mid-string (more text after it) or with no earlier hint at all
+  is also unaffected — this only ever drops the LAST token, and only when
+  it's the *second* piece of version-shaped text in the string.
 
 ### Picking a release (`pick_release` / `_pick_release`)
 
@@ -315,18 +407,65 @@ build, e.g. `"10.0.26100"`, when present). Each candidate is scored against
 2. **Compound-token full match** — a slug/label like `11-24h2-w` doesn't
    parse as one dotted version at all (hyphens/spaces aren't dots), so
    comparison #1 above always scores it 0 against a bare hint. Instead, its
-   embedded number tokens are pulled out (`["11", "24"]`) and checked as a
-   *set*: if the release has **more than one** token and **every** one of
-   them is present somewhere among the hints, that's scored as a full match
-   (100). A release with only a single embedded number never uses this
-   path — comparison #1 alone already handles a clean version number
-   correctly.
+   embedded number tokens are pulled out (`_release_name_tokens`,
+   e.g. `["11", "24"]`) and checked as a *set*: if the release has **at
+   least one** token and **every** one of them is present somewhere among
+   the hints, that's scored as a full match (100). `_release_name_tokens`
+   applies the same SP/R/U/Pack marker-digit exclusion as
+   `extract_version_hints` (so `"2008-r2-sp1"` yields only `["2008"]`, not
+   `["2008", "2", "1"]`) — a release's own edition/patch suffix is never
+   itself part of its version.
+
+   **Real incident:** Windows Server's own release *names* are compound
+   slugs like `"2008-sp2"` and `"2008-r2-sp1"`, not the bare year alone.
+   Before the marker-digit exclusion existed, `_release_name_tokens` read
+   `"2008-r2-sp1"` as `["2008", "2", "1"]` and required **every** one of
+   those three present in the query's hints — so unless the query
+   happened to also contain a coincidental `"2"` and `"1"`, it could never
+   score a full match, and the entire Windows Server 2008/2012 family fell
+   through to the eosl.date fallback for any query naming only the year.
+   The rule *also* used to require **more than one** token — once the
+   marker digits are correctly excluded, a release like plain `"2008-sp2"`
+   has only one genuine token (`"2008"`) left, so that restriction was
+   relaxed to just "at least one": a single confirmed token is still an
+   unambiguous full match. This exact relaxation had to be applied to
+   **two separate copies** of the same restriction — `_release_score`
+   above, and `_release_required_hints` (tie-breaker 3 below), which
+   computes required-hint sets independently. Fixing only the first left
+   the shared-hint tie-break still seeing an empty required set (from the
+   still-unfixed second copy) even after the score correctly reached 100,
+   so `pick_release` refused anyway — the subtlest part of this fix.
 
    This second rule is what makes a **name-only** query (no build number at
    all) able to resolve a release at all — see the worked example below —
    while still refusing to guess from a bare major alone, because that rule
    explicitly requires **every** token of a multi-token release, not just
    one of them.
+3. **Build-number-suffix match** (`_hint_matches_build_suffix`) — comparison
+   #1 above only ever tests whether a hint is a numeric *prefix* of the
+   release (or vice versa) — never whether it matches the release's
+   trailing, most granular segment. A bare, undotted hint of **4+ digits**
+   that exactly equals the **last** segment of a multi-part release version
+   (e.g. hint `"17763"` against release `"10.0.17763"`) is treated as a
+   match at the same **100** confidence as an exact match — a build number
+   this specific is effectively a unique identifier, the same reasoning
+   already trusted for the existing dotted+trailing-build-number combining
+   pass in `extract_version_hints`.
+
+   **Real incident:** `"Windows Server 2019 Datacenter AD Version 1809
+   Build 17763"` refused to resolve at all. Hints `["2019", "1809",
+   "17763"]`. Releases `"2019"` and `"1809-sac"` share build `10.0.17763`
+   and each independently scores 100 via its own name (`"2019"` matches
+   hint `"2019"`, `"1809-sac"` matches hint `"1809"`) — a genuine tie. But
+   `"17763"` — the trailing segment of the shared build, quoted standalone
+   with no adjacent `"10.0"` for the existing combining pass to stitch it
+   onto — matched **neither** release at all under the old prefix-only
+   comparison, so no hint was recognized as common to both, the shared-hint
+   tie-break (below) saw an empty intersection, and `pick_release` refused
+   *before* the dominant-evidence check ever got a chance to correctly
+   prefer `"2019"` (the release with the additional, more specific `"2019"`
+   hint). Recognizing `"17763"` as confirming both releases restores the
+   common ground the dominant-evidence check needs.
 
 The release with the single **highest** score across all its candidates
 wins, provided that score is **≥ 80** (`_MIN_RELEASE_SCORE`). Below that, or
@@ -336,36 +475,173 @@ guess.
 **Ties.** More than one release can legitimately tie for the best score —
 most commonly because several editions/channels share the exact same raw
 build (`latest.name`), or several editions share the same marketing name
-tokens. Four tie-breakers are tried, in order:
+tokens. Six tie-breakers are tried, in order:
 
-1. **Edition narrowing** (`_edition_label_substring`) — if `os_text`
-   contains an edition/channel marker (`"IoT"`, or `"Enterprise"`/literal
-   `"(E)"`), the tie is narrowed to whichever tied release's `label`
-   contains that same substring. IoT is checked before Enterprise, since a
-   string naming both (`"Windows 11 IoT Enterprise LTSC"`) should prefer the
-   more specific IoT release.
-2. **Shared-hint check** (`_release_required_hints`) — a tie is only safe to
+1. **Dotted-hint preference** — before anything else, the whole scoring
+   pass above is re-run using **only** the dotted hints (those containing a
+   `.`), and if that dotted-only pass resolves to a single, **unique**
+   release, scoring **≥ 80**, that disagrees with the full-hint-set result,
+   the dotted-only result is preferred outright. **Real incident:** products
+   whose entire release catalog is bare, major-version-only names (RHEL:
+   `"4"`–`"10"`, CentOS: `"5"`–`"8"`, iOS: `"5"`–`"26"`) can never have a
+   release that *exactly* matches a dotted hint like `"6.6"` — the best it
+   ever reaches is the release's own bare major number via the weaker
+   90-point *prefix* score. Meanwhile a totally unrelated standalone bare
+   number elsewhere in the query — a kernel-version fragment, a space-
+   separated point-release digit — can coincidentally **exact**-match some
+   *other* release's own bare name at a full 100, outright outscoring the
+   correct match (not even a tie). `"RHEL 6.6 3 8"` (kernel `3.8`, space-
+   separated instead of dotted) resolved to release `"8"` (the bare `"8"`
+   hint exact-matching it) instead of release `"6"` (the genuine `"6.6"`
+   hint, only scored 90) — the same shape broke `"CentOS 7.9 5 4"` and
+   `"iOS 16.7 10"` (a real iOS 16.7.10 point release, space- instead of
+   dot-separated) too. Since a dotted hint is always at least as specific as
+   a bare one, and the product's own catalog never HAS a dotted release name
+   to compare against, preferring the dotted-only pass recovers the correct
+   release without needing to know in advance which products are
+   bare-major-only.
+
+   **The dotted-only pass must itself be unique before it's trusted — a
+   real regression found while verifying this fix against the live catalog:**
+   `"WindowsServer2016 10.0"` (hints `["2016", "10.0"]`) already resolves
+   uniquely and correctly on the *full* hint set alone — release `"2016"`'s
+   own name is itself one of the hints, a compound-token full match (100).
+   But `"10.0"` is a genuine numeric prefix of **every** modern Windows
+   Server release's build number (they all start `10.0.`), so scoring with
+   *only* the dotted hint ties roughly a dozen releases at 90 — here the
+   dotted-only pass isn't more specific, it's *less* specific than the full
+   hint set. The first version of this fix unconditionally preferred the
+   dotted-only pass whenever it merely *disagreed*, so this 12-way tie
+   silently clobbered the correct, unique 100-score answer — and the
+   resulting tie then failed tie-breaker 5 (exact-score requirement) below,
+   turning a clean match into "no match found" and sending the row to the
+   eosl.date fallback despite endoflife.date having the right answer all
+   along. Requiring the dotted-only pass to *itself* resolve to exactly one
+   release before it's trusted fixes this: RHEL/CentOS/iOS's bare-major-only
+   catalogs always give a unique dotted-only winner (`"6.6"` can only ever
+   numeric-prefix-match release `"6"`, never `"7"` or `"8"`), so the
+   original fix stays intact, while a coarse hint like `"10.0"` that ties
+   nearly the whole catalog no longer gets to override an already-
+   unambiguous answer.
+2. **Edition narrowing** (`_edition_label_substring`) — if `os_text`
+   contains an edition/channel marker (`"IoT"`, `"LTSC"`/`"LTS"`, `"R2"`, or
+   `"Enterprise"`/literal `"(E)"`), the tie is narrowed to whichever tied
+   release's `label` contains that same substring. Checked in order, most
+   specific first: **IoT**, then **LTSC/LTS**, then **R2**, then bare
+   **Enterprise** — a string naming more than one (`"Windows 11 IoT
+   Enterprise LTSC"`) prefers the more specific signal. LTSC/LTS is checked
+   before bare Enterprise because every LTS release's label is a strict
+   superset of Enterprise's (`"... (E) (LTS)"` vs `"... (E)"`) — narrowing
+   only as far as `"(e)"` when the string also says `"LTSC"` would leave the
+   LTS and non-LTS releases tied against each other. **Real incident:**
+   `"Microsoft Windows 10 Enterprise LTSC 10.0.17763 0"` narrowed only to
+   `"(e)"` (matching both `"10 1809 (E) (LTS)"` and `"10 1809 (E)"`), so the
+   conservative "earliest EOL" merge below silently picked the *non-LTS*
+   release (EOL 2021) instead of the LTSC one actually named in the string
+   (EOL 2029). **R2 must be checked before Enterprise, not after** —
+   `_edition_label_substring` returns only the *first* matching pattern, so
+   for `"Windows Server 2008 R2 Enterprise 7600"` (a real edition name —
+   Windows Server 2008 R2 genuinely ships an "Enterprise" SKU), checking
+   Enterprise first would match immediately and R2 would never get a
+   chance to narrow the 2008-vs-2008-R2 compound-slug tie at all. **R2's own
+   pattern tolerates being glued directly to the preceding digit** —
+   `(?<![A-Za-z])r2(?![0-9A-Za-z])`, not `\br2\b` — since `\b` never fires
+   between two word characters (a digit and a letter both count), so
+   `\br2\b` silently never matched `"WindowsServer2012R2 9600"` (the same
+   glued-word shape as the `"WindowsServer2008R2"` digit-truncation
+   incident). Without edition narrowing here, `"2012"` (a clean exact-match
+   on its own bare release name) and `"2012-r2"` (confirmed only via the
+   build-number-suffix rule on `"9600"`) tied with **neither** dominating
+   the other at the next check below — each has its own genuine, distinct
+   evidence the other lacks — so the row only resolved correctly by an
+   *accidental* coincidence in the real catalog (both releases happen to
+   share the exact same `eolFrom`), not genuine confirmation. The new
+   pattern excludes "r2" only when a **letter** (not a digit) immediately
+   precedes it, so `"2012R2"` now correctly reads as an edition marker
+   while still declining to match mid-word (`"R2D2"`, `"SuperR2000"`).
+3. **Shared-hint check** (`_release_required_hints`) — a tie is only safe to
    resolve further when every tied release is actually explained by the
    *same* hint (or hint-set). For each still-tied release, this works out
-   which hint(s) are responsible for its winning score: if any single hint
-   alone reaches that score, the release's requirement is just that hint (or
-   the set of hints that individually qualify); if the match only came
-   through the compound-token "every token present" rule, the requirement is
-   that release's own token set. If the **intersection** across every tied
-   release's requirement is empty — no hint is common to all of them — the
-   tie isn't "several editions of one thing," it's **two or more genuinely
-   different releases each independently matched by a different hint**, and
-   `pick_release` refuses outright (returns nothing) rather than guess one.
-   See the `"Android 14-11"` example below.
-3. **Exact-score requirement** — even when every tied release *does* share a
-   hint, the tie is only safe to merge when that shared best score is a
-   genuine **100** (an exact string match, or the compound-token rule's
-   "every token present" full match) — never the *weaker* 90-point numeric
-   prefix score. A hint that only ever reaches 90 against a release is, by
-   definition, *coarser* than that release's own version — "explained by the
-   same hint" isn't the same as "confirmed" when the hint itself doesn't
-   pin down any one release. See the `"Windows 10.0"` example below.
-4. **Conservative merge — "least date" picking** (`_conservative_release`) —
+   which hint(s) are responsible for its winning score, as the **union** of
+   every hint that reaches the score alone (an ordinary exact/prefix/suffix
+   match) *and* every token the compound-token "every token present" rule
+   confirms — a release can be confirmed by both mechanisms at once, and
+   dropping either one can silently make two genuinely-related releases
+   look unrelated (see **Real incident** below). If the **intersection**
+   across every tied release's requirement is empty — no hint is common to
+   all of them — the tie isn't "several editions of one thing," it's **two
+   or more genuinely different releases each independently matched by a
+   different hint**, and `pick_release` refuses outright (returns nothing)
+   rather than guess one. See the `"Android 14-11"` example below.
+
+   **Exception — an empty intersection is bypassed when every tied
+   candidate shares the exact same `latest.name` (build).** No hint tying
+   two releases together isn't proof they're unrelated when the *catalog
+   itself* already proves otherwise — a shared build is a structural fact,
+   independent of which hints happen to be in the query. **Real incident:**
+   `"Microsoft Hyper-V Windows Server 2019  Version 1809"` (no build number
+   anywhere) ties `"2019"` (required `{"2019"}`) against `"1809-sac"`
+   (required `{"1809"}`) — an empty intersection, indistinguishable by hint
+   alone from `"Android 14-11"`. But both releases share build
+   `10.0.17763` — Windows Server 2019 genuinely *is* internally versioned
+   "1809" (Microsoft's own docs call it "Windows Server 2019, Version
+   1809"); "1809 SAC" is a separate product that merely collides on that
+   number. When every tied candidate's build matches, the refusal is
+   skipped and the dominant-evidence check (tie-breaker 4, still using
+   strong-only evidence) decides the winner — `"2019"`'s ordinary exact
+   match still outweighs `"1809-sac"`'s compound-token-only match, so it
+   still wins outright rather than being guessed. This never applies when
+   the tied releases have genuinely *different* builds (or no `latest.name`
+   at all) — see the `"Windows Server 2008 R2 - 2012"` example below.
+
+   **Real incident:** before taking the union, this function returned
+   **either** the single-hint matches **or** the compound-token tokens,
+   whichever came first — never both. `"WindowsServer2008R2 7601"` ties
+   `"2008-r2-sp1"` (confirmed via compound-token on `"2008"` *and*
+   build-suffix-match on `"7601"`) against `"2008-sp2"` (confirmed via
+   compound-token on `"2008"` only — its own build `6.0.6003` doesn't end
+   in `"7601"`). Since `"2008-r2-sp1"` reached its score via the single-hint
+   build-suffix match on `"7601"` alone, its required set was reported as
+   just `{"7601"}` — silently **dropping** the `"2008"` it was *also*
+   genuinely confirmed by — leaving it with nothing in common with
+   `"2008-sp2"`'s `{"2008"}`, an empty intersection, refusing a release
+   with objectively *more* evidence than its tied sibling.
+4. **Dominant-evidence check** — a tied candidate confirmed by *strictly
+   more* evidence than every other tied candidate isn't "one of several
+   equally-plausible editions" — it's simply the better-supported match, and
+   wins outright instead of being averaged with the others. If exactly one
+   tied release's required-hint set is a **strict superset** of every other
+   tied release's required set, narrow to just that one. This never fires
+   when every tied release needs the identical hint-set (e.g. the Windows
+   24H2 case below — no superset relationship exists there at all). See the
+   `"Windows Server 2019"` example below.
+
+   Compares only the **strong** hints (ordinary exact/prefix/suffix
+   matches) here, not the fuller union from tie-breaker 3 above, which also
+   includes compound-token-only evidence. **Real incident:** naively
+   comparing the full union (to fix the `"2008-r2-sp1"` case just above)
+   reopened the `"Windows Server 2019"` case below — `"1809-sac"` would
+   then *also* gain `"1809"` (its own compound-token match, from its bare
+   `"1809-sac"` slug), making it exactly as "evidenced" as `"2019"` (which
+   gains `"2019"` via a genuine ordinary *exact* match, not compound-token)
+   — neither would dominate, silently falling back to conservative-merging
+   on `1809-sac`'s much shorter EOL window. A compound-token match is a
+   looser, name-only heuristic — built specifically for slugs that aren't
+   clean dotted versions at all — and shouldn't by itself outweigh another
+   tied release's equally-weak compound-token match; comparing strong-only
+   evidence keeps `1809-sac`'s dominance-relevant evidence to just its
+   shared `"17763"`, while `2019`'s stays `{"2019", "17763"}` — a genuine
+   strict superset.
+5. **Exact-score requirement** — even when every tied release *does* share a
+   hint (and no single one dominates), the tie is only safe to merge when
+   that shared best score is a genuine **100** (an exact string match, or
+   the compound-token rule's "every token present" full match) — never the
+   *weaker* 90-point numeric prefix score. A hint that only ever reaches 90
+   against a release is, by definition, *coarser* than that release's own
+   version — "explained by the same hint" isn't the same as "confirmed"
+   when the hint itself doesn't pin down any one release. See the
+   `"Windows 10.0"` example below.
+6. **Conservative merge — "least date" picking** (`_conservative_release`) —
    a tie that survives both checks above is resolved by assuming the
    **worst case**: the tied release with the **earliest** EOL date is used
    as the base result, and its EOL/EOAS dates are the *minimum* across every
@@ -438,6 +714,130 @@ correctly: `extract_version_hints` combines the dotted version with an
 adjacent parenthesized or bare trailing build number into one hint
 (`"10.0.14393"`, `"10.0.22631"`), which scores a genuine 100 against its one
 true release, strictly beating the rest of the family's 90-point tie.
+
+**Example — a tie resolved by strictly-more evidence, not by date
+(regression-tested):**
+Query `"Microsoft Windows Server 2019 Datacenter 10.0.17763 0"` → hints
+`["2019", "10.0.17763", "0"]`. Windows Server's `2019` release (label
+`"Windows Server 2019 (LTSC)"`) and `1809-sac` release (label `"Windows
+Server 1809 SAC"`) share the **exact same** `latest.name`, `"10.0.17763"` —
+Server 2019 LTSC and the 1809 Semi-Annual-Channel release happen to be the
+same underlying build. Both score 100 (exact match via `"10.0.17763"`), so
+they tie. Their required-hint sets, though, are **not equal**: `1809-sac`'s
+name/label never match `"2019"` at all, so its required set is just
+`{"10.0.17763"}`; release `2019`'s own `name` is literally `"2019"`, an
+*additional* exact match, giving it required set `{"2019", "10.0.17763"}` —
+a strict superset. The dominant-evidence check catches this: `2019` is
+confirmed by strictly more of the query's own hints than `1809-sac` is, so
+it wins outright. Before this fix, the shared-hint check only asked "is
+there some common hint" (yes, `"10.0.17763"`) and conservative-merged to
+whichever has the earliest EOL — `1809-sac`'s much shorter 18-month
+Semi-Annual-Channel window — silently discarding the `"2019"` the query
+explicitly named, and reporting `"Windows Server 1809 SAC"` for a string
+that plainly said `"2019"`.
+
+**Example — a dotted hint outranks a coincidental bare exact-match
+(regression-tested):**
+Query `"RHEL 6.6 3 8"` (kernel `3.8`, space- not dot-separated) → hints
+`["6.6", "3", "8"]`. RHEL's entire catalog is bare major-version names —
+`"10"`, `"9"`, `"8"`, `"7"`, `"6"`, … On the full hint set, release `"8"`
+scores a full **100** (exact match against the bare `"8"` hint), while the
+genuinely correct release `"6"` only scores **90** (`"6.6"` is a numeric
+prefix of `"6"`, not an exact match) — release `"8"` would win outright,
+not even a tie. The dotted-hint-preference pass reruns scoring using only
+`["6.6"]`: now `"6"` is the unique 90-scoring winner, which disagrees with
+the full-hint-set result, so `pick_release` prefers it — correctly landing
+on RHEL 6. The identical shape affected CentOS (`"CentOS 7.9 5 4"` → wrongly
+`"5"` instead of `"7"`) and iOS (`"iOS 16.7 10"`, a genuine 16.7.10 point
+release rendered space-separated → wrongly `"10"` instead of `"16"`).
+
+**Example — a compound-slug release name resolves from the year alone
+(regression-tested):**
+Query `"Windows Server 2008 Standard"` → hint `["2008"]`. Windows Server's
+real release name for this generation is the compound slug `"2008-sp2"`,
+not bare `"2008"` — `_release_name_tokens("2008-sp2")` yields `["2008"]`
+(the `"2"` in `"sp2"` is excluded as a Service-Pack marker digit), and that
+single token is present in the hints → scores 100 via the compound-token
+rule, picked outright. Naming the R2 generation too —
+`"Microsoft Windows Server 2008 R2 Standard 7600"` → hints `["2008",
+"7600"]` — ties `"2008-sp2"` against `"2008-r2-sp1"` (both reduce to the
+single token `["2008"]`, both score 100); edition narrowing (tie-breaker 2)
+sees `"R2"` in `os_text` and narrows to `"2008-r2-sp1"` specifically, since
+only its label contains `"r2"`.
+
+**Example — a trailing build number supplies the missing shared hint
+(regression-tested):**
+Query `"Windows Server 2019 Datacenter AD Version 1809 Build 17763"` →
+hints `["2019", "1809", "17763"]`. Releases `"2019"` and `"1809-sac"` share
+build `10.0.17763` and each independently scores 100 via its own name
+(`"2019"` matches hint `"2019"`; `"1809-sac"` matches hint `"1809"`) — a
+tie. `"17763"` alone doesn't prefix-match `"10.0.17763"` (it's the
+*trailing* segment, not a prefix), so before the build-number-suffix rule
+existed, no hint was recognized as common to both tied releases at all —
+the shared-hint check (tie-breaker 3) saw an empty intersection and
+refused, never even reaching the dominant-evidence check. With the new
+rule, `"17763"` scores 100 against both releases' shared `"10.0.17763"`
+build, giving both a required set that includes `"17763"` — a non-empty
+intersection — and `"2019"`'s *strong* evidence (`{"2019", "17763"}` — both
+via an ordinary exact/suffix match, not compound-token) is then a strict
+*superset* of `"1809-sac"`'s strong evidence (`{"17763"}` alone — its own
+`"1809"` match only ever reaches 100 via the weaker compound-token rule, so
+it's excluded from the strong-evidence comparison tie-breaker 4 uses), so
+the dominant-evidence check correctly narrows to `"2019"`.
+
+**Example — a release with extra build-suffix evidence dominates
+(regression-tested):**
+Query `"WindowsServer2008R2 7601"` → hints `["2008", "7601"]`. Releases
+`"2008-sp2"` and `"2008-r2-sp1"` both score 100 via the compound-token rule
+on `"2008"` — a tie. But `"2008-r2-sp1"`'s own build (`6.1.7601`) *also*
+ends in `"7601"`, a build-suffix match `"2008-sp2"`'s build (`6.0.6003`)
+doesn't share at all. `_release_required_hints` (tie-breaker 3) takes the
+**union** of every mechanism that confirms a release, not just whichever
+happens to reach the score first — `"2008-r2-sp1"`'s required set is
+`{"2008", "7601"}` (both compound-token *and* build-suffix), a strict
+superset of `"2008-sp2"`'s `{"2008"}` alone, so the dominant-evidence check
+correctly prefers `"2008-r2-sp1"`. Naming R2 with the year glued directly
+together (`"WindowsServer2012R2 9600"`, no space) resolves the same way —
+plus edition narrowing (tie-breaker 2) recognizes `"R2"` even glued
+directly to the preceding digit, giving a second, independent path to the
+same correct answer.
+
+**Example — a shared build bypasses the empty-intersection refusal
+(regression-tested):**
+Query `"Microsoft Hyper-V Windows Server 2019  Version 1809"` — no build
+number at all → hints `["2019", "1809"]`. Releases `"2019"` (required
+`{"2019"}`) and `"1809-sac"` (required `{"1809"}`) share **no** hint at
+all — by hint alone, indistinguishable from `"Android 14-11"`. But both
+releases' `latest.name` is the identical `"10.0.17763"` — the catalog
+itself proves these are the same underlying release under two names
+(Windows Server 2019 genuinely *is* internally versioned "1809"), so the
+empty-intersection refusal is skipped, and the dominant-evidence check
+(strong-only: `"2019"` has `{"2019"}` via an ordinary exact match,
+`"1809-sac"` has `{}` since its own match is compound-token-only) still
+correctly prefers `"2019"`. Contrast with a query that genuinely ties four
+releases with four **different** builds (e.g. explicit hints `["2008",
+"2012"]` against `2008-sp2`/`2008-r2-sp1`/`2012`/`2012-r2`, all four
+different builds) — the bypass never applies (no shared build to prove
+relatedness), so it correctly refuses: a string that genuinely names two
+different OS generations at once still gets no answer.
+
+**Example — a trailing " - \<year\>" is metadata, not a second version
+(regression-tested):**
+Query `"Microsoft Windows Server 2008 R2 - 2012"` → `extract_version_hints`
+now yields `["2008"]` only — the trailing, space-separated `"- 2012"` is
+dropped as inventory metadata (an install/license/audit-year stamp) rather
+than a second OS-version claim, since `"2008 R2"` already fully names the
+OS on its own. This used to yield `["2008", "2012"]`, tying **four**
+releases with **four different** builds — no shared build to fall back
+on, and no hint in common either (`"2008"` vs `"2012"`), so it refused
+outright, exactly as it should for a string that genuinely names two
+different generations. With only `"2008"` extracted, the tie is between
+`"2008-sp2"` and `"2008-r2-sp1"` alone — resolved by edition narrowing
+(tie-breaker 2), which sees the literal `"R2"` in the string and narrows to
+`"2008-r2-sp1"` specifically. The **whitespace before the hyphen is what
+keeps this exclusion narrow**: `"Android 14-11"` (no spaces around its
+hyphen) is a fundamentally different shape and is completely unaffected —
+see the exclusion bullet above for the full reasoning.
 
 > **Why hints are merged from *both* fields, not just the one queried:**
 > Windows' own `normalized_os` is deliberately coarse/family-level (e.g.
@@ -535,6 +935,35 @@ only avoids this entirely.
 
 Not product-specific — applies to any product via a bare numeric hint, not
 just SUSE.
+
+### Product-level release fallback (`_PRODUCT_RELEASE_FALLBACK_SLUGS`)
+
+A third fallback, this one at the *product* level rather than the release
+level — tried only when the resolved product has **no release at all**
+matching the query (both fallbacks above also came up empty).
+
+**Real incident:** endoflife.date's `ipados` product only tracks major
+version **12 and up** — Apple didn't introduce "iPadOS" as a distinct
+product name until 2019 (what would otherwise have been "iOS 13"); before
+that, iPads genuinely ran plain "iOS", and there's no such thing as
+"iPadOS 10"/"iPadOS 11" in real life. So `"iPad 10.0.2"`/`"iPad 11.4.1"`
+correctly resolve to product `ipados` (via the `_INVENTORY_PHRASE_EXTRAS`
+alias), but `ipados` has nothing before major 12 — the ordinary hint-scoring
+pass and the prior-value fallback both find nothing, and the row fell all
+the way through to the local vendor cascade (eosl.date) for a lookup
+endoflife.date could actually answer directly, just under its **older**
+`ios` product name for that version range.
+
+`_PRODUCT_RELEASE_FALLBACK_SLUGS` maps `ipados` → `ios`: when a product
+resolves but yields zero matching releases, `lookup_os_eol` retries the
+*same* hints against the fallback product's own release list — still
+entirely within the direct endoflife.date path, never touching the vendor
+cascade. If the fallback product has a genuine match, its data is used (and
+`product_slug` in the row's evidence correctly reports `ios`, not `ipados`,
+so it's clear which product actually answered); if it doesn't either, the
+row falls through to the vendor cascade exactly as before. A version
+`ipados` *does* cover (major 12+) never reaches this fallback at all, since
+the ordinary scoring pass already succeeds first.
 
 ### Vendor compatibility gate (`vendors_compatible`)
 
@@ -719,15 +1148,28 @@ When a source resolves a row (`_apply_lifecycle_result` in `app.py`):
 | Bitness numbers (16/32/64/86/128/256) only excluded in bitness *context* | `extract_version_hints`/`_release_name_tokens` (`_looks_like_bitness_marker`) | `"64-bit"` being read as "version 64" — **without** also making a real version number that happens to be 16/32/64/… (e.g. `"Android 16"`) permanently unmatchable |
 | `N.x` ranges are dropped | same | `"3.x or later"` being read as version 3 |
 | Lone SP/R/U/Pack digit dropped | same | `"Service Pack 2"` / `"SP2"` / `"R2"` / `"U1"` contributing a bogus version 2 hint |
-| Compound tag doesn't leak a trailing digit | same (negative lookbehind) | `"24H2"` also yielding a spurious `"2"` hint |
+| Compound tag doesn't leak a trailing digit, narrowed to a 2-char lookbehind so a glued-on version still extracts in full | same (`(?<![0-9][A-Za-z])`) | `"24H2"` also yielding a spurious `"2"` hint, **without** also truncating `"WindowsServer2008R2"`'s glued `"2008"` down to `"008"` |
 | Bare single-part hint never matches a multi-part release | `score_release_against_hint` | `"Windows 10"` (bare) picking one specific Windows 10 build/release at random |
-| Compound-token full match requires *every* token, and only when there's more than one | `eol_service.py::_release_score` | a bare major alone claiming a specific name-based release the same way the rule above prevents it for builds |
+| Compound-token full match requires *every* token, and at least one (marker digits like SP/R/Pack numbers excluded first) | `eol_service.py::_release_score`/`_release_name_tokens`/`_release_required_hints` | a bare major alone claiming a specific name-based release the same way the rule above prevents it for builds — while still letting Windows Server's compound slugs (`"2008-sp2"`, `"2008-r2-sp1"`) resolve from the year alone, since their SP/R2 marker digits are noise, not version tokens |
 | A tie only conservative-merges when every tied release shares a common explaining hint | `pick_release`/`_release_required_hints` | `"Android 14-11"` (hints `"14"`+`"11"`, each independently matching a *different* release) silently resolving to whichever tied release has the earliest date, as if that were confirmed |
+| A dotted hint outranks a coincidental bare exact-match, but only when the dotted-only pass is itself unique | `pick_release` (dotted-hint preference) | products with bare major-version-only catalogs (RHEL/CentOS/iOS) resolving to an unrelated release because a stray bare number elsewhere in the query (a kernel-version fragment, a space-separated point-release digit) exact-matched it while the genuine dotted hint only prefix-matched (90) the correct one — **and**, the uniqueness requirement itself prevents a coarse dotted hint that ties nearly the whole catalog (e.g. Windows Server's shared `"10.0"` build prefix) from overriding an already-unique, correct 100-score match (`"WindowsServer2016 10.0"` → `"2016"`) |
+| A server-generation year alongside any "win"/"windows" mention routes to `windows-server` even without the literal word "Server" | `resolve_product_slug`/`_SLUG_PRIORITY_OVERRIDES` | `"Windows 2008 R2 Standard"`/`"Win 2008 R2"` (a common real-world shorthand that drops "Server" entirely) resolving to the generic client `windows` product, which has no release for that year at all |
 | A tie only conservative-merges when the shared score is a genuine 100, never the weaker 90-point prefix score | `pick_release` (exact-score requirement) | A bare `"10.0"` hint (a genuine numeric prefix of every Windows 10/11 build) tying the entire family and resolving to whichever has the earliest EOL, as if a query naming no build number at all had confirmed a specific one |
+| A tied candidate confirmed by strictly more evidence than every other tied candidate wins outright, not averaged with them | `pick_release` (dominant-evidence check) | Windows Server 2019 (LTSC) and 1809 SAC sharing build `10.0.17763` resolving to 1809 SAC's much shorter EOL window, discarding the "2019" hint the query explicitly gave |
+| A bare 4+-digit hint also matches a release's own trailing build segment, not just a leading prefix | `eol_service.py::_hint_matches_build_suffix`/`_score_release_candidate` | `"Windows Server 2019 ... Version 1809 Build 17763"` refusing outright, since the standalone `"17763"` (no adjacent `"10.0"` to combine with) couldn't confirm either of the two tied, same-build releases, leaving the dominant-evidence check above with no shared hint to even evaluate |
+| A product with no matching release at all retries against a designated fallback product, still inside the direct endoflife.date path | `eol_service.py::_PRODUCT_RELEASE_FALLBACK_SLUGS` | `"iPad 10.0.2"`/`"iPad 11.4.1"` resolving to `ipados` (correctly) but finding nothing there (`ipados` only tracks major 12+) and falling all the way to the eosl.date vendor cascade for an answer endoflife.date's own `ios` product could give directly |
+| A release's required-hint set is the UNION of single-hint and compound-token evidence, never just whichever came first | `eol_service.py::_release_required_hints` | `"WindowsServer2008R2 7601"` reporting `"2008-r2-sp1"`'s evidence as only `{"7601"}` (dropping the ALSO-genuine `"2008"` compound-token match), leaving it with nothing in common with `"2008-sp2"`'s `{"2008"}` and refusing a release with strictly more evidence |
+| Dominant-evidence comparison uses STRONG hints only (ordinary exact/prefix/suffix), not the fuller union above | `eol_service.py::_release_strong_hints` | the union fix above (naively applied to dominance too) reopening the `"Windows Server 2019"` case: `"1809-sac"` gaining its own compound-token `"1809"` match would make it exactly as "evidenced" as `"2019"`, so neither dominates and it silently falls back to `1809-sac`'s much shorter EOL window |
+| "R2" edition marker recognized even glued directly to the preceding digit | `eol_service.py::_EDITION_LABEL_HINTS` (`(?<![A-Za-z])r2(?![0-9A-Za-z])`, not `\br2\b`) | `"WindowsServer2012R2 9600"` — `\b` never fires between two word characters (digit + letter), so the old pattern silently never matched, and the `"2012"` vs `"2012-r2"` tie resolved only by an accidental EOL-date coincidence in the real catalog, not genuine confirmation |
+| An empty shared-hint intersection is bypassed when every tied candidate has the exact same `latest.name` (build) | `pick_release` (shared-build exception) | `"Microsoft Hyper-V Windows Server 2019  Version 1809"` (no build number at all) refusing outright even though the catalog itself proves `"2019"` and `"1809-sac"` are the same underlying release (shared build `10.0.17763`) — genuinely different-build ties are unaffected and still correctly refuse |
+| A trailing, whitespace-separated `"- <year>"` at the end of a string is dropped as metadata once an earlier hint exists, never treated as a second version | `extract_version_hints` | `"Microsoft Windows Server 2008 R2 - 2012"` extracting a spurious second `"2012"` hint and tying four different-build releases with nothing in common, refusing a string that only ever names ONE OS ("2008 R2") — the required whitespace-before-hyphen keeps `"Android 14-11"` (no spaces, two genuine independent hints) completely unaffected |
 | A parenthesized or bare trailing build number is combined with the dotted version right before it into one hint | `extract_version_hints` | `"Windows 10.0 (14393)"`/`(15063)`/`(16299)`/`(17763)`/`(18363)`/`"22631 64-bit"` all resolving to the SAME earliest-EOL release regardless of the actual build named |
 | Ties resolved by edition first, then (only if still sharing a hint) earliest-date | `pick_release`/`_conservative_release` | reporting longer support than an ambiguous edition might actually have |
+| LTSC/LTS, then R2, both narrow before bare Enterprise | `pick_release`/`_EDITION_LABEL_HINTS` | `"Windows 10 Enterprise LTSC 10.0.17763"` narrowing only to `"(e)"` (matching both the LTS and non-LTS releases) and conservative-merging to the non-LTS release's earlier EOL, instead of the LTSC one actually named; and `"Windows Server 2008 R2 Enterprise"` matching Enterprise first (a real edition name, so it never gets a chance to narrow anything for 2008 vs. 2008-R2) instead of R2 |
 | A resolved status with no date still counts as real lifecycle data | `app.py::_row_has_lifecycle_data` | a genuinely resolved `eol_status`/`eoas_status` (e.g. `isEol: false`, no `eolFrom`) being silently dropped because only dates were checked |
 | Full product name must literally appear in the query (≥95, except SUSE's edition-aware 60) | every `_resolve_product_slug` | a short/generic query fragment being treated as "contained in" an unrelated, much longer product name |
+| Only `category == "os"` endoflife.date products are ever considered | `get_product_catalog` | Apple's hardware `ipad` product (category `device`) winning product resolution for every `"iPad <version>"` os_string, since its own slug/label is the bare word `"ipad"` |
+| A stale normalized field naming an alias-covered product's sibling is overridden by the raw os_string | `lookup_os_eol` (same-vendor override, next to Step 0) | `normalized_os="Apple iOS 10"` sitting on a row whose real `os_string="iPad 10.3.4"` silently pulling iOS's own EOL/EOAS instead of iPadOS's — `vendors_compatible` alone doesn't catch this since both are "apple" vendor |
 | Vendor compatibility gate | `vendors_compatible`, checked before product-field selection and again after product resolution | Cisco IOS ↔ Apple iOS, VMware ↔ Microsoft, Cisco Firepower ↔ Google Container-Optimized OS, and similar cross-vendor false matches |
 | Generic family guard (`linux`/`windows`/`unix`) | `eosl_service.py::_query_targets_generic_family` | a vague `"Other ... Linux"` string silently absorbing into the generic Linux kernel product page |
 | `windows` family excluded entirely | `microsoft_lifecycle_service.py::_EXCLUDED_FAMILIES` | a bare-major Windows build matching dozens of unrelated tool releases that happen to share a "10-…" slug |
