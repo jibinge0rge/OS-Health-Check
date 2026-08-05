@@ -150,7 +150,6 @@ class RefreshCompleteEventCarriesBasedOnRevisionTests(unittest.IsolatedAsyncioTe
             patch.object(app, "save_evidence", side_effect=lambda evidence, source: evidence),
             patch.object(app, "_source_exists", return_value=True),
             patch.object(app, "refresh_rows_lifecycle_chunk"),
-            patch.object(app, "ensure_draft_base"),
             patch.object(app, "read_draft_based_on_revision", return_value=7),
         ):
             events = [
@@ -177,7 +176,6 @@ class RefreshCompleteEventCarriesBasedOnRevisionTests(unittest.IsolatedAsyncioTe
             patch.object(app, "save_evidence", side_effect=lambda evidence, source: evidence),
             patch.object(app, "_source_exists", return_value=True),
             patch.object(app, "refresh_rows_lifecycle_chunk"),
-            patch.object(app, "ensure_draft_base"),
             patch.object(app, "read_draft_based_on_revision", side_effect=RuntimeError("db unreachable")),
         ):
             events = [

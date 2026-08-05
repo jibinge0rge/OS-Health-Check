@@ -76,7 +76,6 @@ from lookup_extras import (
     build_evidence_entries,
     compute_lookup_diff,
     is_ambiguous_row,
-    merge_lookup_rows,
     row_matched_by,
 )
 import lookup_db
@@ -84,50 +83,31 @@ import lookup_db
 
 load_dotenv()
 
-# Set once at process start. DATABASE_URL alone is NOT enough to switch the
-# lookup data to Postgres -- every existing deployment already sets it
-# unconditionally for the vendor-lookup caches (vendor_lookups/db.py), so
-# treating its mere presence as "also move the main lookup data" would
-# silently flip a working file-mode deployment into DB mode nobody asked
-# for (this happened during development: a docker-compose environment with
-# DATABASE_URL configured only for vendor caches ended up reading an empty
-# Postgres table for draft-existence checks while still writing rows to the
-# file, corrupting the Data-vs-Draft diff). LOOKUP_DB_ENABLED is a separate,
-# explicit opt-in required in addition to DATABASE_URL.
-_USE_DB = bool(os.environ.get("DATABASE_URL")) and str(os.environ.get("LOOKUP_DB_ENABLED", "")).strip().lower() in (
-    "1", "true", "yes", "on",
-)
-
-# Optional, DB-mode-only: also write each successful publish out to
-# _data/eol_lookup.csv / _data/eol_lookup_evidence.json / _data/.revision, so
-# a single-instance deployment can keep a git-trackable snapshot alongside
-# Postgres as the source of truth. Off by default -- Postgres is never read
-# back from these files while _USE_DB is on, and if more than one app
-# instance shares the same database, each instance's mirrored files only
-# reflect publishes *it* performed, not the other instances' -- they will
-# drift stale relative to the real (Postgres) Data whenever someone else
-# publishes from a different instance.
-_MIRROR_FILES = _USE_DB and str(os.environ.get("LOOKUP_DB_MIRROR_FILES", "")).strip().lower() in (
-    "1", "true", "yes", "on",
-)
+# This deployment only supports Postgres-backed lookup storage -- there is
+# no file-mode fallback. Fail loudly and immediately at import time (rather
+# than silently limping along with an empty/broken store) if either
+# variable is missing, since every real entry point (uvicorn, the
+# docker/import_if_empty.py seed hook, and lookup_db.py's own CLI) imports
+# this module before doing anything else.
+if not (
+    bool(os.environ.get("DATABASE_URL"))
+    and str(os.environ.get("LOOKUP_DB_ENABLED", "")).strip().lower() in ("1", "true", "yes", "on")
+):
+    raise RuntimeError(
+        "DATABASE_URL and LOOKUP_DB_ENABLED=true are both required -- this "
+        "deployment only supports Postgres-backed lookup storage, not "
+        "local files. See docker-compose.yml / k8s/configmap.yaml + "
+        "k8s/secret.example.yaml for how to set them."
+    )
 
 
 BASE_DIR = Path(__file__).resolve().parent
+# Kept solely so lookup_db.py's first-boot seed importer
+# (import_from_files_if_empty) can read the CSV baked into the image to
+# populate a brand-new, empty Postgres database. Not used for any other
+# purpose -- the app itself only ever reads/writes rows via lookup_db.
 DATA_PATH = BASE_DIR / "_data" / "eol_lookup.csv"
-DRAFT_PATH = BASE_DIR / "_draft" / "eol_lookup.csv"
 DATA_EVIDENCE_PATH = BASE_DIR / "_data" / "eol_lookup_evidence.json"
-DRAFT_EVIDENCE_PATH = BASE_DIR / "_draft" / "eol_lookup_evidence.json"
-# Frozen copy of Data taken the moment a draft is created, used as the
-# publish-time 3-way merge base -- lets publish tell "upstream changed this"
-# apart from "I changed this" instead of blindly overwriting Data.
-DRAFT_BASE_PATH = BASE_DIR / "_draft" / "eol_lookup.base.csv"
-DRAFT_BASE_EVIDENCE_PATH = BASE_DIR / "_draft" / "eol_lookup.base_evidence.json"
-DRAFT_BASE_REVISION_PATH = BASE_DIR / "_draft" / "eol_lookup.base.revision"
-# Bumped by 1 on every successful publish; a cheap "has Data changed" signal
-# for the frontend's staleness banner. Not used for merge decisions -- the
-# base/current row comparison handles that with full row content.
-DATA_REVISION_PATH = BASE_DIR / "_data" / ".revision"
-BACKUP_DIR = BASE_DIR / "_backup"
 CONFIG_DIR = BASE_DIR / "_config"
 AZURE_CONFIG_PATH = CONFIG_DIR / "azure.json"
 AWS_CONFIG_PATH = CONFIG_DIR / "aws.json"
@@ -218,14 +198,11 @@ def acquire_vendor_sync_lock_or_409(label: str) -> str | None:
     before any response/stream has begun, so a 409 here is always a clean
     HTTP error response, never a broken half-started SSE stream (see
     vendor_lookup_sync_stream, which must acquire before returning its
-    StreamingResponse rather than inside the generator). A no-op in file
-    mode (there's only ever one instance, nothing to race against).
+    StreamingResponse rather than inside the generator).
 
     Returns the acquired holder token (pass to
-    hold_vendor_sync_lock_heartbeat), or None in file mode.
+    hold_vendor_sync_lock_heartbeat).
     """
-    if not _USE_DB:
-        return None
     holder = lookup_db.db_acquire_sync_lock(label)
     if holder is None:
         status = lookup_db.db_sync_lock_status()
@@ -241,7 +218,7 @@ def acquire_vendor_sync_lock_or_409(label: str) -> str | None:
 async def hold_vendor_sync_lock_heartbeat(holder: str | None):
     """Heartbeats and releases an already-acquired cross-instance sync lock
     for the duration of the actual sync work. A no-op when ``holder`` is
-    None (file mode, or acquire_vendor_sync_lock_or_409 wasn't applicable)."""
+    None (acquire_vendor_sync_lock_or_409 wasn't applicable)."""
     if holder is None:
         yield
         return
@@ -266,9 +243,7 @@ def raise_if_vendor_sync_running() -> None:
     exact vendor tables a sync deletes+reinserts into, per product, so
     running either while a sync is in progress -- even from a different app
     instance sharing this database -- risks reading a torn/incomplete
-    result. A no-op in file mode (single instance, no shared DB to race)."""
-    if not _USE_DB:
-        return
+    result."""
     status = lookup_db.db_sync_lock_status()
     if status:
         raise HTTPException(
@@ -552,7 +527,7 @@ class AppSettings(BaseModel):
     # Empty means use DEFAULT_AI_MATCH_PROMPT at match time.
     ai_match_prompt: str = ""
     # Confidence cutoff (0-100) an AI match must meet to be accepted.
-    ai_confidence_threshold: int = 85
+    ai_confidence_threshold: int = 95
     # Per-provider model override; missing/empty means use that provider's default.
     ai_models: dict[str, str] = Field(default_factory=dict)
 
@@ -574,7 +549,7 @@ class AppSettings(BaseModel):
         try:
             threshold = int(value)
         except (TypeError, ValueError):
-            threshold = 85
+            threshold = 95
         return max(50, min(100, threshold))
 
     @field_validator("ai_models", mode="before")
@@ -623,7 +598,7 @@ class AppSettingsResponse(BaseModel):
     openrouter_available: bool = False
     ai_match_prompt: str = ""
     default_ai_match_prompt: str = DEFAULT_AI_MATCH_PROMPT
-    ai_confidence_threshold: int = 85
+    ai_confidence_threshold: int = 95
     ai_models: dict[str, str] = Field(default_factory=dict)
     ai_model_choices: dict[str, list[str]] = Field(default_factory=dict)
     default_ai_models: dict[str, str] = Field(default_factory=dict)
@@ -647,24 +622,6 @@ def openrouter_api_key_configured() -> bool:
 def selected_ai_provider_available(settings: AppSettings | None = None) -> bool:
     current = settings or load_app_settings()
     return provider_api_key_configured(current.ai_provider)
-
-def lookup_path(source: str) -> Path:
-    normalized = source.strip().lower()
-    if normalized == "data":
-        return DATA_PATH
-    if normalized == "draft":
-        return DRAFT_PATH
-    raise HTTPException(status_code=400, detail="Unsupported lookup source.")
-
-
-def evidence_path(source: str) -> Path:
-    normalized = source.strip().lower()
-    if normalized == "data":
-        return DATA_EVIDENCE_PATH
-    if normalized == "draft":
-        return DRAFT_EVIDENCE_PATH
-    raise HTTPException(status_code=400, detail="Unsupported lookup source.")
-
 
 def empty_evidence_payload() -> dict[str, object]:
     return {"by_os": {}, "updated_at": ""}
@@ -704,13 +661,15 @@ def prune_evidence_to_rows(
     }
 
 
-def _load_evidence_file(source: str = "data") -> dict[str, object]:
-    path = evidence_path(source)
-    if not path.exists():
+def _load_evidence_file() -> dict[str, object]:
+    """Kept solely for lookup_db.py's first-boot seed importer -- reads the
+    evidence JSON baked into the image alongside DATA_PATH. Not used by any
+    request-handling code, which always goes through lookup_db instead."""
+    if not DATA_EVIDENCE_PATH.exists():
         return empty_evidence_payload()
 
     try:
-        with path.open("r", encoding="utf-8") as handle:
+        with DATA_EVIDENCE_PATH.open("r", encoding="utf-8") as handle:
             payload = json.load(handle)
     except (OSError, json.JSONDecodeError):
         return empty_evidence_payload()
@@ -718,65 +677,29 @@ def _load_evidence_file(source: str = "data") -> dict[str, object]:
     return normalize_evidence_payload(payload)
 
 
-def _save_evidence_file(evidence: dict[str, object], source: str = "data") -> dict[str, object]:
-    path = evidence_path(source)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    normalized = normalize_evidence_payload(evidence)
-    if not normalized.get("updated_at"):
-        normalized["updated_at"] = datetime.now().isoformat(timespec="seconds")
-
-    temp_dir = path.parent
-    with NamedTemporaryFile(
-        "w",
-        encoding="utf-8",
-        delete=False,
-        dir=temp_dir,
-        suffix=".json",
-    ) as handle:
-        json.dump(normalized, handle, ensure_ascii=True, indent=2)
-        handle.write("\n")
-        temp_path = Path(handle.name)
-
-    temp_path.replace(path)
-    return normalized
-
-
-def _delete_evidence_file(source: str) -> None:
-    path = evidence_path(source)
-    if path.exists():
-        path.unlink()
-
-
 def load_evidence(source: str = "data") -> dict[str, object]:
-    if _USE_DB:
-        return lookup_db.db_load_evidence(source)
-    return _load_evidence_file(source)
+    return lookup_db.db_load_evidence(source)
 
 
 def save_evidence(evidence: dict[str, object], source: str = "data") -> dict[str, object]:
-    if _USE_DB:
-        return lookup_db.db_save_evidence(evidence, source)
-    return _save_evidence_file(evidence, source)
+    return lookup_db.db_save_evidence(evidence, source)
 
 
 def delete_evidence(source: str) -> None:
-    if _USE_DB:
-        # Every call site passes "draft" -- Data's evidence is always
-        # replaced via db_publish, never bare-deleted. db_delete_draft
-        # covers both rows and evidence for the draft source in one call.
-        if source.strip().lower() != "draft":
-            raise HTTPException(status_code=400, detail="Only the draft evidence can be deleted directly.")
-        lookup_db.db_delete_draft()
-        return
-    _delete_evidence_file(source)
+    # Every call site passes "draft" -- Data's evidence is always replaced
+    # via db_publish, never bare-deleted. db_delete_draft covers both rows
+    # and evidence for the draft source in one call.
+    if source.strip().lower() != "draft":
+        raise HTTPException(status_code=400, detail="Only the draft evidence can be deleted directly.")
+    lookup_db.db_delete_draft()
 
 
 def _data_exists() -> bool:
-    return lookup_db.db_source_exists("data") if _USE_DB else DATA_PATH.exists()
+    return lookup_db.db_source_exists("data")
 
 
 def _draft_exists() -> bool:
-    return lookup_db.db_source_exists("draft") if _USE_DB else DRAFT_PATH.exists()
+    return lookup_db.db_source_exists("draft")
 
 
 def _source_exists(source: str) -> bool:
@@ -796,6 +719,9 @@ def _normalize_status_cell(value: object) -> str:
 
 
 def _read_rows_csv(path: Path) -> list[dict[str, str]]:
+    """Kept solely for lookup_db.py's first-boot seed importer -- reads the
+    CSV baked into the image at DATA_PATH. Not used by any request-handling
+    code, which always goes through lookup_db instead."""
     with path.open("r", newline="", encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
         if reader.fieldnames != CSV_HEADERS:
@@ -814,6 +740,9 @@ def _read_rows_csv(path: Path) -> list[dict[str, str]]:
 
 
 def _write_rows_csv(rows: list[LookupRow], path: Path) -> None:
+    """Writes rows to a CSV file. Used for Deploy's CSV export (a temp file
+    built from current Data, not local storage) -- not for lookup storage
+    itself, which always goes through lookup_db."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_dir = path.parent
     with NamedTemporaryFile(
@@ -834,20 +763,11 @@ def _write_rows_csv(rows: list[LookupRow], path: Path) -> None:
 
 
 def load_rows(source: str = "data") -> list[dict[str, str]]:
-    if _USE_DB:
-        return lookup_db.db_load_rows(source)
-    path = lookup_path(source)
-    if not path.exists():
-        detail = "Draft lookup CSV not found." if source == "draft" else "Lookup CSV not found."
-        raise HTTPException(status_code=404, detail=detail)
-    return _read_rows_csv(path)
+    return lookup_db.db_load_rows(source)
 
 
 def save_rows(rows: list[LookupRow], source: str = "data") -> None:
-    if _USE_DB:
-        lookup_db.db_save_rows([row.model_dump() for row in rows], source)
-        return
-    _write_rows_csv(rows, lookup_path(source))
+    lookup_db.db_save_rows([row.model_dump() for row in rows], source)
 
 
 def sanitize_backup_suffix(value: object) -> str:
@@ -860,115 +780,12 @@ def sanitize_backup_suffix(value: object) -> str:
     return text[:80]
 
 
-def backup_data_file(suffix: str = "") -> Path | None:
-    if not DATA_PATH.exists():
-        return None
-
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    suffix_part = f"_{suffix}" if suffix else ""
-    backup_path = BACKUP_DIR / f"eol_lookup_{timestamp}{suffix_part}.csv"
-    shutil.copy2(DATA_PATH, backup_path)
-    return backup_path
-
-
-def backup_data_evidence(suffix: str = "") -> Path | None:
-    if not DATA_EVIDENCE_PATH.exists():
-        return None
-
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    suffix_part = f"_{suffix}" if suffix else ""
-    backup_path = BACKUP_DIR / f"eol_lookup_evidence_{timestamp}{suffix_part}.json"
-    shutil.copy2(DATA_EVIDENCE_PATH, backup_path)
-    return backup_path
-
-
 def read_data_revision() -> int:
-    if _USE_DB:
-        return lookup_db.db_data_revision()
-    if not DATA_REVISION_PATH.exists():
-        return 0
-    try:
-        return int(DATA_REVISION_PATH.read_text(encoding="utf-8").strip() or "0")
-    except (OSError, ValueError):
-        return 0
-
-
-def bump_data_revision() -> int:
-    DATA_REVISION_PATH.parent.mkdir(parents=True, exist_ok=True)
-    next_revision = read_data_revision() + 1
-    DATA_REVISION_PATH.write_text(str(next_revision), encoding="utf-8")
-    return next_revision
-
-
-def load_base_rows() -> list[dict[str, str]]:
-    if not DRAFT_BASE_PATH.exists():
-        return []
-    try:
-        return _read_rows_csv(DRAFT_BASE_PATH)
-    except HTTPException:
-        # Corrupt/foreign-shaped base file -- degrade to "no upstream
-        # context" (equivalent to today's blind-overwrite behavior) rather
-        # than blocking every publish on a broken merge base.
-        return []
-
-
-def save_base_rows(rows: list[LookupRow], based_on_revision: int) -> None:
-    _write_rows_csv(rows, DRAFT_BASE_PATH)
-    DRAFT_BASE_REVISION_PATH.write_text(str(based_on_revision), encoding="utf-8")
-
-
-def load_base_evidence() -> dict[str, object]:
-    if not DRAFT_BASE_EVIDENCE_PATH.exists():
-        return empty_evidence_payload()
-    try:
-        with DRAFT_BASE_EVIDENCE_PATH.open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, json.JSONDecodeError):
-        return empty_evidence_payload()
-    return normalize_evidence_payload(payload)
-
-
-def save_base_evidence(evidence: dict[str, object]) -> None:
-    DRAFT_BASE_EVIDENCE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    normalized = normalize_evidence_payload(evidence)
-    with DRAFT_BASE_EVIDENCE_PATH.open("w", encoding="utf-8") as handle:
-        json.dump(normalized, handle, ensure_ascii=True, indent=2)
-        handle.write("\n")
+    return lookup_db.db_data_revision()
 
 
 def read_draft_based_on_revision() -> int:
-    if _USE_DB:
-        return lookup_db.db_draft_based_on_revision()
-    if not DRAFT_BASE_REVISION_PATH.exists():
-        return 0
-    try:
-        return int(DRAFT_BASE_REVISION_PATH.read_text(encoding="utf-8").strip() or "0")
-    except (OSError, ValueError):
-        return 0
-
-
-def delete_draft_base() -> None:
-    for path in (DRAFT_BASE_PATH, DRAFT_BASE_EVIDENCE_PATH, DRAFT_BASE_REVISION_PATH):
-        if path.exists():
-            path.unlink()
-
-
-def ensure_draft_base() -> None:
-    """Backfills a base snapshot for a draft that predates this feature (no
-    recorded base at all). Best-effort approximation using *current* Data,
-    since there's no way to recover what Data actually looked like when
-    that draft was first created -- new drafts going forward always get an
-    exact base sent explicitly by the client instead of hitting this path."""
-    if not DRAFT_PATH.exists() or DRAFT_BASE_PATH.exists():
-        return
-    if DATA_PATH.exists():
-        save_base_rows([LookupRow(**row) for row in load_rows("data")], read_data_revision())
-        save_base_evidence(load_evidence("data"))
-    else:
-        save_base_rows([], read_data_revision())
-        save_base_evidence(empty_evidence_payload())
+    return lookup_db.db_draft_based_on_revision()
 
 
 def _new_azure_profile_id() -> str:
@@ -1252,7 +1069,7 @@ def load_app_settings() -> AppSettings:
         ai_enabled=bool(payload.get("ai_enabled", False)),
         ai_provider=normalize_ai_provider(payload.get("ai_provider", "openai")),
         ai_match_prompt=cleaned_prompt,
-        ai_confidence_threshold=payload.get("ai_confidence_threshold", 85),
+        ai_confidence_threshold=payload.get("ai_confidence_threshold", 95),
         ai_models=payload.get("ai_models", {}),
     )
 
@@ -1390,8 +1207,8 @@ def _write_rows_excel(rows: list[LookupRow], path: Path) -> None:
 
 
 def _write_rows_parquet(rows: list[LookupRow], path: Path) -> None:
-    """Lazy-imported so file-mode/CSV-only deployments never need pyarrow
-    installed -- only Deploy's optional Parquet upload does."""
+    """Lazy-imported so deployments that never touch Parquet don't need
+    pyarrow installed -- only Deploy's optional Parquet upload does."""
     try:
         import pyarrow as pa
         import pyarrow.parquet as pq
@@ -1408,16 +1225,10 @@ def _write_rows_parquet(rows: list[LookupRow], path: Path) -> None:
 @contextmanager
 def _resolve_upload_file(fmt: str) -> Iterator[Path | None]:
     """Path to the file Deploy should actually upload, written in the
-    requested format ("csv" or "parquet"). File mode + csv: the real
-    DATA_PATH, untouched (no copy needed). Every other combination (DB mode,
-    or Parquet in file mode) has no pre-existing file in that exact format,
-    so current Data is exported into a throwaway temp file, cleaned up
-    afterward either way. Yields None if there's nothing to upload."""
+    requested format ("csv" or "parquet"). Current Data is exported into a
+    throwaway temp file, cleaned up afterward. Yields None if there's
+    nothing to upload."""
     suffix = UPLOAD_FORMATS.get(fmt, ".csv")
-    if not _USE_DB and fmt == "csv":
-        yield DATA_PATH if DATA_PATH.exists() else None
-        return
-
     if not _data_exists():
         yield None
         return
@@ -1851,17 +1662,12 @@ async def lookup_refresh_events(
         # save_rows above is what actually creates the draft the very first
         # time this runs with none existing yet (e.g. Refresh EOL/EOAS
         # triggered with no draft open, rather than via "Edit data").
-        # DB mode's db_save_rows already stamps draft_based_on_revision as a
-        # side effect of that save; file mode has no equivalent side effect
-        # (save_rows there is a plain CSV write), so ensure_draft_base's
-        # backfill -- otherwise only ever run at publish time -- is called
-        # here too, using Data as it stands right now, before anything else
-        # has a chance to change it. Either way, the client was never told
-        # what the resulting revision is: without this, state.
-        # draftBasedOnRevision stays at its stale default and staleness.js
-        # falsely claims Data was published again the moment anyone
-        # (including nobody) checks, since it never matches the real
-        # current revision.
+        # db_save_rows already stamps draft_based_on_revision as a side
+        # effect of that save, but the client was never told what the
+        # resulting revision is: without this, state.draftBasedOnRevision
+        # stays at its stale default and staleness.js falsely claims Data
+        # was published again the moment anyone (including nobody) checks,
+        # since it never matches the real current revision.
         #
         # Best-effort: the refresh itself already succeeded by this point
         # (rows/evidence are saved), so a hiccup determining the revision
@@ -1869,8 +1675,6 @@ async def lookup_refresh_events(
         # the client just keeps whatever revision it already had, same as
         # if this field were never added.
         try:
-            if not _USE_DB:
-                ensure_draft_base()
             complete_event["based_on_revision"] = read_draft_based_on_revision()
         except Exception:
             pass
@@ -1987,11 +1791,7 @@ async def index(request: Request) -> HTMLResponse:
 
 
 def _published_at() -> str:
-    if _USE_DB:
-        return lookup_db.db_published_at()
-    if not DATA_PATH.exists():
-        return ""
-    return datetime.fromtimestamp(DATA_PATH.stat().st_mtime).isoformat(timespec="seconds")
+    return lookup_db.db_published_at()
 
 
 @app.get("/api/lookup")
@@ -2009,12 +1809,11 @@ async def get_lookup(source: str = "data") -> dict[str, object]:
         "published_at": _published_at(),
         "draft_exists": _draft_exists(),
         "data_revision": read_data_revision(),
-        "storage_mode": "postgres" if _USE_DB else "file",
-    }
-    if _USE_DB:
+        "storage_mode": "postgres",
         # host:port/dbname only -- never the password -- so the UI can show
         # which Postgres this instance is actually talking to.
-        result["storage_target"] = lookup_db.describe_target()
+        "storage_target": lookup_db.describe_target(),
+    }
     if source.strip().lower() == "draft" and _draft_exists():
         result["based_on_revision"] = read_draft_based_on_revision()
     return result
@@ -2042,22 +1841,6 @@ async def get_lookup_diff(source: str = "draft") -> dict[str, object]:
 
 @app.post("/api/lookup")
 async def update_lookup(payload: LookupPayload, source: str = "draft") -> dict[str, object]:
-    # Capture the merge base whenever the client says this save represents a
-    # fresh fork from Data -- either a brand-new draft (first save, no draft
-    # file yet) or an explicit reset (Revert all changes re-syncing draft to
-    # current Data). base_rows/base_evidence are exactly what the client's
-    # own GET /api/lookup?source=data returned moments earlier, so there's
-    # no server-side re-derivation and no race against Data having moved
-    # between when the browser fetched it and when this request arrives.
-    # File-mode only -- DB mode's db_save_rows stamps draft_based_on_revision
-    # itself (just a revision number, not a full row snapshot; no per-row
-    # merge base needed since DB mode's publish only guards on revision).
-    if not _USE_DB and source.strip().lower() == "draft" and payload.base_rows is not None and (
-        payload.reset_base or not DRAFT_PATH.exists()
-    ):
-        save_base_rows(payload.base_rows, read_data_revision())
-        save_base_evidence(payload.base_evidence or empty_evidence_payload())
-
     save_rows(payload.rows, source)
     evidence = save_evidence(prune_evidence_to_rows(payload.evidence, payload.rows), source)
     return {
@@ -2068,169 +1851,46 @@ async def update_lookup(payload: LookupPayload, source: str = "draft") -> dict[s
     }
 
 
-def _apply_conflict_resolution(conflict: dict, resolution: str) -> tuple[list[dict], dict[str, dict]]:
-    """Applies a 'mine'/'theirs' choice to one conflict. Returns
-    (rows_to_write, evidence_entries_to_write)."""
-    side = conflict.get("mine") if resolution == "mine" else conflict.get("theirs")
-    if not side:
-        return [], {}
-    if conflict.get("kind") == "ambiguous_duplicate":
-        rows = side.get("rows") or []
-        evidence = side.get("evidence") or {}
-        entries = {row.get("os_string", ""): evidence for row in rows if evidence}
-        return rows, entries
-    row = side.get("row")
-    if row is None:
-        return [], {}
-    evidence = side.get("evidence") or {}
-    entries = {row.get("os_string", ""): evidence} if evidence else {}
-    return [row], entries
-
-
-def resolve_publish_rows(payload: LookupPayload) -> dict[str, object]:
-    """Runs the file-mode 3-way merge for a publish attempt.
-
-    Returns {"ok": True, "rows": [...], "evidence": {...}} ready to write,
-    or {"ok": False, "conflicts": [...]} listing what's still unresolved --
-    callers must write nothing in that case.
-    """
-    ensure_draft_base()
-    base_rows = load_base_rows()
-    base_evidence = load_base_evidence()
-    current_rows = load_rows("data") if DATA_PATH.exists() else []
-    current_evidence = load_evidence("data")
-    draft_rows = [row.model_dump() for row in payload.rows]
-    draft_evidence = normalize_evidence_payload(payload.evidence)
-
-    merge_result = merge_lookup_rows(
-        base_rows, current_rows, draft_rows,
-        base_evidence, current_evidence, draft_evidence,
-    )
-
-    merged_rows = list(merge_result["merged_rows"])
-    merged_by_os = dict(merge_result["merged_evidence"]["by_os"])
-    unresolved: list[dict] = []
-    for conflict in merge_result["conflicts"]:
-        resolution = payload.conflict_resolutions.get(conflict["os_string"])
-        if resolution not in ("mine", "theirs"):
-            unresolved.append(conflict)
-            continue
-        rows_to_add, entries = _apply_conflict_resolution(conflict, resolution)
-        merged_rows.extend(rows_to_add)
-        merged_by_os.update(entries)
-
-    if unresolved:
-        return {"ok": False, "conflicts": unresolved}
-
-    return {"ok": True, "rows": merged_rows, "evidence": {"by_os": merged_by_os, "updated_at": ""}}
-
-
 def check_publish_conflicts(payload: LookupPayload) -> dict[str, object]:
-    """No-write preview of a publish. File mode runs the real 3-way merge
-    and returns per-row conflicts; DB mode has no per-row merge to run (a
-    shared DB is already one source of truth -- see the plan's "lightweight
-    guard only" design for production) -- it just reports whether Data has
-    moved since the draft's expected revision, via `stale`."""
-    if _USE_DB:
-        expected = lookup_db.db_draft_based_on_revision()
-        current = lookup_db.db_data_revision()
-        return {"conflicts": [], "stale": current != expected}
-    result = resolve_publish_rows(payload)
-    return {"conflicts": [] if result["ok"] else result["conflicts"], "stale": False}
-
-
-def _mirror_publish_to_files(
-    rows: list[LookupRow],
-    evidence: dict[str, object],
-    revision: int,
-    suffix: str,
-) -> tuple[Path | None, Path | None]:
-    """DB-mode-only, opt-in (``LOOKUP_DB_MIRROR_FILES``): write the just-published
-    Data out to _data/ too, so the files stay git-trackable alongside Postgres
-    as the actual source of truth. Backs up the previous file contents first,
-    same as the file-mode publish path does."""
-    backup_path = backup_data_file(suffix)
-    evidence_backup_path = backup_data_evidence(suffix)
-    _write_rows_csv(rows, DATA_PATH)
-    _save_evidence_file(evidence, "data")
-    DATA_REVISION_PATH.parent.mkdir(parents=True, exist_ok=True)
-    DATA_REVISION_PATH.write_text(str(revision), encoding="utf-8")
-    return backup_path, evidence_backup_path
+    """No-write preview of a publish -- there's no per-row merge to run (a
+    shared Postgres database is already one source of truth), just whether
+    Data has moved since the draft's expected revision, via `stale`."""
+    expected = lookup_db.db_draft_based_on_revision()
+    current = lookup_db.db_data_revision()
+    return {"conflicts": [], "stale": current != expected}
 
 
 def perform_publish(payload: LookupPayload) -> dict[str, object]:
-    """Executes a publish. Raises HTTPException(409) if it can't proceed --
-    unresolved file-mode conflicts, or a stale DB-mode revision."""
+    """Executes a publish. Raises HTTPException(409) if Data moved since
+    this draft's expected revision."""
     suffix = sanitize_backup_suffix(payload.backup_suffix)
-
-    if _USE_DB:
-        expected_revision = lookup_db.db_draft_based_on_revision()
-        try:
-            db_result = lookup_db.db_publish(
-                [row.model_dump() for row in payload.rows],
-                normalize_evidence_payload(payload.evidence),
-                expected_revision,
-                backup_suffix=suffix,
-            )
-        except lookup_db.PublishConflictError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-        backup_path = evidence_backup_path = None
-        if _MIRROR_FILES:
-            backup_path, evidence_backup_path = _mirror_publish_to_files(
-                payload.rows, db_result["evidence"], db_result["data_revision"], suffix
-            )
-        return {
-            "validated": True,
-            "row_count": db_result["row_count"],
-            "source": "data",
-            "draft_deleted": True,
-            "backup_suffix": suffix,
-            # DB-mode backups are rows in the `backups` table, not files --
-            # unless file mirroring is on, in which case these are real paths.
-            "backup_path": str(backup_path) if backup_path else "",
-            "evidence_backup_path": str(evidence_backup_path) if evidence_backup_path else "",
-            "evidence": db_result["evidence"],
-            "data_revision": db_result["data_revision"],
-        }
-
-    result = resolve_publish_rows(payload)
-    if not result["ok"]:
-        raise HTTPException(
-            status_code=409,
-            detail=f"{len(result['conflicts'])} row(s) changed both here and in Data since you last checked. "
-            "Re-open Validate & Publish to resolve them.",
+    expected_revision = lookup_db.db_draft_based_on_revision()
+    try:
+        db_result = lookup_db.db_publish(
+            [row.model_dump() for row in payload.rows],
+            normalize_evidence_payload(payload.evidence),
+            expected_revision,
+            backup_suffix=suffix,
         )
-    resolved_rows = [LookupRow(**row) for row in result["rows"]]
-    backup_path = backup_data_file(suffix)
-    evidence_backup_path = backup_data_evidence(suffix)
-    save_rows(resolved_rows, "data")
-    evidence = save_evidence(prune_evidence_to_rows(result["evidence"], resolved_rows), "data")
-    # Promote replaces Draft: remove working copy after writing Data.
-    if DRAFT_PATH.exists():
-        DRAFT_PATH.unlink()
-    delete_evidence("draft")
-    delete_draft_base()
-    new_revision = bump_data_revision()
+    except lookup_db.PublishConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     return {
         "validated": True,
-        "row_count": len(resolved_rows),
+        "row_count": db_result["row_count"],
         "source": "data",
         "draft_deleted": True,
         "backup_suffix": suffix,
-        "backup_path": str(backup_path) if backup_path else "",
-        "evidence_backup_path": str(evidence_backup_path) if evidence_backup_path else "",
-        "evidence": evidence,
-        "data_revision": new_revision,
+        "evidence": db_result["evidence"],
+        "data_revision": db_result["data_revision"],
     }
 
 
 @app.post("/api/lookup/validate/check")
 async def validate_lookup_check(payload: LookupPayload) -> dict[str, object]:
-    """No-write preview of a publish: runs the same checks validate_lookup*
-    will run and returns whatever it finds, so the UI can resolve conflicts
-    (file mode) or warn about staleness (DB mode) up front instead of
-    discovering it mid-publish."""
+    """No-write preview of a publish: runs the same check validate_lookup*
+    will run and returns whatever it finds, so the UI can warn about
+    staleness up front instead of discovering it mid-publish."""
     return check_publish_conflicts(payload)
 
 
@@ -2346,59 +2006,15 @@ async def refresh_lookup_cancel(job_id: str) -> dict[str, object]:
 async def validate_lookup_stream(payload: LookupValidateStreamRequest) -> StreamingResponse:
     async def events() -> AsyncIterator[str]:
         yield sse_event({"type": "started"})
-
-        if _USE_DB:
-            # One atomic transaction -- no meaningful sub-steps to report
-            # progress on individually the way file mode's backup/write/
-            # delete-draft sequence has.
-            yield sse_event({"type": "progress", "stage": "Publishing to database", "processed": 0, "total": 1})
-            try:
-                db_publish_result = await asyncio.to_thread(perform_publish, payload)
-            except HTTPException as exc:
-                yield sse_event({"type": "error", "message": str(exc.detail)})
-                return
-            yield sse_event({"type": "complete", **db_publish_result})
+        # One atomic transaction -- no meaningful sub-steps to report
+        # progress on individually.
+        yield sse_event({"type": "progress", "stage": "Publishing to database", "processed": 0, "total": 1})
+        try:
+            db_publish_result = await asyncio.to_thread(perform_publish, payload)
+        except HTTPException as exc:
+            yield sse_event({"type": "error", "message": str(exc.detail)})
             return
-
-        yield sse_event({"type": "progress", "stage": "Checking for conflicts", "processed": 0, "total": 4})
-        result = await asyncio.to_thread(resolve_publish_rows, payload)
-        if not result["ok"]:
-            yield sse_event({"type": "conflict", "conflicts": result["conflicts"]})
-            return
-        resolved_rows = [LookupRow(**row) for row in result["rows"]]
-
-        yield sse_event({"type": "progress", "stage": "Backing up data/eol_lookup.csv", "processed": 1, "total": 4})
-        suffix = sanitize_backup_suffix(payload.backup_suffix)
-        backup_path = await asyncio.to_thread(backup_data_file, suffix)
-        evidence_backup_path = await asyncio.to_thread(backup_data_evidence, suffix)
-
-        yield sse_event({"type": "progress", "stage": "Writing merged rows to Data", "processed": 2, "total": 4})
-        await asyncio.to_thread(save_rows, resolved_rows, "data")
-        evidence = await asyncio.to_thread(
-            save_evidence, prune_evidence_to_rows(result["evidence"], resolved_rows), "data"
-        )
-
-        yield sse_event({"type": "progress", "stage": "Deleting draft", "processed": 3, "total": 4})
-        if DRAFT_PATH.exists():
-            DRAFT_PATH.unlink()
-        delete_evidence("draft")
-        delete_draft_base()
-        new_revision = await asyncio.to_thread(bump_data_revision)
-
-        yield sse_event(
-            {
-                "type": "complete",
-                "validated": True,
-                "row_count": len(resolved_rows),
-                "source": "data",
-                "draft_deleted": True,
-                "backup_suffix": suffix,
-                "backup_path": str(backup_path) if backup_path else "",
-                "evidence_backup_path": str(evidence_backup_path) if evidence_backup_path else "",
-                "evidence": evidence,
-                "data_revision": new_revision,
-            }
-        )
+        yield sse_event({"type": "complete", **db_publish_result})
 
     return StreamingResponse(
         events(),
@@ -2413,24 +2029,15 @@ async def download_lookup(source: str = "data") -> Response:
         detail = "Draft lookup CSV not found." if source == "draft" else "Lookup CSV not found."
         raise HTTPException(status_code=404, detail=detail)
 
-    if _USE_DB:
-        # No local file is the source of truth in DB mode -- build the CSV
-        # in memory from the DB rows instead of FileResponse-ing a path.
-        buffer = io.StringIO()
-        writer = csv.DictWriter(buffer, fieldnames=CSV_HEADERS)
-        writer.writeheader()
-        for row in load_rows(source):
-            writer.writerow(row)
-        return Response(
-            content=buffer.getvalue(),
-            media_type="text/csv",
-            headers={"Content-Disposition": 'attachment; filename="eol_lookup.csv"'},
-        )
-
-    return FileResponse(
-        path=lookup_path(source),
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=CSV_HEADERS)
+    writer.writeheader()
+    for row in load_rows(source):
+        writer.writerow(row)
+    return Response(
+        content=buffer.getvalue(),
         media_type="text/csv",
-        filename="eol_lookup.csv",
+        headers={"Content-Disposition": 'attachment; filename="eol_lookup.csv"'},
     )
 
 
@@ -2481,12 +2088,7 @@ async def delete_draft_lookup() -> dict[str, object]:
     if not _draft_exists():
         raise HTTPException(status_code=404, detail="Draft lookup CSV not found.")
 
-    if _USE_DB:
-        delete_evidence("draft")  # -> lookup_db.db_delete_draft(): clears rows + evidence + base revision
-    else:
-        DRAFT_PATH.unlink()
-        delete_evidence("draft")
-        delete_draft_base()
+    delete_evidence("draft")  # -> lookup_db.db_delete_draft(): clears rows + evidence + base revision
     return {"deleted": True, "source": "draft"}
 
 

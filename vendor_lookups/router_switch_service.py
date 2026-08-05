@@ -98,8 +98,13 @@ def _clean(value: object) -> str:
 
 
 def _default_prefs_path() -> Path:
-    """Shared on-disk selection (repo file under `_data/`; not browser storage)."""
-    return Path(__file__).resolve().parent.parent / "_data" / "router_switch_sync.json"
+    """Shared on-disk selection (repo file under `_config/`; not browser storage).
+
+    _config/, not _data/ -- see vendor_settings.py's default_prefs_path for
+    why (avoids shadowing the baked-in _data/ seed CSV with an otherwise-
+    empty persistent volume in a Kubernetes deployment).
+    """
+    return Path(__file__).resolve().parent.parent / "_config" / "router_switch_sync.json"
 
 
 def load_selected_manufacturers(

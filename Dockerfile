@@ -23,7 +23,9 @@ RUN sed -i 's/\r$//' /entrypoint.sh \
 
 COPY . .
 
-RUN mkdir -p _data _draft _backup _config
+# _data/ ships baked-in (the seed CSV -- see docker/import_if_empty.py);
+# _config/ starts empty and is where persisted Settings get written.
+RUN mkdir -p _data _config
 
 EXPOSE 8000
 

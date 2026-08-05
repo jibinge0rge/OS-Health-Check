@@ -1,5 +1,6 @@
-"""PostgreSQL-backed storage for the published lookup + draft, used in
-production when DATABASE_URL is set (see app.py's _USE_DB switch).
+"""PostgreSQL-backed storage for the published lookup + draft -- the only
+storage backend app.py supports (see its startup check for DATABASE_URL /
+LOOKUP_DB_ENABLED).
 
 Shares vendor_lookups/db.py's connection pool (one pool per process,
 regardless of how many schemas are in use) but keeps its own schema/DDL --
@@ -8,9 +9,8 @@ that module's ensure_schema() is hardwired to the vendor-cache tables
 rows/evidence/meta/backups tables.
 
 Row identity mirrors the CSV: keyed by (source, row_order), not os_string,
-since real data has duplicate os_strings (the same reason
-lookup_extras.merge_lookup_rows never dict-keys by os_string either) -- this
-preserves the file format's ordered-list semantics exactly.
+since real data has duplicate os_strings -- this preserves the file
+format's ordered-list semantics exactly.
 
 Every public function takes an optional `schema` override (default the real
 "lookup" schema) so tests can point at a disposable per-test schema, the
@@ -196,8 +196,7 @@ def _insert_rows(
 
 
 def db_source_exists(source: str, schema: str = SCHEMA) -> bool:
-    """Cheap existence check (mirrors DATA_PATH.exists()/DRAFT_PATH.exists()
-    in file mode) -- a source "exists" once it has at least one row."""
+    """Cheap existence check -- a source "exists" once it has at least one row."""
     with _connect(schema) as connection:
         row = connection.execute("SELECT 1 FROM rows WHERE source = %s LIMIT 1", (source,)).fetchone()
         return row is not None
@@ -222,9 +221,8 @@ def db_save_rows(
 ) -> None:
     """Delete+bulk-insert for this source in one transaction. Stamps
     draft_based_on_revision the first time draft rows are written for a
-    fresh draft (the DB-mode equivalent of file mode's base-snapshot
-    capture -- just a revision number here, since DB mode's publish only
-    needs a "has anything changed" guard, not a full row-level merge)."""
+    fresh draft -- just a revision number, since publish only needs a
+    "has anything changed" guard, not a full row-level merge."""
     with _connect(schema) as connection:
         if source == "draft":
             existing = connection.execute("SELECT 1 FROM rows WHERE source = 'draft' LIMIT 1").fetchone()
@@ -440,15 +438,14 @@ def describe_target() -> str:
 
 
 def _read_files_data_source() -> tuple[list[dict[str, str]], dict[str, object]]:
-    """Rows + evidence for the "data" source, read directly off disk --
-    bypasses app._USE_DB entirely (unlike app.load_rows/load_evidence,
-    which route to Postgres once DB mode is on), so this is safe to call
-    even when LOOKUP_DB_ENABLED is already set, e.g. at container startup
-    before any import has happened yet."""
+    """Rows + evidence for the "data" source, read directly off the CSV/JSON
+    baked into the image at app.DATA_PATH/app.DATA_EVIDENCE_PATH -- this is
+    the one-time seed for a brand-new, empty Postgres database, not a
+    general-purpose file-mode reader (app.py has no such thing anymore)."""
     import app  # local import -- avoids a circular import when app.py imports this module
 
     rows = app._read_rows_csv(app.DATA_PATH) if app.DATA_PATH.exists() else []
-    evidence = app._load_evidence_file("data")
+    evidence = app._load_evidence_file()
     return rows, evidence
 
 
