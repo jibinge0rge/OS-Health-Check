@@ -236,6 +236,25 @@ Resolution order:
    query itself is hyphenated (`"foo bar"` → `"foo-bar"`) and tried directly
    as a slug.
 
+Whichever of the three found a candidate slug is then checked against
+`_generic_family_match_is_trustworthy` before being returned — a match to a
+slug whose own name is a single, universally generic word is only trusted
+if the query says a specific extra word too:
+
+- **`linux` requires the word `"kernel"`** (in any glued/hyphenated/spaced
+  form) to actually appear. **Real incident:** endoflife.date's `linux`
+  product tracks the **Linux kernel project's own** release/EOL schedule —
+  not any particular distribution — but its slug and label are both just
+  the bare, generic word `"linux"`/`"Linux Kernel"`, so the phrase index
+  matched it for `"Linux 6.4.7.3762 7"` purely because that one common word
+  was present (a distro whose real name never got recognized, or a vague
+  placeholder, would read exactly the same way) — resolving confidently to
+  a specific kernel release and adopting *that* release's own EOL date,
+  even though nothing in the string ever said "kernel". A real distro
+  string that happens to also mention the word "linux" (`"Ubuntu Linux
+  22.04"`, `"Red Hat Linux 7.4"`) is unaffected — the guard only applies to
+  the `linux` slug's *own* match, never to a different product's.
+
 Before any of this, the query text is cleaned up
 (`_normalize_for_slug_lookup`): underscores/slashes/hyphens become spaces,
 common glued product names are un-glued (`ubuntulinux` → `ubuntu linux`,
@@ -872,10 +891,34 @@ tries one more fallback before giving up: for each release, build its
 already had on record (`normalized_os_detailed_name`/`normalized_os`), using
 a plain textual similarity ratio (`difflib.SequenceMatcher`). If **exactly
 one** release's prospective name is a near-exact (**≥ 95%**) match to the
-row's existing value, that release is adopted — endoflife.date's fresh name
-and dates overwrite the row's stale ones, the same as any other resolved
-match (`_apply_lifecycle_result` in `app.py` already overwrites unconditionally
-whenever a lookup produces a name/date, regardless of what was there before).
+row's existing value **and** that release's own version number is a genuine
+numeric prefix/extension of the prior value's version (see below), that
+release is adopted — endoflife.date's fresh name and dates overwrite the
+row's stale ones, the same as any other resolved match (`_apply_lifecycle_result`
+in `app.py` already overwrites unconditionally whenever a lookup produces a
+name/date, regardless of what was there before).
+
+**The version-extension check (`_is_plausible_version_extension`) — real
+incident:** text similarity alone can't tell "the catalog got more specific"
+(`"15"` → `"15.2"`, the genuine case this fallback exists for) apart from
+"two completely unrelated version numbers that merely look similar as flat
+strings." A row's prior value was `"Apple iOS 27"` (an invalid/future
+version someone typed) — and endoflife.date's real release `"7"` (iOS 7,
+from 2013) scored a **95.65%** match against it via `difflib.SequenceMatcher`
+alone, purely because `"Apple iOS 7"` is one character *shorter* than
+`"Apple iOS 27"` (the ratio formula rewards the shorter total-length
+pairing) — while every other, equally plausible release (`"17"`, `"20"`
+through `"26"`) scored under 92%, comfortably below the bar. `"27"` and
+`"7"` have no genuine prefix/extension relationship at all; the old,
+text-only check confidently (and wrongly) rewrote the row to iOS 7's
+decade-old EOL/EOAS dates. The fix extracts the prior value's own version
+hint and the release's bare/dotted version number, and requires one to be a
+genuine numeric prefix of the other (in *either* direction — `"15"` → `"15.2"`
+or `"15.2"` → `"15"`) before accepting — `"27"` is not a prefix of `"7"`,
+nor `"7"` of `"27"`, so this now correctly refuses. Only applies when the
+release's own name is cleanly numeric — a compound slug (Windows Server's
+`"2008-sp2"`) can't be parsed this way, so it's left to the text-similarity
+check alone, unaffected by this fix.
 
 This only ever fires when the row already has *some* prior normalized value
 to anchor to (a placeholder/junk value, or a blank one, doesn't count) — a
@@ -1169,6 +1212,7 @@ When a source resolves a row (`_apply_lifecycle_result` in `app.py`):
 | A resolved status with no date still counts as real lifecycle data | `app.py::_row_has_lifecycle_data` | a genuinely resolved `eol_status`/`eoas_status` (e.g. `isEol: false`, no `eolFrom`) being silently dropped because only dates were checked |
 | Full product name must literally appear in the query (≥95, except SUSE's edition-aware 60) | every `_resolve_product_slug` | a short/generic query fragment being treated as "contained in" an unrelated, much longer product name |
 | Only `category == "os"` endoflife.date products are ever considered | `get_product_catalog` | Apple's hardware `ipad` product (category `device`) winning product resolution for every `"iPad <version>"` os_string, since its own slug/label is the bare word `"ipad"` |
+| A product whose own slug/label is a single generic word requires an extra trust word before its match is accepted | `resolve_product_slug`/`_generic_family_match_is_trustworthy` | `"Linux 6.4.7.3762 7"` (no mention of "kernel" anywhere) resolving to endoflife.date's `linux` product (label "Linux Kernel") purely because the common word "linux" was present, and adopting that specific kernel release's own EOL date |
 | A stale normalized field naming an alias-covered product's sibling is overridden by the raw os_string | `lookup_os_eol` (same-vendor override, next to Step 0) | `normalized_os="Apple iOS 10"` sitting on a row whose real `os_string="iPad 10.3.4"` silently pulling iOS's own EOL/EOAS instead of iPadOS's — `vendors_compatible` alone doesn't catch this since both are "apple" vendor |
 | Vendor compatibility gate | `vendors_compatible`, checked before product-field selection and again after product resolution | Cisco IOS ↔ Apple iOS, VMware ↔ Microsoft, Cisco Firepower ↔ Google Container-Optimized OS, and similar cross-vendor false matches |
 | Generic family guard (`linux`/`windows`/`unix`) | `eosl_service.py::_query_targets_generic_family` | a vague `"Other ... Linux"` string silently absorbing into the generic Linux kernel product page |
@@ -1177,6 +1221,7 @@ When a source resolves a row (`_apply_lifecycle_result` in `app.py`):
 | Ambiguous OS rows skipped entirely | `is_ambiguous_row` | writing a real date onto a row whose product literally can't be determined |
 | No hints at all → no match | every `pick_release`/`_pick_release` | ever guessing the first/latest release when there's no version evidence whatsoever |
 | Prior-value fallback only accepts an unambiguous (single-candidate) ≥95% textual rename | `eol_service.py::_pick_release_by_prior_value` | a coarser old catalog entry (e.g. SUSE `"15"`) becoming permanently unmatchable once endoflife.date splits it into specific releases (`"15.2"`, …), while still refusing to guess among several similarly-named candidates |
+| Prior-value fallback's ≥95% textual match must ALSO be a genuine numeric prefix/extension, not just similar-looking text | `eol_service.py::_is_plausible_version_extension` | a prior value of `"Apple iOS 27"` (an invalid/future version) scoring 95.65% *text* similarity against unrelated release `"7"` (iOS 7, 2013) purely because it's one character shorter — silently rewriting the row to iOS 7's decade-old EOL/EOAS dates |
 | Dot-zero fallback only accepts an *exact* `name`/`label` match on `"<bare hint>.0"`, never routed through the general scoring pipeline's prefix rule | `eol_service.py::_pick_release_by_dot_zero_release_name` | a bare hint like `"15"` (e.g. from "SUSE Linux Enterprise Server 15 SP7") never matching endoflife.date's `"15.0"`-named release, while NOT letting a synthesized `"10.0"` hint prefix-match a long build number like Windows' `"10.0.26100"` |
 
 ---

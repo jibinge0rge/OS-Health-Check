@@ -56,6 +56,7 @@ TEST_CATALOG: list[dict[str, object]] = [
     },
     {"name": "debian", "label": "Debian", "aliases": []},
     {"name": "fedora", "label": "Fedora Linux", "aliases": []},
+    {"name": "linux", "label": "Linux Kernel", "aliases": ["linuxkernel", "linux-kernel"]},
     {"name": "macos", "label": "Apple macOS", "aliases": ["mac"]},
     {"name": "ios", "label": "Apple iOS", "aliases": []},
     {"name": "android", "label": "Android OS", "aliases": ["aosp", "androidos"]},
@@ -445,6 +446,48 @@ class ResolveProductSlugTests(unittest.TestCase):
             normalization["normalized_os_detailed_name"], "Microsoft Windows Server 23H2 AC"
         )
         self.assertNotIn("Server Windows Server", normalization["normalized_os"])
+
+
+class GenericLinuxKernelRequiresTheWordKernelTests(unittest.TestCase):
+    """Real, reported incident: "Linux 6.4.7.3762 7" resolved to
+    endoflife.date's "linux" product (label "Linux Kernel") and adopted
+    that specific kernel release's own EOL date -- even though nothing in
+    the os_string ever said "kernel". endoflife.date's "linux" product
+    tracks the Linux KERNEL project's own release schedule specifically,
+    not any particular distribution -- but its slug AND label are both
+    just the single, universally generic word "linux"/"Linux Kernel", so
+    the phrase index matched it purely because that one common word
+    happened to be present, the same way a distro whose real name never
+    got recognized (or a vague inventory-tool placeholder) would also
+    read. A bare "Linux <version>" is nowhere near as safe an assumption
+    as "the reporter explicitly means the kernel project's own tracking
+    page." Resolution now requires the word "kernel" (in any of its
+    real-world glued/hyphenated/spaced forms -- matching endoflife.date's
+    own recognized alias "linuxkernel") to actually appear before trusting
+    this one product; a bare "Linux <version>" with no such word refuses
+    instead of guessing, and falls through to the vendor cascade instead."""
+
+    def test_bare_linux_with_no_kernel_word_refuses(self) -> None:
+        self.assertIsNone(resolve("Linux 6.4.7.3762 7"))
+        self.assertIsNone(resolve("Linux 6.4.7"))
+
+    def test_the_word_kernel_in_any_form_is_trusted(self) -> None:
+        for os_name in (
+            "Linux kernel 6.4.7",
+            "Linux Kernel 6.4.7",
+            "Linux-kernel 6.4.7",
+            "Linuxkernel 6.4.7",
+        ):
+            with self.subTest(os_name=os_name):
+                self.assertEqual(resolve(os_name), "linux")
+
+    def test_other_linux_distros_are_unaffected(self) -> None:
+        """Sanity check: the guard is scoped to the "linux" slug alone --
+        a real distro name resolving to ITS OWN, specific product must
+        never be blocked just because the word "linux" also appears
+        somewhere in the string."""
+        self.assertEqual(resolve("Ubuntu Linux 22.04"), "ubuntu")
+        self.assertEqual(resolve("Red Hat Linux 7.4"), "rhel")
 
 
 class BitnessMarkerContextTests(unittest.TestCase):

@@ -277,6 +277,23 @@ Resolution order:
 3. **Hyphenated fallback** — if nothing matched, hyphenate the query and try
    it directly as a slug.
 
+Whichever step finds a candidate slug is then passed through
+`_generic_family_match_is_trustworthy` before being returned: a product
+whose own slug/label is a single, universally generic word (currently just
+`linux`, whose endoflife.date label is literally "Linux Kernel") is only
+trusted when the query contains an extra, specific trust word (`"kernel"`,
+in any glued/hyphenated/spaced form) — otherwise the match is discarded and
+`resolve_product_slug` returns `None`, same as never having matched at all.
+**Real incident:** `"Linux 6.4.7.3762 7"` resolved to endoflife.date's
+`linux` product — which tracks the Linux **kernel project's own** release
+schedule, not any particular distribution — purely because the phrase
+index's `"linux"` phrase (the product's own bare slug/label) is a whole
+word in the query, and adopted that specific kernel release's own EOL
+date, even though nothing in the string ever said "kernel". A distro
+string that also happens to mention "linux" (`"Ubuntu Linux 22.04"`) is
+unaffected — the guard is keyed to the `linux` slug specifically, not to
+the word "linux" appearing anywhere.
+
 Query text is cleaned first (`_normalize_for_slug_lookup`): underscores/
 slashes/hyphens → spaces, glued product names un-glued (`ubuntulinux` →
 `ubuntu linux`), and a letter↔digit boundary gets a space (`Linux8.2` →
@@ -527,8 +544,13 @@ releases like `"15.2"`). Compares each release's *prospective* new name
 `build_normalization_from_product` writes) against the row's existing
 `normalized_os_detailed_name`/`normalized_os`, via
 `difflib.SequenceMatcher`. Accepts only when **exactly one** release is a
-**≥95%** textual match, and the prior value isn't blank/placeholder junk
-(`is_placeholder_os_value`).
+**≥95%** textual match, the prior value isn't blank/placeholder junk
+(`is_placeholder_os_value`), AND that release's own version is a genuine
+numeric prefix/extension of the prior value's version
+(`_is_plausible_version_extension`) — added after a real incident where a
+prior value of `"Apple iOS 27"` scored 95.65% *text* similarity against
+unrelated release `"7"` purely from string length, with no genuine
+`"15"`-style extension relationship at all; see worked example below.
 
 **B. Dot-zero fallback** (`_pick_release_by_dot_zero_release_name`,
 `eol_service.py:582-618`) — for a *bare* hint (e.g. `"15"`) against a catalog
@@ -1347,8 +1369,83 @@ variants now resolve; all 5 reported `"WindowsServer2008R2"`/
 `"WindowsServer2012R2"`/`"Windows Server 2011"` build-number variants now
 resolve; and `"Microsoft Windows Server 2008 R2 - 2012"` — the one string
 in the entire batch that still didn't resolve after fix #20 — now resolves
-too. Every reported string in this whole session's investigation now
-resolves correctly.
+too.
+
+**22. A prior value that merely looks similar as text, not a genuine
+version extension — "iPhone 27.0" adopting iOS 7's decade-old dates**
+
+A separate, later-reported incident, this time in the **prior-value
+fallback** (§4.4.4.A), not `pick_release` itself. Row: `os_string = "iPhone
+27.0"`, with `normalized_os_detailed_name = normalized_os = "Apple iOS 27"`
+already on record (someone had typed an invalid/future version number).
+Ordinary hint scoring correctly found nothing — iOS's real catalog only
+goes up to `"26"`, and hints `["27.0", "27"]` score 0 against every actual
+release. The prior-value fallback then ran, comparing `"Apple iOS 27"`
+against every release's prospective name via plain `difflib.SequenceMatcher`
+— and release `"7"` (iOS 7, from 2013) scored **95.65%**, clearing the
+≥95% bar, while every other release scored under 92%.
+
+That 95.65% is real, but meaningless: it comes purely from `"Apple iOS 7"`
+being **one character shorter** than `"Apple iOS 27"` — `SequenceMatcher`'s
+ratio formula (`2×matching / total-length-of-both`) rewards the shorter
+pairing regardless of whether the removed character represents a genuine
+version relationship. `"27"` and `"7"` share no real prefix/extension
+relationship at all (unlike the genuine `"15"` → `"15.2"` case this
+fallback exists for) — the fallback confidently adopted release `"7"`'s
+EOL (2014-10-20) and EOAS (2014-09-17) dates onto a row that was never
+iOS 7 at all.
+
+**The fix:** `_is_plausible_version_extension` — extracts the prior
+value's own version hint and the release's bare/dotted version number, and
+requires one to be a genuine numeric prefix of the other, in *either*
+direction (`"15"` → `"15.2"`, or `"15.2"` → `"15"`). `"27"` is not a
+prefix of `"7"`, nor `"7"` of `"27"` — now correctly refuses. Verified
+against the real numbers: comparing `"Apple iOS 27"` against every actual
+release `"4"` through `"26"`, only `"7"` ever clears 95% text similarity
+(0.9565); `"12"`/`"17"`/`"20"`–`"26"` all score ~0.9167, `"4"`–`"6"`/`"8"`–`"9"`
+score ~0.8696 — none of them are genuine extensions of `"27"` either, so
+this fix correctly rejects all of them, not just `"7"`. The genuine SUSE
+`"15"` → `"15.2"` case (worked example under §4.4.4.A) is unaffected, since
+`"15"` genuinely is a numeric prefix of `"15.2"`.
+
+**23. A generic single-word product name matched on the word alone —
+"Linux 6.4.7.3762 7" adopting the Linux kernel project's own EOL date**
+
+Back in product resolution (§4.4.1), not release scoring. `os_string =
+"Linux 6.4.7.3762 7"` — an inventory string whose actual distribution was
+never identified (or a vague placeholder), just the generic word "Linux"
+plus some version-looking numbers. `resolve_product_slug` matched it to
+endoflife.date's `linux` product via the ordinary phrase-index scan — that
+product's own slug **and** label are both just the bare word
+`"linux"`/`"Linux Kernel"`, so any query containing that one common word
+matches it, with nothing to distinguish "a distro whose name never got
+recognized" from "a query that genuinely means the Linux kernel project's
+own tracking page." Hint scoring then picked release `"6.4"` and adopted
+**that specific kernel release's own EOL date** — but `linux` tracks the
+Linux **kernel's** upstream release schedule specifically, categorically
+different from any distribution's own lifecycle (a distro bundles a
+particular kernel version but has its own, separate support window) — and
+the os_string never said "kernel" at all, so there was no basis to assume
+that's what was meant.
+
+**The fix:** `_generic_family_match_is_trustworthy` — after any of the
+three resolution steps finds a candidate slug, check whether that slug's
+own name is registered as "too generic to trust on the word alone." Only
+`linux` is currently registered this way (checked against the real
+catalog: no other OS-category product has a comparably bare single-word
+slug/label). Trusting it now requires the word `"kernel"` to actually
+appear in the query — checked as a **plain substring**, not word-bounded,
+specifically so it still matches endoflife.date's own recognized glued
+alias shape (`"linuxkernel"`, no separator at all) the same as
+`"Linux kernel"`/`"Linux-kernel"` written with a separator. Verified:
+`"Linux 6.4.7.3762 7"` (no "kernel" in any form) now correctly refuses and
+falls through to the vendor cascade instead of confidently mislabeling a
+row as a specific upstream kernel release; `"Linux kernel 6.4.7"`,
+`"Linux-kernel 6.4.7"`, and `"Linuxkernel 6.4.7"` all still resolve
+correctly. A real distro string that also happens to mention "linux"
+(`"Ubuntu Linux 22.04"`, `"Red Hat Linux 7.4"`) is completely unaffected —
+the guard only ever applies to the `linux` slug's own match, never to a
+different product's.
 
 ---
 

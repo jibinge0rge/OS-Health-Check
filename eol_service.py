@@ -253,17 +253,46 @@ def resolve_product_slug(
 
     for pattern, slug in _SLUG_PRIORITY_OVERRIDES:
         if slug in valid_slugs and re.search(pattern, normalized, re.IGNORECASE):
-            return slug
+            return slug if _generic_family_match_is_trustworthy(slug, os_name) else None
 
     matched = _match_slug_from_index(normalized, valid_slugs, slug_index=slug_index)
     if matched:
-        return matched
+        return matched if _generic_family_match_is_trustworthy(matched, os_name) else None
 
     hyphenated = re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
     if hyphenated in valid_slugs:
-        return hyphenated
+        return hyphenated if _generic_family_match_is_trustworthy(hyphenated, os_name) else None
 
     return None
+
+
+# Products whose own slug/label is a single, universally generic word that
+# a real-world os_string can easily contain WITHOUT actually meaning "the
+# thing this endoflife.date page specifically tracks." Mapped to the word
+# that must literally appear in the query before the match is trusted.
+_GENERIC_FAMILY_TRUST_WORDS: dict[str, str] = {
+    # endoflife.date's "linux" product tracks the Linux KERNEL's own
+    # release/EOL schedule -- not any particular distribution. Its slug
+    # AND label are just "linux"/"Linux Kernel", so the phrase index (and
+    # the hyphenated fallback) would otherwise match ANY os_string
+    # containing that one common word. Real incident: "Linux 6.4.7.3762 7"
+    # (a distro whose specific name never got recognized, or a generic
+    # placeholder) resolved confidently to "Linux Kernel 6.4" and adopted
+    # the kernel project's own EOL date -- nothing in the os_string
+    # actually said "kernel" at all.
+    "linux": "kernel",
+}
+
+
+def _generic_family_match_is_trustworthy(slug: str, os_name: str) -> bool:
+    trust_word = _GENERIC_FAMILY_TRUST_WORDS.get(slug)
+    if trust_word is None:
+        return True
+    # Plain substring, not word-bounded -- endoflife.date's own recognized
+    # alias for this product is the glued "linuxkernel" (no separator at
+    # all), so a strict \bkernel\b would itself refuse a real-world string
+    # shaped exactly like that alias.
+    return trust_word.lower() in os_name.lower()
 
 
 def _clean(value: Any) -> str:
@@ -1078,6 +1107,50 @@ def _text_similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, a_clean, b_clean).ratio()
 
 
+def _is_plausible_version_extension(prior_value: str, release: dict[str, Any]) -> bool:
+    """True when the release's own bare version number is a genuine
+    numeric prefix/extension of one of the prior value's extracted version
+    hints, or vice versa -- e.g. "15" -> "15.2" (the catalog got more
+    specific) or "15.2" -> "15" (coarser). This is the actual relationship
+    _pick_release_by_prior_value exists to recover; character-level text
+    similarity alone can't tell it apart from two completely UNRELATED
+    version numbers that just happen to look similar as flat strings.
+
+    Real incident: a row's prior normalized value was "Apple iOS 27" (an
+    invalid/future version number someone typed) -- and endoflife.date's
+    real release "7" (iOS 7, from 2013) scored a 95.65% text-similarity
+    match against it, PURELY because "Apple iOS 7" is one character
+    shorter than "Apple iOS 27" (SequenceMatcher's ratio formula rewards
+    the shorter total-length pairing), while every other, equally
+    plausible release ("17", "20"..."26") scored under 92%. "27" and "7"
+    have no genuine prefix/extension relationship at all -- this check
+    catches that "27" is not "15"-style precursor of "7" (nor "7" of
+    "27") and refuses, where the old text-only check would confidently
+    (and wrongly) rewrite the row to iOS 7's decade-old EOL/EOAS dates.
+
+    Only applies when the release's own name is cleanly numeric (a bare
+    or dotted version, e.g. SUSE's "15.2") -- a compound slug (Windows
+    Server's "2008-sp2") can't be parsed this way at all, so it's left to
+    the existing text-similarity check alone, unchanged.
+    """
+    release_name = _clean(release.get("name"))
+    release_nums = numeric_version_parts(release_name)
+    if release_nums is None:
+        return True
+
+    for hint in extract_version_hints(prior_value):
+        hint_nums = numeric_version_parts(hint)
+        if hint_nums is None:
+            continue
+        if len(hint_nums) <= len(release_nums):
+            shorter, longer = hint_nums, release_nums
+        else:
+            shorter, longer = release_nums, hint_nums
+        if longer[: len(shorter)] == shorter:
+            return True
+    return False
+
+
 def _pick_release_by_prior_value(
     releases: list[dict[str, Any]],
     product_label: str,
@@ -1100,7 +1173,13 @@ def _pick_release_by_prior_value(
     This only fires when exactly ONE release's prospective new name (product
     label + release label/name, the same shape ``build_normalization_from_product``
     writes) is a near-exact (>=95%) textual match to what the row already
-    had. If the catalog now lists *several* similarly-named releases (e.g.
+    had, AND that release's own version number is a genuine numeric
+    prefix/extension of the prior value's version (see
+    ``_is_plausible_version_extension`` -- guards against two unrelated
+    version numbers that merely look similar as flat text, e.g. a prior
+    value of "27" scoring 95%+ against release "7" purely from shared
+    length/characters, with no real "15" -> "15.2"-style relationship at
+    all). If the catalog now lists *several* similarly-named releases (e.g.
     multiple SUSE service packs all close to a bare "15"), that's genuine
     ambiguity this fallback must refuse rather than guess -- same philosophy
     as the tie-break rules in ``pick_release`` above.
@@ -1118,11 +1197,18 @@ def _pick_release_by_prior_value(
             join_labels(product_label, _clean(release.get("label"))),
             join_labels(product_label, _presentable_release_name(release)),
         )
-        best = max(
-            (_text_similarity(prior, candidate) for prior in prior_values for candidate in prospective),
-            default=0.0,
+        # Require the SAME prior value that clears the similarity bar to
+        # also pass the version-extension check below -- not just "some
+        # prior value is textually similar AND some (possibly different)
+        # prior value is a plausible extension." See
+        # _is_plausible_version_extension for why both checks are needed.
+        qualifies = any(
+            _text_similarity(prior, candidate) >= _PRIOR_VALUE_SIMILARITY_THRESHOLD
+            and _is_plausible_version_extension(prior, release)
+            for prior in prior_values
+            for candidate in prospective
         )
-        if best >= _PRIOR_VALUE_SIMILARITY_THRESHOLD:
+        if qualifies:
             matches.append(release)
 
     if len(matches) != 1:

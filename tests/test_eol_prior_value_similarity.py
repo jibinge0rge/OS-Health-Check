@@ -87,6 +87,49 @@ class PickReleaseByPriorValueTests(unittest.TestCase):
         )
         self.assertEqual(picked, {})
 
+    def test_an_unrelated_version_that_merely_looks_similar_as_text_refuses(self) -> None:
+        """Real, reported incident: a row's prior value was "Apple iOS 27"
+        (an invalid/future version someone typed). Release "7" (iOS 7, from
+        2013) scores a 95.65% *text* similarity against "Apple iOS 27" --
+        purely because "Apple iOS 7" is one character shorter than "Apple
+        iOS 27" (SequenceMatcher's ratio rewards the shorter total-length
+        pairing) -- while every other, equally plausible release ("17",
+        "20".."26") scores under 92%, comfortably below the bar. "27" and
+        "7" have no genuine "15" -> "15.2"-style prefix/extension
+        relationship at all; the old text-only check would have confidently
+        (and wrongly) rewritten the row to iOS 7's decade-old EOL/EOAS
+        dates. Confirms the fix via the real numbers: text similarity DOES
+        clear 95% here, and the fallback must still refuse."""
+        ios_catalog = [{"name": str(n), "label": str(n)} for n in range(4, 27)]
+        similarity = eol_service._text_similarity("Apple iOS 27", "Apple iOS 7")
+        self.assertGreaterEqual(similarity, 0.95)
+        picked = _pick_release_by_prior_value(
+            ios_catalog, "Apple iOS", "Apple iOS 27", "Apple iOS 27"
+        )
+        self.assertEqual(picked, {})
+
+    def test_a_genuine_bare_to_dotted_extension_is_still_plausible(self) -> None:
+        """Sanity check _is_plausible_version_extension itself: the
+        genuine SUSE-style relationship ("15" is a numeric prefix of
+        "15.2") must still be recognized, in either direction."""
+        release = {"name": "15.2"}
+        self.assertTrue(eol_service._is_plausible_version_extension("SUSE ... 15", release))
+        coarser_release = {"name": "15"}
+        self.assertTrue(eol_service._is_plausible_version_extension("SUSE ... 15.2", coarser_release))
+
+    def test_two_unrelated_bare_numbers_are_not_a_plausible_extension(self) -> None:
+        self.assertFalse(eol_service._is_plausible_version_extension("Apple iOS 27", {"name": "7"}))
+        self.assertFalse(eol_service._is_plausible_version_extension("Apple iOS 27", {"name": "17"}))
+
+    def test_a_non_numeric_compound_release_name_is_not_blocked(self) -> None:
+        """The version-extension check only applies when the release's own
+        name is cleanly numeric -- a compound slug (e.g. Windows Server's
+        "2008-sp2") can't be parsed this way, so it's left to the existing
+        text-similarity check alone, unaffected by this fix."""
+        self.assertTrue(
+            eol_service._is_plausible_version_extension("Windows Server 2008", {"name": "2008-sp2"})
+        )
+
 
 FAKE_SLES_PRODUCT = {
     "result": {
