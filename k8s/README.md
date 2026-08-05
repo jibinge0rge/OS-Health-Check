@@ -46,6 +46,27 @@ If any of the above isn't set up yet, get that in place first — none of the
 | `deployment.yaml` | The app itself — 1 replica, `Recreate` strategy (see its comment for why) |
 | `service.yaml` | `LoadBalancer` — exposes it with a public IP, no Ingress controller needed |
 
+## Local (minikube) vs. real cluster (AKS/EKS) — quick translation
+
+Every step below is one of two flavors. If you're ever unsure which
+instruction applies to you, use this table — the detailed walkthroughs
+further down are just these same rows spelled out with full commands.
+
+| Step | Local (minikube) | Real cluster (AKS/EKS) |
+|---|---|---|
+| The cluster itself | `minikube start` — creates/boots a cluster on your own machine | Already provisioned (by you or your cloud team) in Azure/AWS; you just point `kubectl` at it |
+| Connecting `kubectl` | Automatic — `minikube start` does this for you | `az aks get-credentials ...` / `aws eks update-kubeconfig ...` |
+| Getting the image to the cluster | `minikube image load os-health-check:local` — no registry involved | `docker push` to Docker Hub (or your registry), then the cluster pulls it |
+| `deployment.yaml`'s `image:` | `os-health-check:local` | `docker.io/<you>/os-health-check:v1` (your real registry path) |
+| `deployment.yaml`'s `imagePullPolicy:` | `IfNotPresent` (use the local copy, don't try to download it) | `Always` (always fetch the named tag from the registry) |
+| Postgres | Reuse your `docker compose` Postgres, reached via the special hostname `host.minikube.internal` | A real managed Postgres (Azure Database for PostgreSQL, Amazon RDS, etc.) reachable over the network |
+| Secret's `DATABASE_URL` | `postgresql://oshealth:oshealth@host.minikube.internal:5432/oshealth` | `postgresql://user:pass@<your-real-host>:5432/<dbname>?sslmode=require` |
+| Namespace / Secret / ConfigMap / PVC / Deployment / Service | **Identical** `kubectl apply -f ...` commands either way | **Identical** `kubectl apply -f ...` commands either way |
+| Reaching the running app | `minikube service os-health-check -n os-health-check --url` (fakes a public IP) | `kubectl -n os-health-check get service os-health-check` — the `EXTERNAL-IP` column fills in a real public IP on its own |
+| Shipping a new build | `minikube image load` + `kubectl rollout restart deployment/os-health-check` | `docker push` a new tag + `kubectl set image deployment/os-health-check os-health-check=<new-image>` |
+| Removing this app | `kubectl delete namespace os-health-check` — same command either way | `kubectl delete namespace os-health-check` — same command either way |
+| Removing the whole cluster | `minikube delete` | Delete the AKS/EKS cluster itself from the Azure/AWS console or CLI (out of scope for this repo) |
+
 ## Testing locally with minikube (no cloud needed)
 
 You don't need Azure/AWS to try this out — [minikube](https://minikube.sigs.k8s.io/)
