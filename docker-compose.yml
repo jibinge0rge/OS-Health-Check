@@ -41,6 +41,8 @@ services:
       POSTGRES_USER: "${POSTGRES_USER:-oshealth}"
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-oshealth}"
       POSTGRES_DB: "${POSTGRES_DB:-oshealth}"
+    ports:
+      - "5432:5432"
     volumes:
       - os_health_pg:/var/lib/postgresql/data
     healthcheck:

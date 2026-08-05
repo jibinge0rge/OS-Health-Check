@@ -2,9 +2,13 @@
 
 Postgres is **not** part of this deployment — point it at whatever managed
 Postgres you're using in Azure/AWS (or anywhere reachable) via the
-`DATABASE_URL` secret below. For local testing, keep using
-`docker compose up` from the repo root (that setup runs its own Postgres
-container) — these manifests are for the actual cluster only.
+`DATABASE_URL` secret below. For everyday local development, keep using
+`docker compose up` from the repo root instead (it runs its own Postgres
+container and doesn't need any of this). These manifests are for testing or
+running the app *as Kubernetes will actually run it* — either against a
+real cluster, or locally against [minikube](#testing-locally-with-minikube-no-cloud-needed)
+first, which is the safest way to prove they work before touching a real
+cluster.
 
 The app has no file-based storage fallback: it refuses to start unless
 `DATABASE_URL` and `LOOKUP_DB_ENABLED=true` are both set (see `configmap.yaml`
@@ -42,7 +46,109 @@ If any of the above isn't set up yet, get that in place first — none of the
 | `deployment.yaml` | The app itself — 1 replica, `Recreate` strategy (see its comment for why) |
 | `service.yaml` | `LoadBalancer` — exposes it with a public IP, no Ingress controller needed |
 
-## First-time setup
+## Testing locally with minikube (no cloud needed)
+
+You don't need Azure/AWS to try this out — [minikube](https://minikube.sigs.k8s.io/)
+runs a real, one-node Kubernetes cluster inside Docker on your own machine.
+`kubectl` talks to it exactly the same way it would talk to a cloud
+cluster — same commands, same YAML files. This is the fastest way to prove
+these manifests actually work before touching a real cluster.
+
+**Two things are different from a real cluster, called out below:** there's
+no container registry (we hand the image to minikube directly instead of
+pushing to Docker Hub), and there's no managed Postgres (we reuse the
+Postgres you already run via `docker compose`).
+
+**1. Start minikube** (installs/boots a local cluster if one doesn't exist
+yet; if you already have one and it's stopped, this also restarts it):
+```bash
+minikube start
+```
+Confirm `kubectl` can see it:
+```bash
+kubectl cluster-info
+kubectl get nodes
+```
+
+**2. Build the app's image normally, then hand it to minikube directly.**
+minikube runs its **own separate Docker engine**, isolated from your host's
+Docker — even though you already built `os-health-check:local` via
+`docker compose`, minikube can't see it until you load it in explicitly:
+```bash
+docker compose build          # or: docker build -t os-health-check:local .
+minikube image load os-health-check:local
+```
+
+**3. Point `deployment.yaml` at that local image instead of a registry.**
+Real-cluster deployments push to Docker Hub and reference that image path
+(see the next section); for this local test, edit `deployment.yaml`'s
+container spec to:
+```yaml
+image: os-health-check:local
+imagePullPolicy: IfNotPresent
+```
+(`IfNotPresent` — not `Always` — so Kubernetes uses the local copy instead
+of trying to pull from the internet.) **Remember to change this back**
+before ever pointing these manifests at a real cluster.
+
+**4. Make your `docker compose` Postgres reachable from inside minikube.**
+Add a port mapping to `docker-compose.yml`'s `db` service so it's exposed
+to your host machine, not just to other containers in that same compose
+stack:
+```yaml
+  db:
+    ports:
+      - "5432:5432"
+```
+Then recreate it: `docker compose up -d db`. minikube provides a special
+hostname, `host.minikube.internal`, that resolves to your host machine from
+inside the cluster — confirm it can actually reach Postgres:
+```bash
+minikube ssh -- "nc -zv host.minikube.internal 5432"
+# -> Connection to host.minikube.internal (...) 5432 port [tcp/postgresql] succeeded!
+```
+
+**5. Create the namespace:**
+```bash
+kubectl apply -f namespace.yaml
+```
+
+**6. Create the secret**, pointing `DATABASE_URL` at that same host Postgres
+(swap in your real `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB` if
+you changed them from the defaults):
+```bash
+kubectl create secret generic os-health-check-secrets \
+  --namespace os-health-check \
+  --from-literal=DATABASE_URL='postgresql://oshealth:oshealth@host.minikube.internal:5432/oshealth' \
+  --from-literal=OPENAI_API_KEY='' \
+  --from-literal=GEMINI_API_KEY='' \
+  --from-literal=OPENROUTER_API_KEY=''
+```
+
+**7. Apply everything else and watch it come up:**
+```bash
+kubectl apply -f configmap.yaml -f pvc.yaml -f deployment.yaml -f service.yaml
+kubectl -n os-health-check get pods -w
+kubectl -n os-health-check logs -f deployment/os-health-check
+```
+Look for the same `[lookup_db] ...` line described in step 6 below — it
+means the pod is talking to Postgres correctly (either seeding it for the
+first time, or confirming it already has data, e.g. because it's the same
+database your `docker compose` stack has already been using).
+
+**8. Reach the app.** minikube doesn't have a real cloud load balancer, so
+`Service` type `LoadBalancer` never fills in an `EXTERNAL-IP` on its own
+(you'll see it stuck at `<pending>` — that's expected here, not an error).
+Use minikube's own command to get a working URL instead:
+```bash
+minikube service os-health-check -n os-health-check --url
+```
+This prints a URL like `http://127.0.0.1:PORT` and keeps running in your
+terminal to maintain the tunnel (on Windows/Mac with the Docker driver) —
+leave that terminal open while you're using the app, or run it again later
+to get a fresh URL.
+
+## First-time setup (real cluster — AKS, EKS, etc.)
 
 **1. Build and push the image to Docker Hub:**
 ```bash
@@ -111,6 +217,7 @@ you reach the app.
 
 ## Updating to a new build
 
+**On a real cluster:**
 ```bash
 docker build -t <you>/os-health-check:v2 .
 docker push <you>/os-health-check:v2
@@ -119,6 +226,39 @@ kubectl -n os-health-check set image deployment/os-health-check os-health-check=
 (Or edit `deployment.yaml`'s `image:` and `kubectl apply -f deployment.yaml`
 again — same effect, just easier to keep in git history if you commit the
 manifest change alongside it.)
+
+**Locally with minikube** (no registry involved — same idea, just reload
+the image and force the pod to pick it up):
+```bash
+docker compose build
+minikube image load os-health-check:local
+kubectl -n os-health-check rollout restart deployment/os-health-check
+```
+The `rollout restart` step matters here: since the image tag (`:local`)
+never changes between builds, Kubernetes doesn't automatically notice a new
+image is available the way it would with a genuinely new tag (`:v2`) — the
+restart forces it to start a fresh pod using whatever's currently loaded.
+
+## Tearing it down
+
+**Delete everything this app owns in the cluster** — the namespace and
+everything inside it (pods, the Deployment, the Service, the ConfigMap, the
+Secret, and the PVC, which also deletes its underlying persisted `_config/`
+data):
+```bash
+kubectl delete namespace os-health-check
+```
+This is the one command that removes all of it — there's no need to
+`delete -f` each manifest individually. It does **not** touch Postgres
+(managed or your own `docker compose` one) — that data is untouched either
+way, since Postgres was never part of this namespace.
+
+If you were testing with minikube and want to tear down the whole local
+cluster too (not just this app), rather than just this app's namespace:
+```bash
+minikube stop     # keeps the cluster, just powers it off
+minikube delete   # deletes it entirely -- next `minikube start` builds fresh
+```
 
 ## If you ever need more than 1 replica
 

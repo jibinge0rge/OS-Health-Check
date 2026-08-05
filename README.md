@@ -251,7 +251,9 @@ For a real cluster deployment (AKS/EKS/etc.), the manifests live in [`k8s/`](k8s
 
 **Loading data the first time**: there's no separate "import" step to run by hand. The same startup hook the Docker deployment uses (`docker/import_if_empty.py`) runs automatically inside the pod before the app starts — on a genuinely empty Postgres database, it loads in the lookup data baked into the image (`_data/eol_lookup.csv`) the first time it connects and finds zero rows, logging `[lookup_db] No 'data' rows in Postgres schema 'lookup' yet -- importing N row(s)...`. Every later pod restart is a no-op once the database has any rows (from that import, or a real publish).
 
-Full walkthrough (building/pushing the image, creating the secret, applying the manifests, watching startup logs, getting the external IP, updating to a new build): [`k8s/README.md`](k8s/README.md).
+**No cloud account yet?** These same manifests can be tested against [minikube](https://minikube.sigs.k8s.io/) — a real one-node Kubernetes cluster that runs inside Docker on your own machine — before you ever touch Azure/AWS. See [k8s/README.md § Testing locally with minikube](k8s/README.md#testing-locally-with-minikube-no-cloud-needed).
+
+Full walkthrough (building/pushing the image, creating the secret, applying the manifests, watching startup logs, getting the external IP, updating to a new build, tearing it down): [`k8s/README.md`](k8s/README.md).
 
 ---
 

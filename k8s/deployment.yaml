@@ -33,8 +33,14 @@ spec:
           # then `docker push <you>/os-health-check:TAG`). Avoid ":latest"
           # once you're past initial testing -- it makes rollbacks and
           # "which build is actually running" much harder to reason about.
-          image: docker.io/REPLACE_ME/os-health-check:latest
-          imagePullPolicy: Always
+          #
+          # LOCAL MINIKUBE TESTING: temporarily set to the image loaded via
+          # `minikube image load os-health-check:local` with pull policy
+          # IfNotPresent, so Kubernetes uses the local copy instead of
+          # trying to pull from a real registry. Swap both back before
+          # deploying to an actual cloud cluster.
+          image: os-health-check:local
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8000
           envFrom:
