@@ -384,14 +384,16 @@ class ResolveProductSlugTests(unittest.TestCase):
         self.assertEqual(picked.get("eoasFrom"), "2025-01-01")
         self.assertEqual(picked.get("eolFrom"), "2027-01-01")
 
-    def test_windows_normalized_os_uses_label_not_slug(self) -> None:
-        """release.name ("10-22h2") is an internal slug, never presentable —
-        normalized_os must use release.label ("10 22H2") like the detailed
-        name already does, not the raw slug."""
+    def test_windows_normalized_os_truncates_at_first_hyphen(self) -> None:
+        """Windows' release.name ("10-22h2") packs the feature update onto
+        the major version with a hyphen -- normalized_os keeps only the
+        leading token ("10") for a short, family-level name, while
+        normalized_os_detailed_name still uses the full release.label
+        ("10 22H2"), unaffected."""
         product_result = {"label": "Microsoft Windows"}
         release = {"name": "10-22h2", "label": "10 22H2"}
         normalization = build_normalization_from_product(product_result, release)
-        self.assertEqual(normalization["normalized_os"], "Microsoft Windows 10 22H2")
+        self.assertEqual(normalization["normalized_os"], "Microsoft Windows 10")
         self.assertEqual(normalization["normalized_os_detailed_name"], "Microsoft Windows 10 22H2")
 
     def test_clean_version_names_are_unaffected(self) -> None:
@@ -441,11 +443,23 @@ class ResolveProductSlugTests(unittest.TestCase):
         product_result = {"label": "Microsoft Windows Server"}
         release = {"name": "23h2-ac", "label": "Windows Server 23H2 AC"}
         normalization = build_normalization_from_product(product_result, release)
-        self.assertEqual(normalization["normalized_os"], "Microsoft Windows Server 23H2 AC")
+        self.assertEqual(normalization["normalized_os"], "Microsoft Windows Server 23h2")
         self.assertEqual(
             normalization["normalized_os_detailed_name"], "Microsoft Windows Server 23H2 AC"
         )
-        self.assertNotIn("Server Windows Server", normalization["normalized_os"])
+        self.assertNotIn("Server Windows Server", normalization["normalized_os_detailed_name"])
+
+    def test_windows_server_normalized_os_truncates_r2_suffix(self) -> None:
+        """The worked example this behavior was added for: "2012-r2" must
+        become the short "2012", not the full "2012 R2 (LTSC)" label."""
+        product_result = {"label": "Microsoft Windows Server"}
+        release = {"name": "2012-r2", "label": "Windows Server 2012 R2 (LTSC)"}
+        normalization = build_normalization_from_product(product_result, release)
+        self.assertEqual(normalization["normalized_os"], "Microsoft Windows Server 2012")
+        self.assertEqual(
+            normalization["normalized_os_detailed_name"],
+            "Microsoft Windows Server 2012 R2 (LTSC)",
+        )
 
 
 class GenericLinuxKernelRequiresTheWordKernelTests(unittest.TestCase):

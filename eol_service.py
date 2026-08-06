@@ -1195,7 +1195,7 @@ def _pick_release_by_prior_value(
     for release in releases:
         prospective = (
             join_labels(product_label, _clean(release.get("label"))),
-            join_labels(product_label, _presentable_release_name(release)),
+            join_labels(product_label, _presentable_release_name(release, product_label)),
         )
         # Require the SAME prior value that clears the similarity bar to
         # also pass the version-extension check below -- not just "some
@@ -1274,17 +1274,40 @@ def iso_date_to_epoch(iso_value: Any) -> str:
 # A clean, presentable version identifier (Ubuntu "24.04", RHEL "9", ...).
 _CLEAN_VERSION_NAME_RE = re.compile(r"^\d+(?:\.\d+)*$")
 
+# Matches "Microsoft Windows" and "Microsoft Windows Server" (the only two
+# Windows OS products), not incidental mentions elsewhere.
+_WINDOWS_PRODUCT_LABEL_RE = re.compile(r"\bwindows\b", re.I)
 
-def _presentable_release_name(release: dict[str, Any]) -> str:
+
+def _windows_release_name(release: dict[str, Any]) -> str:
+    """Windows' own ``release.name`` is an internal slug (``11-26h1-e``,
+    ``10-22h2``, ``7-sp1``, ``2012-r2``, ``23h2-ac``) that packs the feature
+    update/service-pack/channel onto the major version with a hyphen.
+    Unlike other products (which fall back to the full ``label`` when
+    ``name`` isn't a clean version), Windows' ``normalized_os`` intentionally
+    keeps only the leading token before the first ``-`` (``11``, ``10``,
+    ``7``, ``2012``, ``23h2``) so it stays a short, family-level name (e.g.
+    "Microsoft Windows Server 2012") even for a later service pack/feature
+    update release of that same major version. ``normalized_os_detailed_name``
+    is unaffected -- it always uses ``release.label`` regardless of product.
+    """
+    name = _clean(release.get("name"))
+    if not name:
+        return _clean(release.get("label"))
+    return name.split("-", 1)[0]
+
+
+def _presentable_release_name(release: dict[str, Any], product_label: str = "") -> str:
     """The release identifier to show in ``normalized_os``.
 
     Most products' ``name`` is already a clean version (Ubuntu ``24.04``,
-    RHEL ``9``) and reads fine on its own. Some products (Windows: ``11-26h1-e``,
-    ``10-22h2``, ``7-sp1``) use an internal hyphenated slug for ``name`` that
-    is never meant to be shown — ``label`` (``11 26H1 (E)``, ``10 22H2``,
-    ``7 SP1``) is the presentable form there, so fall back to it whenever
-    ``name`` isn't a plain dotted version number.
+    RHEL ``9``) and reads fine on its own. Windows products use their own
+    truncate-at-first-hyphen rule (see ``_windows_release_name``) instead of
+    ever falling back to the full ``label``. Every other product falls back
+    to ``label`` whenever ``name`` isn't a plain dotted version number.
     """
+    if _WINDOWS_PRODUCT_LABEL_RE.search(product_label):
+        return _windows_release_name(release)
     name = _clean(release.get("name"))
     if _CLEAN_VERSION_NAME_RE.match(name):
         return name
@@ -1297,7 +1320,7 @@ def build_normalization_from_product(
 ) -> dict[str, str]:
     product_label = _clean(product_result.get("label"))
     release_label = _clean(release.get("label"))
-    release_name = _presentable_release_name(release)
+    release_name = _presentable_release_name(release, product_label)
 
     return {
         "normalized_os_detailed_name": join_labels(product_label, release_label),
