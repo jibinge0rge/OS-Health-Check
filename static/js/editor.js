@@ -32,7 +32,7 @@ let editedSet = new Set();
 let dataByOs = new Map();
 let refreshEolEnabled = true;
 let page = 1;
-let pageSizeIndex = 1;
+let pageSizeIndex = 0;
 let saveTimer = null;
 
 const el = {
@@ -52,6 +52,7 @@ const el = {
   filterBadge: document.getElementById("filter-count-badge"),
   bulkBar: document.getElementById("bulk-bar"),
   bulkCount: document.getElementById("bulk-count"),
+  bulkSelectAllFilteredBtn: document.getElementById("bulk-select-all-filtered-btn"),
   tableHeaderRow: document.getElementById("table-header-row"),
   tableBody: document.getElementById("table-body"),
   tableTrack: document.getElementById("table-track"),
@@ -585,13 +586,40 @@ function csvEscape(value) {
 
 // ---------- Selection ----------
 
-function clearSelection() { state.selected.clear(); updateBulkBar(); }
+// Always re-renders the table too -- every row/header checkbox's "checked"
+// state is baked into its HTML at render time, not live-bound to
+// state.selected, so skipping this leaves them showing stale (still
+// checked) even though the selection underneath is now empty. The bulk
+// bar's own "Clear" button used to call this alone, with no render after --
+// clicking it emptied state.selected but the header checkbox kept showing
+// checked, and clicking that stale-checked box then silently RE-selected
+// the page (toggleSelectAllPage reads state.selected fresh) instead of
+// visibly doing nothing, which is what made it look like there was no way
+// to select just the current page again.
+function clearSelection() { state.selected.clear(); updateBulkBar(); renderTable(); }
 function selectedRows() { return currentRows().filter((row) => state.selected.has(row.os_string)); }
 
 function updateBulkBar() {
   const n = state.selected.size;
   el.bulkBar.hidden = !(isDraft() && n > 0);
   el.bulkCount.textContent = `${n} selected`;
+
+  // Only offer "select all N matching rows" once the current page is
+  // entirely selected AND there's more beyond this page left to add --
+  // otherwise the prompt would show for any partial selection, or linger
+  // uselessly once everything filtered is already selected.
+  const filtered = visibleRowsUnpaged();
+  const size = PAGE_SIZE_OPTIONS[pageSizeIndex];
+  const pageRows = filtered.slice((page - 1) * size, page * size);
+  const pageAllSelected = pageRows.length > 0 && pageRows.every((r) => state.selected.has(r.os_string));
+  const allFilteredSelected = filtered.length > 0 && filtered.every((r) => state.selected.has(r.os_string));
+  const showSelectAllPrompt = pageAllSelected && filtered.length > pageRows.length && !allFilteredSelected;
+  el.bulkSelectAllFilteredBtn.hidden = !showSelectAllPrompt;
+  if (showSelectAllPrompt) {
+    el.bulkSelectAllFilteredBtn.textContent = `Select all ${filtered.length} matching rows`;
+    el.bulkSelectAllFilteredBtn.onclick = () => selectAllFiltered(filtered);
+  }
+
   updateRefreshButtonsState();
 }
 
@@ -609,15 +637,27 @@ function updateRefreshButtonsState() {
     : "";
 }
 
-/** Select-all applies to the filtered set, not the whole file (matches the
- * quick-chip counts and the design spec). */
-function toggleSelectAllFiltered(filtered) {
-  const allSelected = filtered.length > 0 && filtered.every((r) => state.selected.has(r.os_string));
+/** Select-all applies to only the current page, not the whole filtered set
+ * -- selecting every matching row regardless of pagination is a deliberate,
+ * separate action (the "Select all N matching rows" prompt in the bulk bar,
+ * see updateBulkBar) so a click meant to select "what's on screen" can't
+ * silently sweep in thousands of off-screen rows. */
+function toggleSelectAllPage(pageRows) {
+  const allSelected = pageRows.length > 0 && pageRows.every((r) => state.selected.has(r.os_string));
   if (allSelected) {
-    filtered.forEach((r) => state.selected.delete(r.os_string));
+    pageRows.forEach((r) => state.selected.delete(r.os_string));
   } else {
-    filtered.forEach((r) => state.selected.add(r.os_string));
+    pageRows.forEach((r) => state.selected.add(r.os_string));
   }
+  updateBulkBar();
+  renderTable();
+}
+
+/** Explicit opt-in to select every row matching the current filter, across
+ * every page -- offered only once the whole current page is already
+ * selected via the header checkbox (see updateBulkBar's showSelectAllPrompt). */
+function selectAllFiltered(filtered) {
+  filtered.forEach((r) => state.selected.add(r.os_string));
   updateBulkBar();
   renderTable();
 }
@@ -969,21 +1009,21 @@ function renderTable() {
 
   const filtered = visibleRowsUnpaged();
 
-  const columnHeadersHtml = SORTABLE_COLUMNS.map(columnHeaderHtml);
-  if (isDraft()) {
-    const allSelected = filtered.length > 0 && filtered.every((r) => state.selected.has(r.os_string));
-    const headerCheckboxHtml = `<span class="row-checkbox ${allSelected ? "checked" : ""}" id="header-select-all" title="${allSelected ? "Deselect all" : "Select all filtered rows"}">${iconMarkup("check", { size: 10 })}</span>`;
-    el.tableHeaderRow.innerHTML = [headerCheckboxHtml, ...columnHeadersHtml].join("");
-    document.getElementById("header-select-all").addEventListener("click", () => toggleSelectAllFiltered(filtered));
-  } else {
-    el.tableHeaderRow.innerHTML = columnHeadersHtml.join("");
-  }
-  bindSortHeaders();
-
   const size = PAGE_SIZE_OPTIONS[pageSizeIndex];
   const totalPages = Math.max(1, Math.ceil(filtered.length / size));
   if (page > totalPages) page = totalPages;
   const pageRows = filtered.slice((page - 1) * size, page * size);
+
+  const columnHeadersHtml = SORTABLE_COLUMNS.map(columnHeaderHtml);
+  if (isDraft()) {
+    const pageAllSelected = pageRows.length > 0 && pageRows.every((r) => state.selected.has(r.os_string));
+    const headerCheckboxHtml = `<span class="row-checkbox ${pageAllSelected ? "checked" : ""}" id="header-select-all" title="${pageAllSelected ? "Deselect all on this page" : "Select all on this page"}">${iconMarkup("check", { size: 10 })}</span>`;
+    el.tableHeaderRow.innerHTML = [headerCheckboxHtml, ...columnHeadersHtml].join("");
+    document.getElementById("header-select-all").addEventListener("click", () => toggleSelectAllPage(pageRows));
+  } else {
+    el.tableHeaderRow.innerHTML = columnHeadersHtml.join("");
+  }
+  bindSortHeaders();
 
   el.tableBody.innerHTML = "";
   el.tableEmpty.hidden = filtered.length !== 0;
@@ -993,6 +1033,8 @@ function renderTable() {
   el.footerPage.textContent = `Page ${page} of ${totalPages}`;
   document.getElementById("footer-prev-btn").disabled = page <= 1;
   document.getElementById("footer-next-btn").disabled = page >= totalPages;
+
+  updateBulkBar();
 }
 
 function renderFooter(shown, total) {

@@ -48,6 +48,8 @@
 
       <div class="bulk-bar" id="bulk-bar" hidden>
         <span id="bulk-count">0 selected</span>
+        <button class="btn tertiary" id="bulk-select-all-filtered-btn" type="button" hidden></button>
+        <button class="btn tertiary" id="bulk-clear-btn" type="button">Clear</button>
         <div class="bulk-divider"></div>
         <button class="btn tertiary" id="bulk-refresh-btn" type="button">Refresh lifecycle</button>
         <button class="btn tertiary" id="bulk-same-as-os-btn" type="button">Same as OS</button>
@@ -59,8 +61,6 @@
         <button class="btn tertiary" id="bulk-mark-unreviewed-btn" type="button">Mark not reviewed</button>
         <button class="btn tertiary" id="bulk-export-btn" type="button">Export selection <span class="icon" id="bulk-export-chevron-icon"></span></button>
         <button class="btn danger" id="bulk-delete-btn" type="button">Delete</button>
-        <div class="topbar-spacer"></div>
-        <button class="btn tertiary" id="bulk-clear-btn" type="button">Clear</button>
       </div>
 
       <div class="table-scroll" id="table-scroll">
@@ -80,7 +80,7 @@
         <span id="footer-breakdown"></span>
         <div class="topbar-spacer"></div>
         <span>Rows per page</span>
-        <span class="value-chip" id="rows-per-page-chip">100</span>
+        <span class="value-chip" id="rows-per-page-chip">50</span>
         <span id="footer-page"></span>
         <button class="btn tertiary" id="footer-prev-btn" type="button">Previous</button>
         <button class="btn tertiary" id="footer-next-btn" type="button">Next</button>
