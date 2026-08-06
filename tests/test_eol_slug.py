@@ -443,11 +443,26 @@ class ResolveProductSlugTests(unittest.TestCase):
         product_result = {"label": "Microsoft Windows Server"}
         release = {"name": "23h2-ac", "label": "Windows Server 23H2 AC"}
         normalization = build_normalization_from_product(product_result, release)
-        self.assertEqual(normalization["normalized_os"], "Microsoft Windows Server 23h2")
+        self.assertEqual(normalization["normalized_os"], "Microsoft Windows Server 23H2")
         self.assertEqual(
             normalization["normalized_os_detailed_name"], "Microsoft Windows Server 23H2 AC"
         )
         self.assertNotIn("Server Windows Server", normalization["normalized_os_detailed_name"])
+
+    def test_windows_embedded_normalized_os_keeps_leading_name_word(self) -> None:
+        """Real report: release.name "standard-7-sp1" truncated at its
+        first '-' gave the bare word "standard" (no version at all) --
+        operating on release.label and stopping after the first digit-
+        bearing token keeps the leading name word "Standard" AND the
+        version "7", correctly dropping only the trailing "SP1"."""
+        product_result = {"label": "Microsoft Windows Embedded"}
+        release = {"name": "standard-7-sp1", "label": "Standard 7 SP1"}
+        normalization = build_normalization_from_product(product_result, release)
+        self.assertEqual(normalization["normalized_os"], "Microsoft Windows Embedded Standard 7")
+        self.assertEqual(
+            normalization["normalized_os_detailed_name"],
+            "Microsoft Windows Embedded Standard 7 SP1",
+        )
 
     def test_windows_server_normalized_os_truncates_r2_suffix(self) -> None:
         """The worked example this behavior was added for: "2012-r2" must

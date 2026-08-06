@@ -1279,22 +1279,40 @@ _CLEAN_VERSION_NAME_RE = re.compile(r"^\d+(?:\.\d+)*$")
 _WINDOWS_PRODUCT_LABEL_RE = re.compile(r"\bwindows\b", re.I)
 
 
+# A token that contains at least one digit -- the version number itself,
+# wherever it falls among a release label's words.
+_TOKEN_HAS_DIGIT_RE = re.compile(r"\d")
+
+
 def _windows_release_name(release: dict[str, Any]) -> str:
-    """Windows' own ``release.name`` is an internal slug (``11-26h1-e``,
-    ``10-22h2``, ``7-sp1``, ``2012-r2``, ``23h2-ac``) that packs the feature
-    update/service-pack/channel onto the major version with a hyphen.
-    Unlike other products (which fall back to the full ``label`` when
-    ``name`` isn't a clean version), Windows' ``normalized_os`` intentionally
-    keeps only the leading token before the first ``-`` (``11``, ``10``,
-    ``7``, ``2012``, ``23h2``) so it stays a short, family-level name (e.g.
-    "Microsoft Windows Server 2012") even for a later service pack/feature
-    update release of that same major version. ``normalized_os_detailed_name``
-    is unaffected -- it always uses ``release.label`` regardless of product.
+    """Windows' own ``release.label`` packs the version onto one or more
+    LEADING name words plus TRAILING edition/service-pack/channel
+    qualifiers, all as separate words (``"10 22H2"``, ``"2012 R2 (LTSC)"``,
+    ``"23H2 AC"``, ``"Standard 7 SP1"``). Truncating the raw ``release.name``
+    slug at its first ``-`` (an earlier version of this rule) breaks the
+    moment a real leading name word contains a hyphen before the version,
+    e.g. Windows Embedded's ``"standard-7-sp1"`` truncates to the bare word
+    "standard" -- no version at all. Operating on ``label`` instead and
+    keeping tokens up to and including the first one containing a digit
+    (the version) fixes that: leading name words are preserved, and every
+    trailing qualifier after the version is dropped, so ``normalized_os``
+    stays a short, family-level name (e.g. "Microsoft Windows Embedded
+    Standard 7", "Microsoft Windows Server 2012") even for a later service
+    pack/feature update of the same version. ``normalized_os_detailed_name``
+    is unaffected -- it always uses ``release.label`` in full, regardless of
+    product.
     """
-    name = _clean(release.get("name"))
-    if not name:
-        return _clean(release.get("label"))
-    return name.split("-", 1)[0]
+    label = _clean(release.get("label"))
+    if not label:
+        name = _clean(release.get("name"))
+        return name.split("-", 1)[0] if name else ""
+    tokens = label.split()
+    kept: list[str] = []
+    for token in tokens:
+        kept.append(token)
+        if _TOKEN_HAS_DIGIT_RE.search(token):
+            break
+    return " ".join(kept)
 
 
 def _presentable_release_name(release: dict[str, Any], product_label: str = "") -> str:
