@@ -62,6 +62,7 @@ further down are just these same rows spelled out with full commands.
 | Postgres | Reuse your `docker compose` Postgres, reached via the special hostname `host.minikube.internal` | A real managed Postgres (Azure Database for PostgreSQL, Amazon RDS, etc.) reachable over the network |
 | Secret's `DATABASE_URL` | `postgresql://oshealth:oshealth@host.minikube.internal:5432/oshealth` | `postgresql://user:pass@<your-real-host>:5432/<dbname>?sslmode=require` |
 | Namespace / Secret / ConfigMap / PVC / Deployment / Service | **Identical** `kubectl apply -f ...` commands either way | **Identical** `kubectl apply -f ...` commands either way |
+| Loading data into the database the first time | **Automatic, identical either way** — the pod's own startup script does it; you never run a separate import command | **Automatic, identical either way** — the pod's own startup script does it; you never run a separate import command |
 | Reaching the running app | `minikube service os-health-check -n os-health-check --url` (fakes a public IP) | `kubectl -n os-health-check get service os-health-check` — the `EXTERNAL-IP` column fills in a real public IP on its own |
 | Shipping a new build | `minikube image load` + `kubectl rollout restart deployment/os-health-check` | `docker push` a new tag + `kubectl set image deployment/os-health-check os-health-check=<new-image>` |
 | Removing this app | `kubectl delete namespace os-health-check` — same command either way | `kubectl delete namespace os-health-check` — same command either way |
@@ -208,26 +209,53 @@ keys can stay empty until/unless you turn AI matching on in Settings.
 kubectl apply -f configmap.yaml -f pvc.yaml -f deployment.yaml -f service.yaml
 ```
 
-**6. Watch it come up — this is also how the database gets its first data:**
+**6. Watch it come up — this is also how the database gets its first data.**
+There is **no separate "import" or "load data" step to run** — not by hand,
+not as some one-time Kubernetes `Job`, nothing. It happens automatically,
+inside the pod, before the app even starts serving requests:
 ```bash
 kubectl -n os-health-check get pods -w
 kubectl -n os-health-check logs -f deployment/os-health-check
 ```
-You don't run any separate "import" or "load data" step. On a genuinely
-empty Postgres database, the pod's startup sequence automatically loads in
-the lookup data baked into the image (`_data/eol_lookup.csv`) the first
-time it connects and finds zero rows — you'll see a log line like:
+On a genuinely empty database, the pod's startup sequence loads in the
+lookup data baked into the image (`_data/eol_lookup.csv`) the moment it
+connects and finds zero rows — you'll see a log line like:
 ```
 [lookup_db] No 'data' rows in Postgres schema 'lookup' yet -- importing N row(s) from _data/eol_lookup.csv ...
 ```
-This is the exact same startup hook the Docker deployment uses — it never
-depended on Docker specifically. It's safe to leave running forever: once
-the database has any rows (from this import, or a real publish), every
-later pod restart just logs `already has 'data' rows -- skipping import`
-and moves on. If you ever want to force a full re-import that overwrites
-whatever's currently in the database, run `python lookup_db.py --force`
-from inside a pod (`kubectl -n os-health-check exec -it deployment/os-health-check -- python lookup_db.py --force`) —
-you shouldn't need this for a normal first-time setup.
+This is the *exact same* startup hook the Docker deployment (and the
+minikube walkthrough above) uses — it has nothing to do with Docker or
+minikube specifically, so it behaves identically here. It's safe to leave
+running forever: once the database has any rows (from this import, or a
+real publish), every later pod restart — including every future
+`kubectl rollout restart` when you ship a new build — just logs
+`already has 'data' rows -- skipping import` and moves on without touching
+existing data.
+
+**The one thing that genuinely differs on a real cluster**: your managed
+Postgres (Azure Database for PostgreSQL, Amazon RDS, etc.) has to actually
+be reachable from the AKS/EKS network — this is the most common first-time
+snag, and it has nothing to do with this app's code. If the pod's logs show
+it hanging (no `[lookup_db]` line appears at all, or it stays on
+`Waiting for application startup` far longer than a couple of seconds)
+rather than an explicit error, that's almost always a networking problem,
+not a bug:
+- The database's firewall/security-group rules must allow inbound
+  connections from the cluster (its VNet/VPC, or its public egress IP if
+  the database is only reachable publicly).
+- If the database is in a different VNet/VPC than the cluster, they need
+  peering (or a private endpoint) configured between them.
+- Double-check the `DATABASE_URL` you put in the Secret in step 4 — a typo
+  in the host/port there produces exactly this kind of silent hang, not a
+  clear error message.
+
+If you ever want to force a full re-import that overwrites whatever's
+currently in the database, run `python lookup_db.py --force` from inside
+the pod:
+```bash
+kubectl -n os-health-check exec -it deployment/os-health-check -- python lookup_db.py --force
+```
+You shouldn't need this for a normal first-time setup.
 
 **7. Get the external IP:**
 ```bash
