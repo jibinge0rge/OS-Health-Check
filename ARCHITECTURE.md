@@ -67,7 +67,7 @@ flowchart TB
     subgraph Server["FastAPI app (app.py)"]
         API["/api/* routes"]
         Pipeline["Lifecycle matching pipeline\n(eol_service.py + vendor_lookups/*)"]
-        Storage["Storage layer\n(file I/O or lookup_db.py)"]
+        Storage["Storage layer\n(lookup_db.py)"]
     end
 
     subgraph External["External data sources"]
@@ -75,9 +75,8 @@ flowchart TB
         VendorSites["eosl.date, learn.microsoft.com/lifecycle,\nrouter-switch.com, layer23-switch.com\n(scraped, cached locally)"]
     end
 
-    subgraph DataStore["Storage (one of the two, chosen at boot)"]
-        Files["File mode:\n_data/, _draft/, _backup/, _config/"]
-        Postgres["Shared Postgres:\nlookup_db.py (data/draft rows)\nvendor_lookups/db.py (per-source vendor cache schemas)"]
+    subgraph DataStore["PostgreSQL -- the only storage backend"]
+        Postgres["lookup_db.py (data/draft rows)\nvendor_lookups/db.py (per-source vendor cache schemas)"]
     end
 
     UI <-- "fetch + Server-Sent Events" --> API
@@ -85,27 +84,27 @@ flowchart TB
     API --> Storage
     Pipeline -- "direct API, live" --> EOLDATE
     Pipeline -- "reads cached scrape data" --> Storage
-    Storage --> Files
     Storage --> Postgres
     VendorSites -- "scraped periodically by\n'Vendor Lookups → Update'" --> Storage
 ```
 
-**Deployment modes** — chosen once, at process start, from environment
-variables (`app.py:96-98`):
+**Required configuration** — checked once, at process import time, from
+environment variables (`app.py`):
 
 ```python
-_USE_DB = bool(os.environ.get("DATABASE_URL")) and str(os.environ.get("LOOKUP_DB_ENABLED", "")).strip().lower() in (
-    "1", "true", "yes", "on",
-)
+if not (
+    bool(os.environ.get("DATABASE_URL"))
+    and str(os.environ.get("LOOKUP_DB_ENABLED", "")).strip().lower() in ("1", "true", "yes", "on")
+):
+    raise RuntimeError(...)  # fails loudly -- no file-based fallback exists
 ```
 
-Both vars are deliberately required together — a `DATABASE_URL` set only for
-vendor caches (which *always* use Postgres, regardless of `_USE_DB`) must
-never silently flip the app's Data/Draft storage into DB mode too. `_USE_DB`
-is fixed for the life of the process; nearly every data-access function in
-`app.py` is a thin `if _USE_DB: lookup_db.db_*(...) else: <file I/O>` branch
-(e.g. `load_rows`/`save_rows` at `app.py:835-849`, `load_evidence`/
-`save_evidence` at `app.py:749-758`).
+Both vars are required together — a `DATABASE_URL` set only for vendor
+caches (which always use Postgres) is not by itself enough; the app refuses
+to start unless `LOOKUP_DB_ENABLED=true` is explicit too. There is no
+"file mode" — every data-access function in `app.py` (`load_rows`/
+`save_rows`, `load_evidence`/`save_evidence`, etc.) is a thin wrapper around
+the matching `lookup_db.db_*(...)` call.
 
 Multiple app instances can point at the **same** shared Postgres database
 (e.g. several docker-compose stacks, or several environments) — see
@@ -656,11 +655,11 @@ otherwise query it and stop at the first real hit.
 | Source | Enabled by default | Keyword-gated? | Default keywords |
 |---|---|---|---|
 | `eosl` | ✅ | no | — (always eligible) |
-| `microsoft-lifecycle` | ✅ | no | — (gated instead by product resolution) |
+| `microsoft-lifecycle` | ❌ | no | — (gated instead by product resolution) |
 | `junos` | ✅ | yes | `junos`, `juniper` |
 | `suse` | ✅ | yes | `suse`, `sles`, `opensuse` |
-| `layer23-switch` | ❌ | yes | cisco, arista, aruba, dell, fortinet, h3c, hpe, juniper, mellanox, palo alto/pan-os, ruckus, ios-xe/xr, nx-os |
-| `router-switch` | ❌ | yes | same 20-keyword list as layer23-switch |
+| `layer23-switch` | ❌ | yes | `cisco` (narrower than the full vendor list it could technically match) |
+| `router-switch` | ❌ | yes | `cisco` (same scoping as layer23-switch) |
 
 **Per-source differences**:
 
@@ -1534,9 +1533,9 @@ own product/release resolution derives everything from scratch.
 ```mermaid
 stateDiagram-v2
     [*] --> Data: initial state\n(published, read-only)
-    Data --> Draft: "Edit data"\n(copies Data rows, freezes a\nbase snapshot for later merge)
+    Data --> Draft: "Edit data"\n(copies Data rows)
     Draft --> Draft: edits, Refresh EOL/EOAS,\nAdd OS, autosave
-    Draft --> Data: Validate & Publish\n(3-way merge in file mode,\noptimistic-concurrency swap in DB mode)
+    Draft --> Data: Validate & Publish\n(optimistic-concurrency swap)
     Draft --> [*]: Delete draft / Revert to Data
     Data --> Data: someone ELSE publishes\nwhile you're viewing Data\n(staleness banner, reload prompt)
 ```
@@ -1544,79 +1543,47 @@ stateDiagram-v2
 **Row identity & equality** (`lookup_extras.py`): identity =
 `os_string.strip().lower()` (`_dedupe_key`). Equality compares every
 `CSV_HEADERS` column except `os_string` (`_rows_equal`), with `eol_status`/
-`eoas_status` compared case-insensitively. A duplicate `os_string` on any
-side is **never** diffed row-by-row — it's always surfaced as an
-`ambiguous_duplicate` conflict for a human to resolve, since a dict-keyed
-merge would silently drop a genuine duplicate.
+`eoas_status` compared case-insensitively. Used by the Data-vs-Draft diff
+(`compute_lookup_diff`) to classify added/edited/deleted/unresolved rows. A
+duplicate `os_string` on either side is never diffed row-by-row — the diff
+treats it as `unresolved` rather than silently picking one.
 
-**The 3-way publish merge** (`merge_lookup_rows`, `lookup_extras.py:364-495`)
-— file mode only — needs three snapshots per key: `base` (Data when the
-draft was created), `current` (Data right now), `draft`. Classification:
-
-| `base` vs `current` | `base` vs `draft` | Outcome |
-|---|---|---|
-| unchanged | unchanged | keep as-is |
-| unchanged | changed | keep draft's version (your edit wins) |
-| changed | unchanged | keep current's version (upstream's edit wins) |
-| changed | changed, but `current == draft` | either (no real conflict) |
-| changed | changed, and different | **conflict**: `edited_both` |
-| row deleted upstream | `base == draft` | drop the row (respect the delete) |
-| row deleted upstream | `base != draft` | **conflict**: `edited_local_deleted_upstream` |
-| row deleted locally | `base == current` | drop the row |
-| row deleted locally | `base != current` | **conflict**: `edited_upstream_deleted_local` |
-| duplicate key anywhere | — | **conflict**: `ambiguous_duplicate` (never content-diffed) |
-
-**Worked conflict example**: Data has `RHEL 7 | eol_date=2024-06-30` when a
-draft is forked. The draft edits `eol_status` → `"true"`. Meanwhile someone
-else publishes a change to `eol_date` on the same row. At publish time:
-`base != current` (upstream changed) and `base != draft` (you changed it
-too) and `current != draft` → `conflict("edited_both")`, with `mine` = your
-draft's row and `theirs` = the now-current Data row. The publish is blocked
-(HTTP 409) until `conflict_resolutions["RHEL 7"] = "mine"` or `"theirs"` is
-supplied by the user via the conflict resolver UI.
-
-**DB mode is simpler — no per-row merge**: `db_publish` (`lookup_db.py:255-319`)
-takes an `expected_revision` and, inside `pg_advisory_xact_lock(...)`
-(serializing all publishes), compares it against the current `data_revision`
-in the `meta` table. Mismatch → `PublishConflictError` → HTTP 409, telling
-the client to re-check. On success: the previous `data` rows/evidence are
-snapshotted into a `backups` table (JSONB), `draft` is deleted, and
-`data_revision` bumps by one — all inside one transaction.
+**Publish — no per-row merge**: `db_publish` (`lookup_db.py:255-319`) takes
+an `expected_revision` and, inside `pg_advisory_xact_lock(...)` (serializing
+all publishes), compares it against the current `data_revision` in the
+`meta` table. Mismatch → `PublishConflictError` → HTTP 409, telling the
+client to re-check and reapply. On success: the previous `data` rows/
+evidence are snapshotted into a `backups` table (JSONB), `draft` is
+deleted, and `data_revision` bumps by one — all inside one transaction.
+There's exactly one shared Draft per database, not a per-user one — two
+people editing it at the same time can still step on each other's
+in-progress edits.
 
 **Staleness banner** (`static/js/staleness.js`) polls `GET /api/lookup?source=data`
 periodically for `data_revision`. On a draft, compares against
 `state.draftBasedOnRevision`; if they differ, shows *"Data was published
-again since you started this draft. It's fine to keep editing — publishing
-will merge in what changed and only ask you about rows you both touched"* —
-no reload prompt, since the merge above handles reconciliation. Outside a
-draft, a simpler *"Data has been updated"* banner offers a reload.
+again since you started this draft"*. Outside a draft, a simpler *"Data has
+been updated"* banner offers a reload.
 
-**Backups**: file mode copies the pre-publish Data CSV + evidence into
-`_backup/eol_lookup_<timestamp>[_suffix].csv/.json` before overwriting. DB
-mode inserts the pre-publish rows/evidence into the `backups` table in the
-same transaction as the publish, so a failed publish never orphans a
-backup. Neither mode currently exposes a restore/rollback endpoint — see
+**Backups**: `db_publish` inserts the pre-publish rows/evidence into the
+`backups` table in the same transaction as the publish, so a failed publish
+never orphans a backup. There's no restore/rollback endpoint yet — see
 [§12](#12-known-gaps--discrepancies-as-of-this-writing).
 
 ---
 
 ## 7. Storage layer
 
-### File mode
-
-| Constant | Path | Contents |
-|---|---|---|
-| `DATA_PATH` | `_data/eol_lookup.csv` | Published rows |
-| `DRAFT_PATH` | `_draft/eol_lookup.csv` | Working draft rows |
-| `DATA_EVIDENCE_PATH` / `DRAFT_EVIDENCE_PATH` | `_data/`, `_draft/` `eol_lookup_evidence.json` | Evidence sidecars |
-| `DRAFT_BASE_PATH` / `_EVIDENCE` / `_REVISION` | `_draft/eol_lookup.base.*` | Frozen snapshot of Data when the draft forked — the 3-way merge base |
-| `DATA_REVISION_PATH` | `_data/.revision` | Bare incrementing counter — staleness signal only, not used by the merge |
-| `BACKUP_DIR` | `_backup/` | Timestamped pre-publish snapshots |
-| `CONFIG_DIR` | `_config/` | `azure.json`, `aws.json`, `app_settings.json`, `ai_model_choices.json` |
-
-CSV read/write is atomic (`NamedTemporaryFile` + `Path.replace`).
-
-### Shared Postgres mode
+PostgreSQL is the only storage backend — `app.py` raises `RuntimeError` at
+import time if `DATABASE_URL` / `LOOKUP_DB_ENABLED=true` aren't both set, so
+there's no code path that ever falls back to local files for the lookup
+data itself. `CONFIG_DIR` (`_config/`) is the one exception: Settings
+(`app_settings.json`, `ai_model_choices.json`, `azure.json`, `aws.json`) and
+the always-file-based vendor-Refresh preference files
+(`vendor_lookup_settings.json`, `layer23_switch_sync.json`,
+`router_switch_sync.json`) live there regardless of storage mode — it's a
+separate concern from the lookup rows/evidence/draft themselves, and is
+what a Kubernetes PVC persists (see `k8s/README.md`).
 
 `lookup_db.py` — schema `lookup` (constant `SCHEMA`):
 
@@ -1638,23 +1605,19 @@ modules share one process-global `psycopg_pool.ConnectionPool`
 
 **Auto-import on startup** (`lookup_db.import_from_files_if_empty`, invoked
 by `docker/import_if_empty.py`, run from `docker/entrypoint.sh` before
-`exec uvicorn`): if `app._USE_DB` is on and the `data` source has **zero**
-rows in Postgres, and a bind-mounted `_data/eol_lookup.csv` exists, it's
-loaded in automatically — cutting a fresh DB-mode deployment over from
-whatever's already checked into `_data/` without a separate manual step.
-Reads the CSV/evidence sidecar directly off disk
-(`lookup_db._read_files_data_source`, via `app._read_rows_csv`/
-`app._load_evidence_file`), bypassing `_USE_DB` entirely so it works
-correctly even though `LOOKUP_DB_ENABLED` is already set at that point —
-the same reasoning that made the *old*, hand-run-only version of this
-(`_import_from_files`) require temporarily unsetting it first. Idempotent
-and safe on every container start: a no-op once the DB has rows at all
-(from this import or a real publish), and a no-op with nothing in `_data/`
-either. `_import_from_files` still exists for an explicit, forced
-re-import (`python lookup_db.py --force`) — it now refuses outright
-without `--force` if the DB already has `data` rows, since the automatic
-hook already covers the "first deploy, DB is empty" case without ever
-needing to be run by hand.
+`exec uvicorn`): if the `data` source has **zero** rows in Postgres, the
+CSV + evidence sidecar baked into the image at `_data/eol_lookup.csv` (via
+`app.DATA_PATH`/`app.DATA_EVIDENCE_PATH`) is loaded in automatically —
+seeding a brand-new, empty database on first boot without a separate manual
+step. `lookup_db._read_files_data_source` reads those two files directly
+off disk via `app._read_rows_csv`/`app._load_evidence_file` — the only
+remaining callers of either function; everything else in `app.py` always
+goes through `lookup_db`. Idempotent and safe on every container start: a
+no-op once the DB has rows at all (from this import or a real publish).
+`_import_from_files` still exists for an explicit, forced re-import
+(`python lookup_db.py --force`) — it refuses outright without `--force` if
+the DB already has `data` rows, since the automatic hook already covers the
+"first deploy, DB is empty" case without ever needing to be run by hand.
 
 ### Cross-instance vendor-sync lock
 
@@ -1693,22 +1656,22 @@ all 4 Add-OS/Refresh-EOL/EOAS entry points check it (read-only) before
 proceeding — see `app.py`'s `acquire_vendor_sync_lock_or_409`/
 `hold_vendor_sync_lock_heartbeat`/`raise_if_vendor_sync_running` and
 `lookup_db.py`'s `db_acquire_sync_lock`/`db_heartbeat_sync_lock`/
-`db_release_sync_lock`/`db_sync_lock_status`. A no-op entirely in file mode
-(only one instance can exist there).
+`db_release_sync_lock`/`db_sync_lock_status`.
 
 ---
 
 ## 8. Settings
 
 **App settings** (`AppSettings`, `app.py:544-628`) — always **file-based**
-(`_config/app_settings.json`), regardless of `_USE_DB`:
+(`_config/app_settings.json`), a separate concern from the Postgres-only
+lookup data (§7):
 
 - `refresh_eol_enabled` (default `True`) — disabling this blocks only the
   *whole-draft-in-one-shot* "Refresh EOL/EOAS" action; a deliberate bulk
   selection or a single-row "Re-run lookup" are always still allowed
   (`is_partial_refresh` flag, `app.py:2294-2298`).
 - `ai_enabled`, `ai_provider` (openai/gemini/openrouter), `ai_match_prompt`,
-  `ai_confidence_threshold` (clamped 50-100, default 85), `ai_models` (per-
+  `ai_confidence_threshold` (clamped 50-100, default 95), `ai_models` (per-
   provider override).
 
 `AppSettingsUpdateRequest` fields are non-Optional for the "core" three
@@ -1719,9 +1682,14 @@ changed.
 
 **Vendor lookup settings** (`vendor_lookups/vendor_settings.py`) — per-source
 `enabled` + `keywords`, persisted to a **separate plain JSON file**,
-`_data/vendor_lookup_settings.json` — not Postgres, even in DB mode.
-Manufacturer selections for layer23-switch/router-switch are separate again,
-in `_data/layer23_switch_sync.json`/`_data/router_switch_sync.json`.
+`_config/vendor_lookup_settings.json` — not Postgres. Deployment defaults:
+`eosl`/`junos`/`suse` enabled; `microsoft-lifecycle`/`layer23-switch`/
+`router-switch` disabled, with `layer23-switch`/`router-switch` scoped to
+`["cisco"]` keywords rather than their full vendor list. Manufacturer
+selections for layer23-switch/router-switch are separate again, in
+`_config/layer23_switch_sync.json`/`_config/router_switch_sync.json`.
+All three live in `_config/` (not `_data/`) specifically so a Kubernetes
+PVC mounted over `_config/` never shadows `_data/`'s baked-in seed CSV.
 
 ---
 
@@ -1809,8 +1777,8 @@ storage blob upload` / `aws s3 cp` as a subprocess, and re-emit its stdout as
 | `_apply_lifecycle_result`'s name/date independence | same | A confirmed-resolved date getting attached to a stale, previously-set release name |
 | In-process `VENDOR_SYNC_LOCK` / `LOOKUP_REFRESH_LOCK` | `app.py:183, 204` | Two operations of the same kind racing within one process |
 | Cross-instance Postgres sync lock | `lookup_db.py`, [§7](#7-storage-layer) | The same race across *separate app instances* sharing one database |
-| 3-way publish merge / DB-mode optimistic concurrency | `lookup_extras.merge_lookup_rows` / `lookup_db.db_publish` | Silently losing either side's edits when Data and Draft diverge |
-| `pg_advisory_xact_lock('oshealth_lookup_publish')` | `lookup_db.py:274` | Two concurrent DB-mode publishes both reading the same pre-publish revision |
+| Optimistic-concurrency publish guard | `lookup_db.db_publish` | Silently overwriting Data if it was published again since this draft's expected revision |
+| `pg_advisory_xact_lock('oshealth_lookup_publish')` | `lookup_db.py:274` | Two concurrent publishes both reading the same pre-publish revision |
 | Staleness banner | `static/js/staleness.js` | A user unknowingly working against out-of-date Data |
 | Every `pick_release` tie-break / fallback refuses on ambiguity | `eol_service.py` | Ever guessing among several similarly-plausible releases |
 
@@ -1837,10 +1805,9 @@ comments elsewhere could otherwise be misled.
   `pair_match_percent` are defined but not called from this pipeline.
 - **SSE event-type naming is inconsistent**: `deploy.js`'s upload streams
   emit `"start"` where every other stream in the app emits `"started"`.
-- **No restore/rollback endpoint** for either mode's backups — they exist
-  purely as manually-recoverable snapshots (copy a `_backup/*.csv` back
-  over `_data/eol_lookup.csv`, or read a `backups` row) with no UI or API to
-  do it automatically.
+- **No restore/rollback endpoint** for the `backups` table — recovering an
+  older Data snapshot means reading a `backups` row by hand (SQL) and
+  re-publishing it; there's no UI or API to do it automatically.
 
 ---
 
@@ -1851,7 +1818,7 @@ comments elsewhere could otherwise be misled.
 | FastAPI app, all routes, refresh orchestration, Data/Draft/Publish | `app.py` |
 | endoflife.date direct-API matching (product/release/hints/fallbacks) | `eol_service.py` |
 | Dot-aware version scoring shared across sources | `version_match.py` |
-| Draft/Data diffing, 3-way merge, evidence formatting | `lookup_extras.py` |
+| Draft/Data diffing, evidence formatting | `lookup_extras.py` |
 | Postgres storage for Data/Draft/evidence/meta/backups | `lookup_db.py` |
 | Fuzzy/AI normalization matching (Add-OS pre-check) | `normalization_service.py` |
 | CSV/Excel column extraction for bulk Add-OS (currently unwired — §12) | `os_import_service.py` |
@@ -1890,5 +1857,5 @@ comments elsewhere could otherwise be misled.
 | Dot-zero fallback | exact match only | No score threshold — literal string equality on `name`/`label`, single-candidate only |
 | `_SYNC_LOCK_STALE_AFTER_SECONDS` (`lookup_db.py`) | 180 | Cross-instance vendor-sync lock heartbeat staleness timeout |
 | `_SYNC_LOCK_HEARTBEAT_INTERVAL_SECONDS` (`app.py`) | 30 | How often a running sync refreshes its lock heartbeat |
-| `ai_confidence_threshold` default (Settings) | 85 | Default AI-match acceptance bar (configurable 50-100) |
+| `ai_confidence_threshold` default (Settings) | 95 | Default AI-match acceptance bar (configurable 50-100) |
 | `LOOKUP_REFRESH_CHUNK_SIZE` (`app.py`) | 25 | Rows per chunk when streaming refresh progress |

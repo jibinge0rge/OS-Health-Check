@@ -38,7 +38,7 @@ class VendorSettingsTests(unittest.TestCase):
             path = Path(tmp) / "vendor_lookup_settings.json"
             settings = load_settings(path)
             self.assertTrue(source_is_enabled("eosl", settings))
-            self.assertTrue(source_is_enabled("microsoft-lifecycle", settings))
+            self.assertFalse(source_is_enabled("microsoft-lifecycle", settings))
             self.assertTrue(source_is_enabled("junos", settings))
             self.assertTrue(source_is_enabled("suse", settings))
             self.assertFalse(source_is_enabled("layer23-switch", settings))

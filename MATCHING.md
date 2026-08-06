@@ -1312,25 +1312,23 @@ Lives in `normalization_service.py`.
 
 ---
 
-## Secondary: row-identity matching (diff / publish merge)
+## Secondary: row-identity matching (Data-vs-Draft diff)
 
 A third, much simpler kind of "matching": deciding whether a row in Draft is
-the "same" row as one in Data, for the Draft-vs-Data diff panel and for the
-3-way publish merge. Lives in `lookup_extras.py`.
+the "same" row as one in Data, for the Draft-vs-Data diff panel. Lives in
+`lookup_extras.py`.
 
 - **Identity key** = the row's `os_string`, trimmed and lowercased
   (`_dedupe_key`). Two rows with the same key are the same row; a row with a
-  blank `os_string` has no stable identity and is never diffed/merged by
-  content — it just passes through untouched.
+  blank `os_string` has no stable identity and is never diffed by content —
+  it just passes through untouched.
 - **Equality** (`_rows_equal`) compares every CSV column except `os_string`
-  itself (boolean-ish status cells compared case-insensitively).
-- **Publish's 3-way merge** (`merge_lookup_rows`) additionally needs a
-  *base* snapshot (what Data looked like when the draft was created) to tell
-  "changed here," "changed upstream," and "changed both — conflict" apart
-  safely; a key that appears more than once on any side is never
-  content-diffed at all — it's always surfaced as an `ambiguous_duplicate`
-  conflict for a human to resolve, since a dict-keyed merge would silently
-  drop a genuine duplicate row.
+  itself (boolean-ish status cells compared case-insensitively). A key that
+  appears more than once on either side is never content-diffed at all —
+  it's counted as `unresolved` rather than picking one arbitrarily.
+- **Publish** itself has no per-row merge: it's a revision-guarded Postgres
+  transaction (`lookup_db.db_publish`) that rejects outright if Data moved
+  since the draft's expected revision, rather than merging row-by-row.
 
 This has nothing to do with lifecycle/vendor matching above — it never looks
 at EOL dates, product names, or versions at all, only row identity and

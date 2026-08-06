@@ -1,0 +1,19 @@
+# Non-secret configuration. Anything that's a real credential (DATABASE_URL,
+# AI provider API keys) belongs in a Secret instead -- see secret.example.yaml
+# and the README in this directory for how to create that without ever
+# committing real values to git.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: os-health-check-config
+  namespace: os-health-check
+data:
+  APP_PORT: "8000"
+  # No bind mount / live-reload in a container image deployment -- this
+  # must stay "false" here regardless of what local dev uses.
+  UVICORN_RELOAD: "false"
+  # Required together with the Secret's DATABASE_URL -- there is no
+  # file-based fallback at all: the app raises RuntimeError at startup and
+  # the pod crash-loops if either is missing, rather than silently running
+  # against ephemeral pod storage. Do not unset this.
+  LOOKUP_DB_ENABLED: "true"

@@ -10,8 +10,6 @@ venv
 .env
 .env.*
 !.env.example
-_backup
-_draft
 _config
 *.md
 !README.md

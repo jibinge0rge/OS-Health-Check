@@ -10,7 +10,5 @@ __pycache__/
 .env.production
 _config/
 .claude/
-_draft/
 .pytest_cache/
-_data/*_sync.json
 QA/*

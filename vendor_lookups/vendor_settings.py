@@ -32,7 +32,10 @@ _DEFAULT_SOURCES: dict[str, dict[str, Any]] = {
         "keywords": [],
     },
     "microsoft-lifecycle": {
-        "enabled": True,
+        # Off by default -- deliberate deployment default, not the vendor
+        # cascade's own eligibility logic (product-name resolution +
+        # vendors_compatible() would gate it fine either way).
+        "enabled": False,
         # Empty keywords → always eligible when enabled (general fallback);
         # product-name resolution + vendors_compatible() already gate matches.
         "keywords": [],
@@ -47,55 +50,18 @@ _DEFAULT_SOURCES: dict[str, dict[str, Any]] = {
     },
     "layer23-switch": {
         # Wired into Refresh but off by default (large hardware catalog).
+        # Deployment default is scoped to just "cisco" -- narrower than the
+        # full vendor list this source could technically match, a
+        # deliberate choice to keep it from picking up hardware from
+        # vendors nobody's inventory here actually needs it for.
         "enabled": False,
-        "keywords": [
-            "cisco",
-            "arista",
-            "aruba",
-            "dell",
-            "fortinet",
-            "h3c",
-            "hpe",
-            "juniper",
-            "mellanox",
-            "palo alto",
-            "palo-alto",
-            "pan-os",
-            "panos",
-            "ruckus",
-            "ios-xe",
-            "ios xe",
-            "ios-xr",
-            "ios xr",
-            "nx-os",
-            "nxos",
-        ],
+        "keywords": ["cisco"],
     },
     "router-switch": {
         # Wired into Refresh but off by default (hardware-heavy catalog).
+        # Same "cisco"-only scoping as layer23-switch above.
         "enabled": False,
-        "keywords": [
-            "cisco",
-            "arista",
-            "aruba",
-            "dell",
-            "fortinet",
-            "h3c",
-            "hpe",
-            "juniper",
-            "mellanox",
-            "palo alto",
-            "palo-alto",
-            "pan-os",
-            "panos",
-            "ruckus",
-            "ios-xe",
-            "ios xe",
-            "ios-xr",
-            "ios xr",
-            "nx-os",
-            "nxos",
-        ],
+        "keywords": ["cisco"],
     },
 }
 
@@ -108,7 +74,13 @@ def _default_settings() -> dict[str, Any]:
 
 
 def default_prefs_path() -> Path:
-    return Path(__file__).resolve().parent.parent / "_data" / "vendor_lookup_settings.json"
+    # Lives in _config/, not _data/ -- _data/ holds the baked-in seed CSV a
+    # fresh deployment's first boot imports from (see docker/import_if_empty.py);
+    # a persistent volume mounted over _data/ to keep THIS file across
+    # restarts would shadow that seed file the same way a stale bind mount
+    # already did once before (see docker-compose.yml's history). _config/
+    # is the one directory meant to be persisted across restarts/redeploys.
+    return Path(__file__).resolve().parent.parent / "_config" / "vendor_lookup_settings.json"
 
 
 def _clean(value: object) -> str:

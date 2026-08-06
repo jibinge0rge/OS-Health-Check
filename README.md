@@ -11,7 +11,7 @@ Use it to:
 - Refresh EOL / EOAS dates from [endoflife.date](https://endoflife.date), then from local **Vendor Lookups** ([eosl.date](https://eosl.date), [Microsoft Lifecycle](https://learn.microsoft.com/en-us/lifecycle/products/), [Juniper Junos](https://support.juniper.net/support/eol/software/junos/), [SUSE lifecycle](https://www.suse.com/lifecycle/), [Layer23-Switch EOL](https://www.layer23-switch.com/eol-eosl-tool/), [Router-Switch EOL](https://www.router-switch.com/eol-eosl-checker/))
 - Track every long-running operation (refresh, add, publish, vendor sync, cloud upload) in a **Background tasks** screen — cancel it, or navigate away and keep editing while it runs
 - Keep a per-row **evidence** trail of how each value was filled
-- Edit safely in a **Draft**, then **Validate & publish** into **Data** — publish never silently overwrites a colleague's already-published changes; see [Publish safety](#publish-safety-conflict-resolution--staleness) below
+- Edit safely in a **Draft**, then **Validate & publish** into **Data** — publish never silently overwrites a colleague's already-published changes; see [Publish safety](#publish-safety-staleness) below
 - Deploy the published lookup to **Azure Blob** or **AWS S3**
 
 ## Stack
@@ -19,7 +19,7 @@ Use it to:
 - **FastAPI** — API, CSV/evidence I/O, cloud upload
 - **Jinja2** — app shell (`templates/index.html` + partials)
 - **Vanilla ES modules** — no bundler, no framework; `static/js/*.js` are `<script type="module">`
-- **PostgreSQL** — vendor lookup scrape caches (always), and optionally the published lookup + draft itself (see [Where the lookup data lives](#where-the-lookup-data-lives-file-mode-vs-shared-postgres))
+- **PostgreSQL** — the only storage backend: vendor lookup scrape caches, and the published lookup + draft itself (see [How the lookup data is stored](#how-the-lookup-data-is-stored))
 - **AI providers (optional)** — OpenAI, Google Gemini, or OpenRouter for AI match + Ambiguous OS detection
 - **endoflife.date API** — primary lifecycle dates
 - **Vendor Lookups** — local scrapes used when the API misses
@@ -47,10 +47,10 @@ Compose starts:
 
 | Service | Role |
 |---------|------|
-| `db` | PostgreSQL 16 — vendor lookup caches (always used); also the published lookup + draft when `LOOKUP_DB_ENABLED` is explicitly turned on (see below) |
+| `db` | PostgreSQL 16 — the app's only storage backend: vendor lookup caches, and the published lookup + draft (see [How the lookup data is stored](#how-the-lookup-data-is-stored)) |
 | `os-health-check` | FastAPI app on port `8000` (override with `APP_PORT`) |
 
-The app bind-mounts the repo and enables live reload by default (`UVICORN_RELOAD=true`), so code edits apply without rebuilding.
+The app's code is baked into the image (no bind mount, on purpose — see [How the lookup data is stored](#how-the-lookup-data-is-stored)), and live reload is off by default (`UVICORN_RELOAD=false`). Rebuild (`docker compose up -d --build`) after pulling new code.
 
 **First useful steps in the UI**
 
@@ -78,9 +78,8 @@ Never commit `.env` (it is gitignored). For Portainer, set the same variables in
 
 | Variable | Required? | Default | Purpose |
 |----------|-----------|---------|---------|
-| `DATABASE_URL` | **Yes** for vendor lookups | Compose: `postgresql://oshealth:oshealth@db:5432/oshealth` | PostgreSQL connection string, used unconditionally for vendor-lookup caches |
-| `LOOKUP_DB_ENABLED` | Optional — explicit opt-in | *(unset / false)* | Set to `true` to **also** move the published lookup + draft into Postgres (requires `DATABASE_URL` too). Leaving it unset keeps the lookup data as local files even if `DATABASE_URL` is set for vendor caches — see [Where the lookup data lives](#where-the-lookup-data-lives-file-mode-vs-shared-postgres) |
-| `LOOKUP_DB_MIRROR_FILES` | Optional, DB-mode only | *(unset / false)* | Set to `true` to **also** write `_data/eol_lookup.csv` / `_data/eol_lookup_evidence.json` / `_data/.revision` on every publish, alongside Postgres. Ignored unless `LOOKUP_DB_ENABLED=true`. See the caveat under [Where the lookup data lives](#where-the-lookup-data-lives-file-mode-vs-shared-postgres) before enabling this with more than one app instance sharing the database |
+| `DATABASE_URL` | **Yes** | Compose: `postgresql://oshealth:oshealth@db:5432/oshealth` | PostgreSQL connection string — required for vendor-lookup caches **and** the published lookup + draft. The app refuses to start without it |
+| `LOOKUP_DB_ENABLED` | **Yes** | *(none)* | Must be `true` — the app refuses to start otherwise. There is no file-based fallback; see [How the lookup data is stored](#how-the-lookup-data-is-stored) |
 | `POSTGRES_USER` | Compose `db` service | `oshealth` | Postgres username |
 | `POSTGRES_PASSWORD` | Compose `db` service | `oshealth` | Postgres password |
 | `POSTGRES_DB` | Compose `db` service | `oshealth` | Postgres database name |
@@ -92,20 +91,19 @@ Never commit `.env` (it is gitignored). For Portainer, set the same variables in
 | `OPENROUTER_API_KEY` | For OpenRouter | *(empty)* | Enables the **OpenRouter** provider |
 | `OPENROUTER_MODEL` | Optional | `openrouter/free` | Default OpenRouter model / router (see below) |
 | `APP_PORT` | Optional | `8000` | Host port mapped to the container |
-| `UVICORN_RELOAD` | Optional | `true` (compose) | Live reload; set `false` in production-style deploys |
+| `UVICORN_RELOAD` | Optional | `false` (compose) | Live reload; set `true` for local development (there's no bind mount, so this only helps if you also rebuild-on-change some other way) |
 
-### Minimal `.env` (Docker, no AI, file-mode lookup storage)
+### Minimal `.env` (Docker, no AI)
 
-Enough to run the app + Postgres with vendor lookups, keeping the published lookup itself as a git-synced CSV — this is the default and what most local/per-person clones should use:
+`docker compose up --build` works with **no `.env` at all** — `docker-compose.yml` already defaults `DATABASE_URL`/`LOOKUP_DB_ENABLED` to the bundled `db` service. Only create `.env` once you need to override something (a different Postgres, AI keys, etc.):
 
 ```env
 POSTGRES_USER=oshealth
 POSTGRES_PASSWORD=oshealth
 POSTGRES_DB=oshealth
 DATABASE_URL=postgresql://oshealth:oshealth@db:5432/oshealth
+LOOKUP_DB_ENABLED=true
 ```
-
-`DATABASE_URL` here only wires up vendor-lookup caching — the published lookup and draft stay as local files, because `LOOKUP_DB_ENABLED` (see below) is unset. Set that too, explicitly, when you actually want the shared-Postgres lookup-data backend described in [Where the lookup data lives](#where-the-lookup-data-lives-file-mode-vs-shared-postgres).
 
 ### Example `.env` with all three AI providers
 
@@ -114,6 +112,7 @@ POSTGRES_USER=oshealth
 POSTGRES_PASSWORD=oshealth
 POSTGRES_DB=oshealth
 DATABASE_URL=postgresql://oshealth:oshealth@db:5432/oshealth
+LOOKUP_DB_ENABLED=true
 
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-4o-mini
@@ -134,42 +133,18 @@ You do **not** need every provider. Configure one (or more), then pick which to 
 | `docker compose` (app talks to service `db`) | `postgresql://oshealth:oshealth@db:5432/oshealth` |
 | App on host, Postgres in Docker published on `5432` | `postgresql://oshealth:oshealth@127.0.0.1:5432/oshealth` |
 | Your own Postgres | `postgresql://USER:PASSWORD@HOST:5432/DBNAME` |
-| No shared DB at all (vendor lookups won't work either) | Leave `DATABASE_URL` unset — the main editor, Draft/Data, and publish all work fully on local files |
 
-User / password / db name in the URL must match `POSTGRES_*` (or your real Postgres credentials).
+User / password / db name in the URL must match `POSTGRES_*` (or your real Postgres credentials). There is no working mode without a database — the app refuses to start if `DATABASE_URL` / `LOOKUP_DB_ENABLED=true` aren't both set.
 
 ---
 
-## Where the lookup data lives: file-mode vs shared Postgres
+## How the lookup data is stored
 
-This app can be run two different ways, and the choice matters a lot once more than one person is using it. **`DATABASE_URL` on its own only wires up vendor-lookup caching** (it always has, in every deployment) — switching the *lookup data itself* to Postgres requires the separate, explicit `LOOKUP_DB_ENABLED=true` flag too. This two-flag split exists specifically so that an existing deployment with `DATABASE_URL` set purely for vendor caches never gets silently switched into an empty Postgres-backed lookup it never asked for.
+PostgreSQL is the **only** storage backend — there is no file-based fallback. The published lookup, its draft, evidence, and backups all live in a dedicated `lookup` Postgres schema (`lookup_db.py`): one shared source of truth for everyone hitting that server, so there's nothing to reconcile between independent copies.
 
-### File mode (default — `LOOKUP_DB_ENABLED` unset)
+Publish is a normal atomic transaction with an optimistic-concurrency guard: if Data was published again since your Draft's `expected_revision`, the transaction is rejected outright (409, "Data was published again since your draft started — refresh and reapply your changes") instead of overwriting. Concurrent publish attempts are serialized with a Postgres advisory lock so exactly one ever wins. Backups happen automatically inside the same publish transaction (a `backups` table row) — query it directly with SQL if you need to recover an older Data state.
 
-The published lookup and its evidence sidecar are plain files (`_data/eol_lookup.csv`, `_data/eol_lookup_evidence.json`), typically synced between people via `git`. Each person runs their own local instance against their own clone. This is the original design and is still the default.
-
-Because everyone has an independent copy, **publishing is a 3-way merge, not a blind overwrite**:
-
-- When you click **Edit data**, the app records a **base snapshot** — an exact copy of what Data looked like the instant your Draft was created (sent by your own browser, not re-derived later, so there's no race against Data changing in between).
-- When you **Validate & publish**, the app re-reads the *current* Data, compares it against your base snapshot and your Draft, and merges:
-  - A row someone else changed (that you never touched) — their change is kept automatically.
-  - A row only you changed — your change is kept.
-  - A row changed identically by both — no conflict.
-  - A row **both of you changed differently** — publish stops and shows you a resolver: pick "Keep mine" or "Keep theirs" per row (default: "Keep theirs", since the most common real conflict is two environments each running Refresh EOL/EOAS and publishing at different times — the one already published is usually the fresher one), or apply one choice to every conflict at once.
-  - Real duplicate `os_string` values (which do exist in production data) are never silently collapsed — a key that appears more than once on either side is always surfaced for you to resolve explicitly.
-- A lightweight revision counter (`_data/.revision`) drives a **staleness banner**: if you're sitting on Data (not even drafting) and someone else publishes, you're told to reload; if you're mid-Draft and someone else publishes, you get a reassurance notice ("it's fine to keep editing — publishing will merge this in") rather than a surprise at the end.
-
-**Commit `_data/.revision` alongside `_data/eol_lookup.csv`** on every publish (`git add _data/` covers both) — the staleness banner only stays meaningful across clones if the revision counter travels with the data file through git, the same way the CSV itself does.
-
-The merge logic lives in `lookup_extras.py::merge_lookup_rows`; the endpoints are `POST /api/lookup/validate/check` (preview conflicts, no writes) and `POST /api/lookup/validate` / `POST /api/lookup/validate/stream` (the real publish, same merge, writes only if nothing is left unresolved).
-
-### Shared Postgres (production — `LOOKUP_DB_ENABLED=true` and `DATABASE_URL` both set)
-
-Once `LOOKUP_DB_ENABLED=true` is set (with `DATABASE_URL` pointing at Postgres), the published lookup, draft, and evidence move into a dedicated `lookup` Postgres schema (`lookup_db.py`) instead of local files — one shared source of truth for everyone hitting that server, no independent copies to reconcile. Publish becomes a normal atomic transaction with an optimistic-concurrency guard: if Data was published again since your Draft's `expected_revision`, the transaction is rejected outright (409, "Data was published again since your draft started — refresh and reapply your changes") instead of overwriting — no per-row merge needed because there's nothing to merge, just one table. Concurrent publish attempts are serialized with a Postgres advisory lock so exactly one ever wins.
-
-Backups happen automatically inside the same publish transaction (a `backups` table row, not a file) — query it directly with SQL if you need to recover an older Data state.
-
-**Migrating existing file-mode data into Postgres happens automatically** — no separate step needed. On every container start, `docker/entrypoint.sh` runs `docker/import_if_empty.py` before the app itself: if `LOOKUP_DB_ENABLED`+`DATABASE_URL` are set and the `lookup` schema's `data` source has zero rows, it loads in whatever's at `_data/eol_lookup.csv` (+ evidence) automatically. It's idempotent and safe to leave running forever — a no-op on every later restart once the DB has data (from that import, or a real publish), and a no-op if `_data/` is empty too, so a brand-new deployment with nothing published yet just starts clean.
+**Seeding a brand-new, empty database happens automatically** — no separate step needed. On every container start, `docker/entrypoint.sh` runs `docker/import_if_empty.py` before the app itself: if the `lookup` schema's `data` source has zero rows, it loads in whatever's at the image's baked-in `_data/eol_lookup.csv` (+ evidence sidecar) automatically. It's idempotent and safe to leave running forever — a no-op on every later restart once the DB has data (from that import, or a real publish).
 
 If you're running outside Docker, or want to force a re-import (overwriting whatever's currently in Postgres with `_data/eol_lookup.csv`), the same logic is available by hand:
 
@@ -179,11 +154,7 @@ python lookup_db.py --force
 
 (Without `--force`, it refuses if the `data` source already has rows — the automatic hook above already covers the "first deploy, DB is empty" case, so this is only for an explicit, deliberate overwrite.)
 
-**Non-goals, on purpose**: switching to Postgres does *not* turn Draft into a per-user thing — there's still exactly one shared Draft, same as file mode, just relocated. Two people editing that one shared Draft at the same time can still step on each other's in-progress edits (that's a separate, larger feature if it's ever wanted). Also, don't mix modes against the same deployment — pick file mode or Postgres mode per environment; running both against the same `_data/` would silently fork into two unrelated stores.
-
-**Keeping `_data/` updated too (`LOOKUP_DB_MIRROR_FILES=true`)**: by default, once `LOOKUP_DB_ENABLED=true`, `_data/eol_lookup.csv` and `_data/eol_lookup_evidence.json` are never read from **or** written to again — Postgres is the only source of truth. Set `LOOKUP_DB_MIRROR_FILES=true` (in addition to `LOOKUP_DB_ENABLED=true`) if you want every successful publish to *also* overwrite those files (and `_data/.revision`), e.g. to keep a git-trackable snapshot alongside a single-instance deployment. It backs up the previous file contents first, exactly like the file-mode publish path does.
-
-This is meaningful only for a single app instance talking to that database. If more than one instance shares the same Postgres (several people each running their own container against one remote database), each instance's mirrored files reflect only the publishes *that instance* performed — they go stale the moment a different instance publishes, since nothing pushes a copy to the others. Postgres itself never drifts (it's still the one real source of truth either way); only the optional file mirror can mislead you into thinking a stale local CSV is current. Leave it off unless you specifically want that git-trackable file for a single instance.
+**Non-goal, on purpose**: there's exactly one shared Draft per database, not a per-user one — two people editing that one shared Draft at the same time can still step on each other's in-progress edits (that's a separate, larger feature if it's ever wanted).
 
 ---
 
@@ -232,7 +203,7 @@ AI match stays **off by default** even when keys are present, so you never get s
 
 | Tab | What it controls | Stored in |
 |-----|-------------------|-----------|
-| **Vendor lookups** | Enable sources + family keywords for Refresh fallback | `_data/vendor_lookup_settings.json` |
+| **Vendor lookups** | Enable sources + family keywords for Refresh fallback | `_config/vendor_lookup_settings.json` |
 | **Configure AI** | AI on/off, provider, model per provider, confidence cutoff, custom system prompt | `_config/app_settings.json` (+ `_config/ai_model_choices.json` for the model catalog) |
 | **Appearance** | Theme (light/dark) and row density (compact/comfortable) | Browser `localStorage` only — per-browser, not shared |
 
@@ -240,12 +211,13 @@ AI match stays **off by default** even when keys are present, so you never get s
 
 ## Run without Docker
 
-1. Install **Python 3.12+** and a **PostgreSQL** instance (skip Postgres entirely if you're fine losing Vendor Lookups and staying in file mode).
+1. Install **Python 3.12+** and a **PostgreSQL** instance — required; there is no file-based fallback.
 2. Create a database/user (or reuse defaults from `.env.example`).
 3. Configure `.env`:
 
 ```env
 DATABASE_URL=postgresql://oshealth:oshealth@127.0.0.1:5432/oshealth
+LOOKUP_DB_ENABLED=true
 # plus optional OPENAI_* / GEMINI_* / OPENROUTER_* as above
 ```
 
@@ -258,19 +230,36 @@ python -m uvicorn app:app --reload
 
 Open [http://127.0.0.1:8000](http://127.0.0.1:8000).
 
-Without `DATABASE_URL` / Postgres, the main editor still works fully in file mode, but **Vendor Lookups** (Update / Refresh fallback to local scrapes) will not.
-
 ### Portainer
 
 Deploy `docker-compose.yml` as a stack, then set environment variables in the Portainer UI (`DATABASE_URL` / `POSTGRES_*`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, models, `APP_PORT`, etc.).
 
 Cloud **Deploy** (Azure/AWS) shells out to the `az` / `aws` CLI on the host running the app. The default image does **not** include either CLI, so Deploy from Portainer needs a host with the relevant CLI installed (or a custom image that adds it) and an authenticated session (`az login` / `aws configure`).
 
+### Kubernetes
+
+For a real cluster deployment (AKS/EKS/etc.), the manifests live in [`k8s/`](k8s/) with a full step-by-step guide in [`k8s/README.md`](k8s/README.md). Postgres is **not** part of those manifests — point `DATABASE_URL` at whatever managed Postgres (or self-hosted instance) you're using; for local testing, keep using `docker compose` instead, which runs its own Postgres container.
+
+**Prerequisites** (see `k8s/README.md` for detail on each):
+
+- A Kubernetes cluster already running, with `kubectl` pointed at it
+- A reachable PostgreSQL database (managed or self-hosted) and its connection string
+- A container registry account (Docker Hub by default) to push the built image to
+- Docker, to build that image
+
+**What gets deployed**: a `Namespace`, a `Secret` (created by hand via `kubectl create secret`, never committed — see `k8s/secret.example.yaml`) for `DATABASE_URL` + AI keys, a `ConfigMap` for non-secret env vars, a `PersistentVolumeClaim` that persists `_config/` (Settings, vendor-source toggles) across pod restarts, a `Deployment` (1 replica), and a `LoadBalancer` `Service`.
+
+**Loading data the first time**: there's no separate "import" step to run by hand. The same startup hook the Docker deployment uses (`docker/import_if_empty.py`) runs automatically inside the pod before the app starts — on a genuinely empty Postgres database, it loads in the lookup data baked into the image (`_data/eol_lookup.csv`) the first time it connects and finds zero rows, logging `[lookup_db] No 'data' rows in Postgres schema 'lookup' yet -- importing N row(s)...`. Every later pod restart is a no-op once the database has any rows (from that import, or a real publish).
+
+**No cloud account yet?** These same manifests can be tested against [minikube](https://minikube.sigs.k8s.io/) — a real one-node Kubernetes cluster that runs inside Docker on your own machine — before you ever touch Azure/AWS. See [k8s/README.md § Testing locally with minikube](k8s/README.md#testing-locally-with-minikube-no-cloud-needed).
+
+Full walkthrough (building/pushing the image, creating the secret, applying the manifests, watching startup logs, getting the external IP, updating to a new build, tearing it down): [`k8s/README.md`](k8s/README.md).
+
 ---
 
 ## CSV schema
 
-The lookup (file mode: `_data/eol_lookup.csv`; Postgres mode: the `lookup` schema's `rows` table) has exactly these 7 fields:
+The lookup (`lookup` Postgres schema's `rows` table) has exactly these 7 fields:
 
 | Field | Meaning |
 |--------|---------|
@@ -282,7 +271,7 @@ The lookup (file mode: `_data/eol_lookup.csv`; Postgres mode: the `lookup` schem
 | `eoas_date` | End of active support (epoch, or empty) |
 | `eoas_status` | `true` / `false` / empty |
 
-UI-only fields (matched-by, auto flags, evidence) are **not** part of this schema — evidence lives in a separate sidecar (file mode) or table (Postgres mode). Consecutive duplicate words in `normalized_os_detailed_name` / `normalized_os` are automatically collapsed wherever the app writes them (Refresh, Add OS, "Same as OS") — e.g. a value that would otherwise read `Apple macOS macOS 26 (Tahoe)` is written as `Apple macOS 26 (Tahoe)`. The raw `os_string` itself is never altered.
+UI-only fields (matched-by, auto flags, evidence) are **not** part of this schema — evidence lives in its own table. Consecutive duplicate words in `normalized_os_detailed_name` / `normalized_os` are automatically collapsed wherever the app writes them (Refresh, Add OS, "Same as OS") — e.g. a value that would otherwise read `Apple macOS macOS 26 (Tahoe)` is written as `Apple macOS 26 (Tahoe)`. The raw `os_string` itself is never altered.
 
 ---
 
@@ -290,9 +279,10 @@ UI-only fields (matched-by, auto flags, evidence) are **not** part of this schem
 
 ```
 OS-Health-Check/
-├── app.py                      # FastAPI routes, file/DB-mode switch, publish/merge orchestration
-├── lookup_extras.py            # Evidence classification, Data-vs-Draft diff, 3-way publish merge
-├── lookup_db.py                # Postgres-backed lookup storage (activated by LOOKUP_DB_ENABLED=true + DATABASE_URL)
+├── app.py                      # FastAPI routes, publish orchestration -- Postgres-only, refuses to
+│                                #   start without DATABASE_URL + LOOKUP_DB_ENABLED=true
+├── lookup_extras.py            # Evidence classification, Data-vs-Draft diff
+├── lookup_db.py                # Postgres-backed lookup storage -- the only storage backend
 ├── normalization_service.py    # Vendor tags, fuzzy helpers, AI match, model/provider config
 ├── eol_service.py               # endoflife.date lookup
 ├── version_match.py             # Shared release/version scoring
@@ -338,27 +328,24 @@ OS-Health-Check/
 ├── Dockerfile                   # Container image
 ├── docker-compose.yml            # App + PostgreSQL (local / Portainer)
 ├── docker/entrypoint.sh          # uvicorn startup (+ optional --reload)
-├── docker/import_if_empty.py     # Auto-imports _data/ into Postgres on first DB-mode startup
+├── docker/import_if_empty.py     # Seeds a brand-new, empty Postgres from _data/ on first startup
+├── k8s/                          # Kubernetes manifests + deployment guide (see k8s/README.md)
 ├── .env.example                  # Documented env vars (copy to .env)
 ├── _data/
-│   ├── eol_lookup.csv            # Canonical published lookup (file mode)
-│   ├── eol_lookup_evidence.json
-│   ├── .revision                 # Publish counter for the staleness banner — commit this
-│   │                              #   alongside eol_lookup.csv on every publish (file mode)
-│   └── vendor_lookup_settings.json  # Refresh enable/keywords (shared)
-├── _draft/                       # Working editable copy (gitignored)
-│   ├── eol_lookup.csv  eol_lookup_evidence.json
-│   └── eol_lookup.base.csv  eol_lookup.base_evidence.json  eol_lookup.base.revision
-│                              # Merge base snapshot, captured when the draft was created
-├── _config/                      # Local settings (gitignored)
-│   ├── app_settings.json         # ai_enabled, ai_provider, ai_confidence_threshold, ai_models, prompt
-│   ├── ai_model_choices.json     # Per-provider model catalog (curated + anything you've added)
-│   ├── azure.json                # Named Azure Blob profiles + active selection
-│   └── aws.json                  # Named AWS S3 profiles + active selection
-└── _backup/                      # Timestamped backups on publish (file mode)
+│   ├── eol_lookup.csv            # Baked-in seed CSV -- only ever read once, by the first-boot
+│   │                              #   import hook above, to populate a brand-new empty Postgres
+│   └── eol_lookup_evidence.json  # Its evidence sidecar, same one-time purpose
+└── _config/                      # Persisted Settings (gitignored; a PVC in Kubernetes)
+    ├── app_settings.json         # ai_enabled, ai_provider, ai_confidence_threshold, ai_models, prompt
+    ├── ai_model_choices.json     # Per-provider model catalog (curated + anything you've added)
+    ├── vendor_lookup_settings.json  # Refresh enable/keywords for eosl/microsoft-lifecycle/junos/suse
+    ├── layer23_switch_sync.json  # Manufacturer selection for the Layer23-Switch scraper
+    ├── router_switch_sync.json   # Manufacturer selection for the Router-Switch scraper
+    ├── azure.json                # Named Azure Blob profiles + active selection
+    └── aws.json                  # Named AWS S3 profiles + active selection
 ```
 
-Vendor lookup scrapes are stored in PostgreSQL (schemas: `eosl`, `microsoft_lifecycle`, `junos`, `suse`, `layer23_switch`, `router_switch`) whenever `DATABASE_URL` is set; the lookup data itself only moves into its own `lookup` schema (`rows`, `evidence`, `meta`, `backups` tables) when `LOOKUP_DB_ENABLED=true` is also set — otherwise it stays in `_data/` files even with `DATABASE_URL` present. Re-run **Vendor Lookups → Update** after a fresh deploy to populate the vendor schemas.
+Vendor lookup scrapes are stored in PostgreSQL (schemas: `eosl`, `microsoft_lifecycle`, `junos`, `suse`, `layer23_switch`, `router_switch`); the lookup data itself lives in its own `lookup` schema (`rows`, `evidence`, `meta`, `backups` tables). Re-run **Vendor Lookups → Update** after a fresh deploy to populate the vendor schemas.
 
 ---
 
@@ -436,7 +423,7 @@ flowchart TD
 
 ## EOL / EOAS refresh flow
 
-**Refresh EOL/EOAS** fills dates per row in this order. **endoflife.date is always first** (not configurable). Local Vendor Lookups follow a fixed order: **eosl → microsoft-lifecycle → junos → suse → layer23-switch → router-switch**. Specialists (junos / suse / layer23-switch / router-switch) only run when **enabled** and their **family keywords** match. eosl and microsoft-lifecycle have no keyword gate — they're general fallbacks gated only by product-name resolution. Enable flags and keywords are edited under **Settings → Vendor lookups** and stored in `_data/vendor_lookup_settings.json` (Layer23-Switch and Router-Switch are **disabled by default**).
+**Refresh EOL/EOAS** fills dates per row in this order. **endoflife.date is always first** (not configurable). Local Vendor Lookups follow a fixed order: **eosl → microsoft-lifecycle → junos → suse → layer23-switch → router-switch**. Specialists (junos / suse / layer23-switch / router-switch) only run when **enabled** and their **family keywords** match. eosl and microsoft-lifecycle have no keyword gate — they're general fallbacks gated only by product-name resolution. Enable flags and keywords are edited under **Settings → Vendor lookups** and stored in `_config/vendor_lookup_settings.json` (Microsoft Lifecycle, Layer23-Switch, and Router-Switch are **disabled by default**).
 
 Refresh **only re-queries lifecycle sources — it does not re-run fuzzy/AI normalization**. It sends whatever `normalized_os_detailed_name` / `normalized_os` a row already has (or the raw `os_string` if those are blank) into the lifecycle lookup; it never calls the matching pipeline that Add OS uses. If a row's normalized fields are wrong, fix them by hand, use **Same as OS**, or re-add the row through Add OS.
 
@@ -490,7 +477,7 @@ Umbrella for **offline** lifecycle scrapes used as the Refresh fallback above. T
 | **Layer23-Switch EOL** | [layer23-switch.com EOL tool](https://www.layer23-switch.com/eol-eosl-tool/) | `layer23_switch` | **EOL Announcement → `eol_date`**, **EOSL → `eoas_date`**, EOS → released | prior miss, enabled, keywords match (6th; **off by default**) |
 | **Router-Switch EOL** | [router-switch.com EOL checker](https://www.router-switch.com/eol-eosl-checker/) | `router_switch` | **EOL Announcement → `eol_date`**, **EOSL → `eoas_date`**, EOS → released | prior miss, enabled, keywords match (7th; **off by default**) |
 
-Per-source enable + family keywords are edited under **Settings → Vendor lookups** and saved to `_data/vendor_lookup_settings.json`. Each **Update** runs as a cancellable background task (`vendor-sync:{source}`).
+Per-source enable + family keywords are edited under **Settings → Vendor lookups** and saved to `_config/vendor_lookup_settings.json`. Each **Update** runs as a cancellable background task (`vendor-sync:{source}`).
 
 ### eosl.date notes
 
@@ -524,7 +511,7 @@ Per-source enable + family keywords are edited under **Settings → Vendor looku
 - Scrapes paginated manufacturer lists under [router-switch.com/eol-eosl-checker](https://www.router-switch.com/eol-eosl-checker/) (Arista, Aruba, Cisco, Dell, Fortinet, H3C, HPE, Juniper, Mellanox, Palo Alto, Ruckus).
 - **EOL Announcement → `eol_date`**, **End of Service Life (EOSL) → `eoas_date`**, End of Sale (EOS) → released.
 - Wired into Refresh as the **last** local fallback, but **disabled by default**. Enable + keywords under **Settings**.
-- Manufacturer selection is stored in `_data/router_switch_sync.json`.
+- Manufacturer selection is stored in `_config/router_switch_sync.json`.
 - Site is behind Cloudflare; sync uses `curl_cffi` Chrome TLS impersonation. Full sync is large (Cisco alone is ~2k pages) and can take a long time — run it as a background task and keep working elsewhere.
 
 ### Layer23-Switch notes
@@ -532,17 +519,14 @@ Per-source enable + family keywords are edited under **Settings → Vendor looku
 - Scrapes paginated manufacturer lists under [layer23-switch.com/eol-eosl-tool](https://www.layer23-switch.com/eol-eosl-tool/) (same manufacturer set as Router-Switch).
 - **EOL Announcement → `eol_date`**, **End of Service Life (EOSL) → `eoas_date`**, End of Sale (EOS) → released.
 - Wired into Refresh **before Router-Switch**, but **disabled by default**. Enable + keywords under **Settings**.
-- Manufacturer selection is stored in `_data/layer23_switch_sync.json`.
+- Manufacturer selection is stored in `_config/layer23_switch_sync.json`.
 - Site is behind Cloudflare; sync uses `curl_cffi` Chrome TLS impersonation.
 
 ---
 
 ## Evidence (proof)
 
-Per-row evidence of how each field was filled, keyed by `os_string`:
-
-- File mode: `_data/eol_lookup_evidence.json` / `_draft/eol_lookup_evidence.json`
-- Postgres mode: `lookup.evidence` table, one JSON payload per source
+Per-row evidence of how each field was filled, keyed by `os_string`, stored in the `lookup.evidence` table (one JSON payload per source):
 
 Shape:
 
@@ -589,24 +573,21 @@ The row detail drawer's **Matched by** field, and the column filters panel's **M
 
 ---
 
-## Publish safety: conflict resolution & staleness
+## Publish safety: staleness
 
-Covered in depth in [Where the lookup data lives](#where-the-lookup-data-lives-file-mode-vs-shared-postgres). In short, from the editor's point of view:
+Covered in depth in [How the lookup data is stored](#how-the-lookup-data-is-stored). In short, from the editor's point of view:
 
-1. Clicking **Validate & publish** immediately checks for conflicts (`POST /api/lookup/validate/check`) before showing you anything else.
-2. If there are none, you see the usual KPI tiles (new / edited / still-unresolved rows) and an optional backup-name suffix.
-3. If there are conflicts, a resolver replaces that view: each conflicting row shows both versions with **Keep mine** / **Keep theirs** radios (defaulted to "theirs"), plus **Keep mine for all** / **Keep theirs for all** bulk buttons. The confirm button is disabled and reads **Resolve & publish** until every conflict has a choice.
-4. Either way, the actual publish (backup → write → delete draft) then runs as a background task like any other.
+1. Clicking **Validate & publish** immediately checks staleness (`POST /api/lookup/validate/check`) before showing you anything else.
+2. You see the usual KPI tiles (new / edited / still-unresolved rows) and an optional backup-name suffix.
+3. The actual publish then runs as a background task like any other. If Data was published again since your Draft's expected revision, it's rejected outright (409) instead of overwriting — reload and reapply your changes.
 
-While you're on Data (not drafting) or sitting in an open Draft, a banner appears if Data has moved since you last knew about it — a reload prompt on the Data view, a reassurance note in Draft (since the merge above already handles it safely at publish time).
+While you're on Data (not drafting) or sitting in an open Draft, a banner appears if Data has moved since you last knew about it — a reload prompt on the Data view, a reassurance note in Draft.
 
 ```mermaid
 flowchart LR
   Edit[Edit in Draft] --> Save[Auto-save / Save Draft]
-  Save --> Check[Validate and publish: check for conflicts]
-  Check -->|conflicts| Resolve[Resolver: keep mine / theirs]
-  Resolve --> Publish
-  Check -->|none| Publish[Backup Data, write merged rows, delete Draft]
+  Save --> Check[Validate and publish: check staleness]
+  Check --> Publish[Publish: revision-guarded transaction, delete Draft]
   Publish --> CloudOpt[Optional: Deploy to Azure / AWS]
 ```
 
@@ -621,7 +602,7 @@ Available from **Data** only — Deploy uploads the validated, published lookup;
   - **Azure**: Storage account, Container, Blob path (auth: `az login` on the host)
   - **AWS**: Bucket, Region, Key (auth: `aws configure` on the host)
 - **+ New profile**, **Save profile**, **Delete profile**; upload button reads "Upload to {provider}".
-- In Postgres mode, there's no local file to hand the CLI directly — the app exports the current Data to a throwaway temp CSV for the upload and cleans it up afterward. File mode uploads `_data/eol_lookup.csv` directly.
+- There's no local file to hand the CLI directly — the app exports the current Data to a throwaway temp CSV for the upload and cleans it up afterward.
 
 ---
 
@@ -633,7 +614,7 @@ Available from **Data** only — Deploy uploads the validated, published lookup;
 | `POST` | `/api/lookup` | Save rows + evidence to a source; on first-ever draft save (or an explicit reset from Revert), captures the merge base |
 | `GET` | `/api/lookup/evidence` | Evidence for one `os_string` |
 | `GET` | `/api/lookup/diff` | Added / edited / deleted / unresolved counts, Draft vs Data |
-| `POST` | `/api/lookup/validate/check` | No-write preview of a publish: conflicts (file mode) or staleness (DB mode) |
+| `POST` | `/api/lookup/validate/check` | No-write preview of a publish: reports staleness if Data moved since the draft's expected revision |
 | `POST` | `/api/lookup/validate` | Publish (non-streaming) |
 | `POST` | `/api/lookup/validate/stream` | Publish with live progress (the UI's actual publish path) |
 | `POST` | `/api/lookup/row/refresh` | Re-run lifecycle lookup for one row |
@@ -671,5 +652,5 @@ Available from **Data** only — Deploy uploads the validated, published lookup;
 - **Draft vs Data** — safe editing; Validate & publish is the promote step; Refresh never silently wipes an existing Draft.
 - **Evidence sidecar** — audit trail without changing the lookup's own schema.
 - **Background tasks are decoupled from any view** — a task keeps running in a client-side registry regardless of whether its progress modal is open; closing it (or navigating away) only detaches the view, never the task.
-- **Publish never blindly overwrites** — file mode's 3-way merge and Postgres mode's revision-guarded transaction exist specifically so publishing in parallel with someone else never silently discards their already-published work; see [Publish safety](#publish-safety-conflict-resolution--staleness).
-- **Duplicate `os_string` values are never silently collapsed** — both the diff and the publish merge treat a real duplicate as something to resolve explicitly, not something to dedupe by picking one arbitrarily.
+- **Publish never blindly overwrites** — the revision-guarded transaction exists specifically so publishing in parallel with someone else never silently discards their already-published work; see [Publish safety](#publish-safety-staleness).
+- **Duplicate `os_string` values are never silently collapsed** — the diff treats a real duplicate as something to look at, not something to dedupe by picking one arbitrarily.
