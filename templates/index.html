@@ -17,6 +17,16 @@
   <link rel="stylesheet" href="/static/css/settings.css?v={{ static_v('css/settings.css') }}" />
   <link rel="stylesheet" href="/static/css/deploy.css?v={{ static_v('css/deploy.css') }}" />
   <link rel="stylesheet" href="/static/css/background.css?v={{ static_v('css/background.css') }}" />
+  <script>
+    // Public OIDC config for auth.js's browser-side Authorization Code +
+    // PKCE flow (AUTH_MULTITENANCY_PLAN.md §8) -- an issuer URL + public
+    // client id are meant to be visible to the browser, same as any SPA's
+    // bundled config; there is no client secret involved anywhere here.
+    window.__OSHC_AUTH__ = {
+      issuerUrl: {{ keycloak_issuer_url | tojson }},
+      clientId: {{ keycloak_client_id | tojson }},
+    };
+  </script>
 </head>
 <body>
   <div id="app-shell">

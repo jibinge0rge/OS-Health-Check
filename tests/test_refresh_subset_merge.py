@@ -51,11 +51,11 @@ class RefreshSubsetMergeTests(unittest.IsolatedAsyncioTestCase):
 
         saved = {}
 
-        def fake_save_rows(rows, source):
+        def fake_save_rows(rows, source, owner=None):
             saved["rows"] = [r.model_dump() for r in rows]
             saved["source"] = source
 
-        def fake_save_evidence(evidence, source):
+        def fake_save_evidence(evidence, source, owner=None):
             saved["evidence"] = evidence
             return evidence
 
@@ -80,7 +80,7 @@ class RefreshSubsetMergeTests(unittest.IsolatedAsyncioTestCase):
             events = [
                 event
                 async for event in app.lookup_refresh_events(
-                    [row_b], existing_evidence, "draft", __import__("threading").Event()
+                    [row_b], existing_evidence, "draft", __import__("threading").Event(), owner="test-owner"
                 )
             ]
 
@@ -119,13 +119,17 @@ class RefreshSubsetMergeTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(app, "load_rows", return_value=whole_draft),
-            patch.object(app, "save_rows", side_effect=lambda rows, source: saved.update(rows=[r.model_dump() for r in rows])),
-            patch.object(app, "save_evidence", side_effect=lambda evidence, source: evidence),
+            patch.object(
+                app,
+                "save_rows",
+                side_effect=lambda rows, source, owner=None: saved.update(rows=[r.model_dump() for r in rows]),
+            ),
+            patch.object(app, "save_evidence", side_effect=lambda evidence, source, owner=None: evidence),
             patch.object(app, "_source_exists", return_value=True),
             patch.object(app, "refresh_rows_lifecycle_chunk"),
         ):
             async for _ in app.lookup_refresh_events(
-                whole_draft, {"by_os": {}, "updated_at": ""}, "draft", __import__("threading").Event()
+                whole_draft, {"by_os": {}, "updated_at": ""}, "draft", __import__("threading").Event(), owner="test-owner"
             ):
                 pass
 
@@ -147,7 +151,7 @@ class RefreshCompleteEventCarriesBasedOnRevisionTests(unittest.IsolatedAsyncioTe
         with (
             patch.object(app, "load_rows", return_value=[row_a]),
             patch.object(app, "save_rows"),
-            patch.object(app, "save_evidence", side_effect=lambda evidence, source: evidence),
+            patch.object(app, "save_evidence", side_effect=lambda evidence, source, owner=None: evidence),
             patch.object(app, "_source_exists", return_value=True),
             patch.object(app, "refresh_rows_lifecycle_chunk"),
             patch.object(app, "read_draft_based_on_revision", return_value=7),
@@ -155,7 +159,7 @@ class RefreshCompleteEventCarriesBasedOnRevisionTests(unittest.IsolatedAsyncioTe
             events = [
                 event
                 async for event in app.lookup_refresh_events(
-                    [row_a], {"by_os": {}, "updated_at": ""}, "draft", __import__("threading").Event()
+                    [row_a], {"by_os": {}, "updated_at": ""}, "draft", __import__("threading").Event(), owner="test-owner"
                 )
             ]
 
@@ -173,7 +177,7 @@ class RefreshCompleteEventCarriesBasedOnRevisionTests(unittest.IsolatedAsyncioTe
         with (
             patch.object(app, "load_rows", return_value=[row_a]),
             patch.object(app, "save_rows"),
-            patch.object(app, "save_evidence", side_effect=lambda evidence, source: evidence),
+            patch.object(app, "save_evidence", side_effect=lambda evidence, source, owner=None: evidence),
             patch.object(app, "_source_exists", return_value=True),
             patch.object(app, "refresh_rows_lifecycle_chunk"),
             patch.object(app, "read_draft_based_on_revision", side_effect=RuntimeError("db unreachable")),
@@ -181,7 +185,7 @@ class RefreshCompleteEventCarriesBasedOnRevisionTests(unittest.IsolatedAsyncioTe
             events = [
                 event
                 async for event in app.lookup_refresh_events(
-                    [row_a], {"by_os": {}, "updated_at": ""}, "draft", __import__("threading").Event()
+                    [row_a], {"by_os": {}, "updated_at": ""}, "draft", __import__("threading").Event(), owner="test-owner"
                 )
             ]
 

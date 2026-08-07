@@ -18,8 +18,8 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from openpyxl import Workbook
@@ -82,6 +82,12 @@ import lookup_db
 
 
 load_dotenv()
+
+# auth imports lookup_db/iam_db but does its own DEPLOYMENT_ID/KEYCLOAK_*
+# startup check (same fail-loudly-at-import-time pattern as the
+# DATABASE_URL/LOOKUP_DB_ENABLED check right below) -- imported after
+# load_dotenv() so .env-provided values are visible to it too.
+import auth
 
 # This deployment only supports Postgres-backed lookup storage -- there is
 # no file-mode fallback. Fail loudly and immediately at import time (rather
@@ -159,6 +165,26 @@ async def no_cache_static_assets(request: Request, call_next):
     if request.url.path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return response
+
+
+@app.middleware("http")
+async def require_authentication(request: Request, call_next):
+    """Every /api/* route requires an authenticated Keycloak user -- see
+    AUTH_MULTITENANCY_PLAN.md §5.3/§7. Enforced once, here, rather than
+    annotating every individual route with Depends(auth.get_current_user):
+    a route that forgets the dependency can't accidentally end up
+    unauthenticated, and auth.get_current_user (used by handlers that need
+    the actual identity, e.g. draft scoping) just reads what this already
+    validated off request.state.
+
+    auth.authenticate_request does blocking network (JWKS/OIDC discovery)
+    and DB (user upsert) calls, so it runs off the event loop."""
+    if request.url.path.startswith("/api/"):
+        try:
+            request.state.current_user = await asyncio.to_thread(auth.authenticate_request, request)
+        except auth.AuthError as exc:
+            return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+    return await call_next(request)
 
 # Serialize vendor scrape runs so only one hits a remote source at a time.
 VENDOR_SYNC_LOCK = asyncio.Lock()
@@ -677,35 +703,56 @@ def _load_evidence_file() -> dict[str, object]:
     return normalize_evidence_payload(payload)
 
 
-def load_evidence(source: str = "data") -> dict[str, object]:
+def _require_owner(owner: "auth.CurrentUser | None") -> "auth.CurrentUser":
+    """Draft reads/writes are always scoped to one authenticated user
+    (AUTH_MULTITENANCY_PLAN.md §6) -- every call site that can reach the
+    'draft' branch of load_rows/save_rows/etc. is behind
+    Depends(auth.get_current_user), so owner should never actually be None
+    here; this is a defensive guard against a future call site forgetting
+    to pass it, not an expected runtime path."""
+    if owner is None:
+        raise HTTPException(status_code=401, detail="Authentication required for draft access.")
+    return owner
+
+
+def load_evidence(source: str = "data", owner: "auth.CurrentUser | None" = None) -> dict[str, object]:
+    if source.strip().lower() == "draft":
+        owner = _require_owner(owner)
+        return lookup_db.db_load_draft_evidence(owner.deployment_id, owner.user_id)
     return lookup_db.db_load_evidence(source)
 
 
-def save_evidence(evidence: dict[str, object], source: str = "data") -> dict[str, object]:
+def save_evidence(
+    evidence: dict[str, object], source: str = "data", owner: "auth.CurrentUser | None" = None
+) -> dict[str, object]:
+    if source.strip().lower() == "draft":
+        owner = _require_owner(owner)
+        return lookup_db.db_save_draft_evidence(evidence, owner.deployment_id, owner.user_id)
     return lookup_db.db_save_evidence(evidence, source)
 
 
-def delete_evidence(source: str) -> None:
+def delete_evidence(source: str, owner: "auth.CurrentUser | None" = None) -> None:
     # Every call site passes "draft" -- Data's evidence is always replaced
     # via db_publish, never bare-deleted. db_delete_draft covers both rows
-    # and evidence for the draft source in one call.
+    # and evidence (and draft_meta) for this user's draft in one call.
     if source.strip().lower() != "draft":
         raise HTTPException(status_code=400, detail="Only the draft evidence can be deleted directly.")
-    lookup_db.db_delete_draft()
+    owner = _require_owner(owner)
+    lookup_db.db_delete_draft(owner.deployment_id, owner.user_id)
 
 
 def _data_exists() -> bool:
     return lookup_db.db_source_exists("data")
 
 
-def _draft_exists() -> bool:
-    return lookup_db.db_source_exists("draft")
+def _draft_exists(owner: "auth.CurrentUser") -> bool:
+    return lookup_db.db_draft_exists(owner.deployment_id, owner.user_id)
 
 
-def _source_exists(source: str) -> bool:
+def _source_exists(source: str, owner: "auth.CurrentUser | None" = None) -> bool:
     normalized = source.strip().lower()
     if normalized == "draft":
-        return _draft_exists()
+        return _draft_exists(_require_owner(owner))
     if normalized == "data":
         return _data_exists()
     raise HTTPException(status_code=400, detail="Unsupported lookup source.")
@@ -762,11 +809,18 @@ def _write_rows_csv(rows: list[LookupRow], path: Path) -> None:
     temp_path.replace(path)
 
 
-def load_rows(source: str = "data") -> list[dict[str, str]]:
+def load_rows(source: str = "data", owner: "auth.CurrentUser | None" = None) -> list[dict[str, str]]:
+    if source.strip().lower() == "draft":
+        owner = _require_owner(owner)
+        return lookup_db.db_load_draft_rows(owner.deployment_id, owner.user_id)
     return lookup_db.db_load_rows(source)
 
 
-def save_rows(rows: list[LookupRow], source: str = "data") -> None:
+def save_rows(rows: list[LookupRow], source: str = "data", owner: "auth.CurrentUser | None" = None) -> None:
+    if source.strip().lower() == "draft":
+        owner = _require_owner(owner)
+        lookup_db.db_save_draft_rows([row.model_dump() for row in rows], owner.deployment_id, owner.user_id)
+        return
     lookup_db.db_save_rows([row.model_dump() for row in rows], source)
 
 
@@ -784,8 +838,8 @@ def read_data_revision() -> int:
     return lookup_db.db_data_revision()
 
 
-def read_draft_based_on_revision() -> int:
-    return lookup_db.db_draft_based_on_revision()
+def read_draft_based_on_revision(owner: "auth.CurrentUser") -> int:
+    return lookup_db.db_draft_based_on_revision(owner.deployment_id, owner.user_id)
 
 
 def _new_azure_profile_id() -> str:
@@ -1600,6 +1654,7 @@ async def lookup_refresh_events(
     evidence: dict[str, object],
     source: str,
     cancel_event: threading.Event,
+    owner: "auth.CurrentUser",
 ) -> AsyncIterator[str]:
     total = len(rows)
     evidence_by_os = dict((normalize_evidence_payload(evidence).get("by_os") or {}))
@@ -1632,7 +1687,7 @@ async def lookup_refresh_events(
     # into whatever the source currently contains, keyed by os_string --
     # mirrors the client's own onComplete merge (editor.js) so a full-draft
     # refresh (rows already equals the whole draft) stays a no-op here.
-    existing_rows = load_rows(source) if _source_exists(source) else []
+    existing_rows = load_rows(source, owner=owner) if _source_exists(source, owner=owner) else []
     refreshed_by_key = {str(row.get("os_string") or "").strip(): row for row in rows}
     seen_keys: set[str] = set()
     merged_rows: list[dict] = []
@@ -1647,9 +1702,9 @@ async def lookup_refresh_events(
             seen_keys.add(key)
 
     lookup_rows = [LookupRow(**row) for row in merged_rows]
-    save_rows(lookup_rows, source)
+    save_rows(lookup_rows, source, owner=owner)
     saved_evidence = save_evidence(
-        prune_evidence_to_rows({"by_os": evidence_by_os, "updated_at": ""}, lookup_rows), source
+        prune_evidence_to_rows({"by_os": evidence_by_os, "updated_at": ""}, lookup_rows), source, owner=owner
     )
     _attach_matched_by(rows, evidence_by_os)
     complete_event: dict[str, object] = {
@@ -1675,7 +1730,7 @@ async def lookup_refresh_events(
         # the client just keeps whatever revision it already had, same as
         # if this field were never added.
         try:
-            complete_event["based_on_revision"] = read_draft_based_on_revision()
+            complete_event["based_on_revision"] = read_draft_based_on_revision(owner)
         except Exception:
             pass
     yield sse_event(complete_event)
@@ -1786,7 +1841,15 @@ async def index(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
         request=request,
         name="index.html",
-        context={"headers": CSV_HEADERS},
+        context={
+            "headers": CSV_HEADERS,
+            # Public OIDC config the browser needs to run the login flow
+            # itself (auth.js) -- not secret: an OIDC issuer + public
+            # client id are meant to be known to the browser, the same way
+            # they'd appear in any SPA's bundled config.
+            "keycloak_issuer_url": auth.KEYCLOAK_ISSUER_URL,
+            "keycloak_client_id": auth.KEYCLOAK_AUDIENCE,
+        },
     )
 
 
@@ -1794,10 +1857,26 @@ def _published_at() -> str:
     return lookup_db.db_published_at()
 
 
+@app.get("/api/auth/me")
+async def get_current_user_info(
+    current_user: auth.CurrentUser = Depends(auth.get_current_user),
+) -> dict[str, object]:
+    return {
+        "deployment_id": current_user.deployment_id,
+        "user_id": current_user.user_id,
+        "username": current_user.username,
+        "email": current_user.email,
+        "roles": current_user.roles,
+        "is_publisher": current_user.is_publisher,
+    }
+
+
 @app.get("/api/lookup")
-async def get_lookup(source: str = "data") -> dict[str, object]:
-    rows = load_rows(source)
-    evidence = load_evidence(source)
+async def get_lookup(
+    source: str = "data", current_user: auth.CurrentUser = Depends(auth.get_current_user)
+) -> dict[str, object]:
+    rows = load_rows(source, owner=current_user)
+    evidence = load_evidence(source, owner=current_user)
     by_os = evidence.get("by_os") if isinstance(evidence.get("by_os"), dict) else {}
     for row in rows:
         row["matched_by"] = row_matched_by(by_os.get(str(row.get("os_string") or "").strip()), row)
@@ -1807,23 +1886,25 @@ async def get_lookup(source: str = "data") -> dict[str, object]:
         "source": source,
         "evidence": evidence,
         "published_at": _published_at(),
-        "draft_exists": _draft_exists(),
+        "draft_exists": _draft_exists(current_user),
         "data_revision": read_data_revision(),
         "storage_mode": "postgres",
         # host:port/dbname only -- never the password -- so the UI can show
         # which Postgres this instance is actually talking to.
         "storage_target": lookup_db.describe_target(),
     }
-    if source.strip().lower() == "draft" and _draft_exists():
-        result["based_on_revision"] = read_draft_based_on_revision()
+    if source.strip().lower() == "draft" and _draft_exists(current_user):
+        result["based_on_revision"] = read_draft_based_on_revision(current_user)
     return result
 
 
 @app.get("/api/lookup/evidence")
-async def get_lookup_row_evidence(os_string: str, source: str = "data") -> dict[str, object]:
-    evidence = load_evidence(source)
+async def get_lookup_row_evidence(
+    os_string: str, source: str = "data", current_user: auth.CurrentUser = Depends(auth.get_current_user)
+) -> dict[str, object]:
+    evidence = load_evidence(source, owner=current_user)
     by_os = evidence.get("by_os") if isinstance(evidence.get("by_os"), dict) else {}
-    rows = load_rows(source)
+    rows = load_rows(source, owner=current_user)
     row = next((item for item in rows if item.get("os_string") == os_string), None)
     if row is None:
         raise HTTPException(status_code=404, detail="Row not found for that os_string.")
@@ -1831,18 +1912,24 @@ async def get_lookup_row_evidence(os_string: str, source: str = "data") -> dict[
 
 
 @app.get("/api/lookup/diff")
-async def get_lookup_diff(source: str = "draft") -> dict[str, object]:
-    if not _source_exists(source):
+async def get_lookup_diff(
+    source: str = "draft", current_user: auth.CurrentUser = Depends(auth.get_current_user)
+) -> dict[str, object]:
+    if not _source_exists(source, owner=current_user):
         return {"added": [], "edited": [], "deleted": [], "unresolved": 0, "added_count": 0, "edited_count": 0, "deleted_count": 0}
     data_rows = load_rows("data") if _data_exists() else []
-    draft_rows = load_rows(source)
+    draft_rows = load_rows(source, owner=current_user)
     return compute_lookup_diff(data_rows, draft_rows)
 
 
 @app.post("/api/lookup")
-async def update_lookup(payload: LookupPayload, source: str = "draft") -> dict[str, object]:
-    save_rows(payload.rows, source)
-    evidence = save_evidence(prune_evidence_to_rows(payload.evidence, payload.rows), source)
+async def update_lookup(
+    payload: LookupPayload,
+    source: str = "draft",
+    current_user: auth.CurrentUser = Depends(auth.get_current_user),
+) -> dict[str, object]:
+    save_rows(payload.rows, source, owner=current_user)
+    evidence = save_evidence(prune_evidence_to_rows(payload.evidence, payload.rows), source, owner=current_user)
     return {
         "saved": True,
         "row_count": len(payload.rows),
@@ -1851,25 +1938,31 @@ async def update_lookup(payload: LookupPayload, source: str = "draft") -> dict[s
     }
 
 
-def check_publish_conflicts(payload: LookupPayload) -> dict[str, object]:
+def check_publish_conflicts(payload: LookupPayload, owner: auth.CurrentUser) -> dict[str, object]:
     """No-write preview of a publish -- there's no per-row merge to run (a
     shared Postgres database is already one source of truth), just whether
     Data has moved since the draft's expected revision, via `stale`."""
-    expected = lookup_db.db_draft_based_on_revision()
+    expected = lookup_db.db_draft_based_on_revision(owner.deployment_id, owner.user_id)
     current = lookup_db.db_data_revision()
     return {"conflicts": [], "stale": current != expected}
 
 
-def perform_publish(payload: LookupPayload) -> dict[str, object]:
-    """Executes a publish. Raises HTTPException(409) if Data moved since
-    this draft's expected revision."""
+def perform_publish(payload: LookupPayload, owner: auth.CurrentUser) -> dict[str, object]:
+    """Executes a publish of `owner`'s own draft into the shared Data.
+    Raises HTTPException(409) if Data moved since this draft's expected
+    revision. Requires the caller to already hold the publisher role --
+    enforced by the endpoints below via Depends(auth.require_publisher),
+    not here, so this stays a plain, testable function."""
     suffix = sanitize_backup_suffix(payload.backup_suffix)
-    expected_revision = lookup_db.db_draft_based_on_revision()
+    expected_revision = lookup_db.db_draft_based_on_revision(owner.deployment_id, owner.user_id)
     try:
         db_result = lookup_db.db_publish(
             [row.model_dump() for row in payload.rows],
             normalize_evidence_payload(payload.evidence),
             expected_revision,
+            owner.deployment_id,
+            owner.user_id,
+            published_by_user_id=owner.user_id,
             backup_suffix=suffix,
         )
     except lookup_db.PublishConflictError as exc:
@@ -1887,16 +1980,21 @@ def perform_publish(payload: LookupPayload) -> dict[str, object]:
 
 
 @app.post("/api/lookup/validate/check")
-async def validate_lookup_check(payload: LookupPayload) -> dict[str, object]:
+async def validate_lookup_check(
+    payload: LookupPayload, current_user: auth.CurrentUser = Depends(auth.get_current_user)
+) -> dict[str, object]:
     """No-write preview of a publish: runs the same check validate_lookup*
     will run and returns whatever it finds, so the UI can warn about
-    staleness up front instead of discovering it mid-publish."""
-    return check_publish_conflicts(payload)
+    staleness up front instead of discovering it mid-publish. Available to
+    any authenticated user (not just publishers) -- it's read-only."""
+    return check_publish_conflicts(payload, current_user)
 
 
 @app.post("/api/lookup/validate")
-async def validate_lookup(payload: LookupPayload) -> dict[str, object]:
-    return perform_publish(payload)
+async def validate_lookup(
+    payload: LookupPayload, current_user: auth.CurrentUser = Depends(auth.require_publisher)
+) -> dict[str, object]:
+    return perform_publish(payload, current_user)
 
 
 @app.post("/api/lookup/row/refresh")
@@ -1952,7 +2050,9 @@ async def refresh_lookup_rows_stream(payload: RowsRefreshRequest) -> StreamingRe
 
 
 @app.post("/api/lookup/refresh/stream")
-async def refresh_lookup_stream(payload: LookupRefreshStreamRequest) -> StreamingResponse:
+async def refresh_lookup_stream(
+    payload: LookupRefreshStreamRequest, current_user: auth.CurrentUser = Depends(auth.get_current_user)
+) -> StreamingResponse:
     # The Settings toggle only blocks refreshing the whole draft/data in one
     # shot -- a deliberate bulk selection (is_partial_refresh) is always
     # allowed, same as a single-row re-run.
@@ -1980,7 +2080,7 @@ async def refresh_lookup_stream(payload: LookupRefreshStreamRequest) -> Streamin
             async with LOOKUP_REFRESH_LOCK:
                 rows = [row.model_dump() for row in payload.rows]
                 async for event in lookup_refresh_events(
-                    rows, payload.evidence, payload.source, cancel_event
+                    rows, payload.evidence, payload.source, cancel_event, owner=current_user
                 ):
                     yield event
         finally:
@@ -2003,14 +2103,16 @@ async def refresh_lookup_cancel(job_id: str) -> dict[str, object]:
 
 
 @app.post("/api/lookup/validate/stream")
-async def validate_lookup_stream(payload: LookupValidateStreamRequest) -> StreamingResponse:
+async def validate_lookup_stream(
+    payload: LookupValidateStreamRequest, current_user: auth.CurrentUser = Depends(auth.require_publisher)
+) -> StreamingResponse:
     async def events() -> AsyncIterator[str]:
         yield sse_event({"type": "started"})
         # One atomic transaction -- no meaningful sub-steps to report
         # progress on individually.
         yield sse_event({"type": "progress", "stage": "Publishing to database", "processed": 0, "total": 1})
         try:
-            db_publish_result = await asyncio.to_thread(perform_publish, payload)
+            db_publish_result = await asyncio.to_thread(perform_publish, payload, current_user)
         except HTTPException as exc:
             yield sse_event({"type": "error", "message": str(exc.detail)})
             return
@@ -2024,15 +2126,17 @@ async def validate_lookup_stream(payload: LookupValidateStreamRequest) -> Stream
 
 
 @app.get("/api/lookup/download")
-async def download_lookup(source: str = "data") -> Response:
-    if not _source_exists(source):
+async def download_lookup(
+    source: str = "data", current_user: auth.CurrentUser = Depends(auth.get_current_user)
+) -> Response:
+    if not _source_exists(source, owner=current_user):
         detail = "Draft lookup CSV not found." if source == "draft" else "Lookup CSV not found."
         raise HTTPException(status_code=404, detail=detail)
 
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=CSV_HEADERS)
     writer.writeheader()
-    for row in load_rows(source):
+    for row in load_rows(source, owner=current_user):
         writer.writerow(row)
     return Response(
         content=buffer.getvalue(),
@@ -2084,11 +2188,12 @@ async def export_rows(fmt: str, payload: ExportRowsRequest) -> Response:
 
 
 @app.delete("/api/lookup/draft")
-async def delete_draft_lookup() -> dict[str, object]:
-    if not _draft_exists():
+async def delete_draft_lookup(current_user: auth.CurrentUser = Depends(auth.get_current_user)) -> dict[str, object]:
+    if not _draft_exists(current_user):
         raise HTTPException(status_code=404, detail="Draft lookup CSV not found.")
 
-    delete_evidence("draft")  # -> lookup_db.db_delete_draft(): clears rows + evidence + base revision
+    # -> lookup_db.db_delete_draft(): clears this user's draft rows + evidence + draft_meta
+    delete_evidence("draft", owner=current_user)
     return {"deleted": True, "source": "draft"}
 
 

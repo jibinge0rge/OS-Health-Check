@@ -24,6 +24,10 @@ export const state = {
   screen: "editor",
   railCollapsed: persisted.railCollapsed,
 
+  // Populated once at startup from GET /api/auth/me (main.js) -- null until
+  // then. { username, email, roles, is_publisher, ... }
+  currentUser: null,
+
   source: "data",
   draftExists: false,
   dirty: false,

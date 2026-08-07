@@ -12,7 +12,11 @@ cluster.
 
 The app has no file-based storage fallback: it refuses to start unless
 `DATABASE_URL` and `LOOKUP_DB_ENABLED=true` are both set (see `configmap.yaml`
-/ `secret.example.yaml` below).
+/ `secret.example.yaml` below). It also refuses to start unless
+`DEPLOYMENT_ID`/`KEYCLOAK_ISSUER_URL`/`KEYCLOAK_AUDIENCE` are set — see
+`configmap.yaml`'s comments and
+[../KEYCLOAK_SETUP.md](../KEYCLOAK_SETUP.md) for what these mean and how to
+get real values from Keycloak.
 
 ## Prerequisites
 
@@ -40,7 +44,7 @@ If any of the above isn't set up yet, get that in place first — none of the
 | File | Purpose |
 |---|---|
 | `namespace.yaml` | The `os-health-check` namespace everything else lives in |
-| `configmap.yaml` | Non-secret env vars (`LOOKUP_DB_ENABLED=true` is critical — see its comment) |
+| `configmap.yaml` | Non-secret env vars (`LOOKUP_DB_ENABLED=true` is critical — see its comment; `DEPLOYMENT_ID`/`KEYCLOAK_*` need real values — see [../KEYCLOAK_SETUP.md](../KEYCLOAK_SETUP.md)) |
 | `secret.example.yaml` | **Template only** — shows the shape, don't fill in real values and commit it |
 | `pvc.yaml` | Persists `_config/` (Settings, vendor-source toggles) across restarts |
 | `deployment.yaml` | The app itself — 1 replica, `Recreate` strategy (see its comment for why) |

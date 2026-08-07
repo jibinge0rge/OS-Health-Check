@@ -17,3 +17,26 @@ data:
   # the pod crash-loops if either is missing, rather than silently running
   # against ephemeral pod storage. Do not unset this.
   LOOKUP_DB_ENABLED: "true"
+  # AUTH_MULTITENANCY_PLAN.md §5.1/§10 (KEYCLOAK_SETUP.md for how to stand
+  # up Keycloak and get real values) -- every /api/* route requires a
+  # Keycloak-authenticated user; the app raises RuntimeError at startup if
+  # any of these three are missing, same as the DB check above.
+  #
+  # DEPLOYMENT_ID: this deployment's tenant key in the shared Postgres --
+  # independent of Keycloak on purpose (plan §3.1), so it never needs to
+  # change even if Keycloak infrastructure does. Give every real deployment
+  # sharing this database its OWN unique value.
+  DEPLOYMENT_ID: "CHANGE-ME-per-deployment"
+  # KEYCLOAK_ISSUER_URL: this deployment's realm issuer, e.g.
+  # https://kc.example.com/realms/os-health-check. Same value across every
+  # deployment if you're using one shared Keycloak realm, or unique per
+  # deployment if using separate realms/instances -- both work (plan §3.1).
+  KEYCLOAK_ISSUER_URL: "CHANGE-ME-https://your-keycloak/realms/your-realm"
+  # KEYCLOAK_AUDIENCE: the public client id created for this app
+  # (KEYCLOAK_SETUP.md §3) -- e.g. "os-health-check-web". Not a secret:
+  # this is a public/PKCE client with no client secret.
+  KEYCLOAK_AUDIENCE: "CHANGE-ME-client-id"
+  # Realm role gating who may publish a draft into the shared Data (plan
+  # §6.3). Defaults to this value in code even if unset here -- only
+  # override if you used a different role name in Keycloak.
+  KEYCLOAK_PUBLISHER_ROLE: "lookup-publisher"

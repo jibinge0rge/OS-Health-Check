@@ -9,9 +9,14 @@
 > worked, real examples showing actual intermediate values at each step — not
 > just the rules, but a trace of them actually firing.
 >
-> Companion doc: [MATCHING.md](MATCHING.md) goes even deeper on the
+> Companion docs: [MATCHING.md](MATCHING.md) goes even deeper on the
 > endoflife.date release-picking algorithm specifically (more edge cases, more
 > worked examples) if §4 here isn't enough detail on that one piece.
+> [AUTH_MULTITENANCY_PLAN.md](AUTH_MULTITENANCY_PLAN.md) is the design doc
+> behind Keycloak auth + per-user Draft (§6/§7 below reflect the
+> already-implemented result; that doc has the full rationale and schema).
+> [KEYCLOAK_SETUP.md](KEYCLOAK_SETUP.md) is the practical, click-through
+> guide for standing up Keycloak itself.
 
 ---
 
@@ -104,7 +109,16 @@ caches (which always use Postgres) is not by itself enough; the app refuses
 to start unless `LOOKUP_DB_ENABLED=true` is explicit too. There is no
 "file mode" — every data-access function in `app.py` (`load_rows`/
 `save_rows`, `load_evidence`/`save_evidence`, etc.) is a thin wrapper around
-the matching `lookup_db.db_*(...)` call.
+the matching `lookup_db.db_*(...)` call (now `owner`-aware for the `draft`
+source — see §6).
+
+`auth.py` enforces its own equally-required trio the same way, checked at
+import time: `DEPLOYMENT_ID`, `KEYCLOAK_ISSUER_URL`, `KEYCLOAK_AUDIENCE`
+(+ optional `KEYCLOAK_PUBLISHER_ROLE`, default `lookup-publisher`). Every
+`/api/*` route requires a valid Keycloak Bearer token as of
+AUTH_MULTITENANCY_PLAN.md §5 (the "why"); see
+[KEYCLOAK_SETUP.md](KEYCLOAK_SETUP.md) for what these mean in practice and
+how to stand up Keycloak to get real values.
 
 Multiple app instances can point at the **same** shared Postgres database
 (e.g. several docker-compose stacks, or several environments) — see
@@ -1548,22 +1562,39 @@ stateDiagram-v2
 duplicate `os_string` on either side is never diffed row-by-row — the diff
 treats it as `unresolved` rather than silently picking one.
 
-**Publish — no per-row merge**: `db_publish` (`lookup_db.py:255-319`) takes
-an `expected_revision` and, inside `pg_advisory_xact_lock(...)` (serializing
-all publishes), compares it against the current `data_revision` in the
-`meta` table. Mismatch → `PublishConflictError` → HTTP 409, telling the
-client to re-check and reapply. On success: the previous `data` rows/
-evidence are snapshotted into a `backups` table (JSONB), `draft` is
-deleted, and `data_revision` bumps by one — all inside one transaction.
-There's exactly one shared Draft per database, not a per-user one — two
-people editing it at the same time can still step on each other's
-in-progress edits.
+**Draft is per-user** (as of AUTH_MULTITENANCY_PLAN.md): every `/api/*`
+route requires a Keycloak-authenticated caller (`auth.py`'s
+`require_authentication` middleware, `app.py`), and Draft lives in its own
+tables keyed by `(deployment_id, owner_user_id, row_order)` —
+`lookup_db.db_load_draft_rows`/`db_save_draft_rows`/etc. Two different
+users each get their own private draft; they never see or overwrite each
+other's. `deployment_id` comes from this app instance's own `DEPLOYMENT_ID`
+env var (never from the caller), and `owner_user_id` from the validated
+token via `iam_db.upsert_user` (keyed on `(deployment_id, keycloak_sub)` —
+see the plan doc §5.2 for why that composite key, not bare `sub`, is the
+identity). Published **Data stays global** — one shared dataset for
+everyone, unchanged from before.
+
+**Publish — no per-row merge**: `db_publish` (`lookup_db.py`) takes an
+`expected_revision`, `deployment_id`, and `owner_user_id`, and inside
+`pg_advisory_xact_lock(...)` (serializing all publishes), compares the
+revision against the current `data_revision` in the `meta` table. Mismatch
+→ `PublishConflictError` → HTTP 409, telling the client to re-check and
+reapply. On success: the previous `data` rows/evidence are snapshotted into
+`backups` (JSONB, now also recording `published_by_user_id`), only *that
+caller's own* draft rows/evidence/`draft_meta` are deleted, and
+`data_revision` bumps by one — all inside one transaction. Publishing is
+gated behind the `lookup-publisher` realm role (`Depends(auth.require_publisher)`
+on `POST /api/lookup/validate` and `/validate/stream`) — any authenticated
+user can edit/save their own draft, but only role-holders can publish it
+into the shared Data.
 
 **Staleness banner** (`static/js/staleness.js`) polls `GET /api/lookup?source=data`
 periodically for `data_revision`. On a draft, compares against
-`state.draftBasedOnRevision`; if they differ, shows *"Data was published
-again since you started this draft"*. Outside a draft, a simpler *"Data has
-been updated"* banner offers a reload.
+`state.draftBasedOnRevision` (now sourced from that user's own
+`draft_meta.based_on_revision`, not a single global value); if they differ,
+shows *"Data was published again since you started this draft"*. Outside a
+draft, a simpler *"Data has been updated"* banner offers a reload.
 
 **Backups**: `db_publish` inserts the pre-publish rows/evidence into the
 `backups` table in the same transaction as the publish, so a failed publish
@@ -1589,13 +1620,42 @@ what a Kubernetes PVC persists (see `k8s/README.md`).
 
 - `rows(source, row_order, os_string, normalized_os_detailed_name,
   normalized_os, eol_date, eol_status, eoas_date, eoas_status)`, PK
-  `(source, row_order)` — `source` is the literal string `'data'` or
-  `'draft'`. Row order (not `os_string`) is the identity key here, preserving
-  duplicate-`os_string` semantics exactly like the CSV format does.
-- `evidence(source PK, payload JSONB, updated_at)`
-- `meta(key PK, value)` — `data_revision`, `draft_based_on_revision`,
-  `published_at`, and (see below) the cross-instance sync lock.
-- `backups(id, created_at, suffix, rows_json, evidence_json)`
+  `(source, row_order)` — `source` is now only ever the literal string
+  `'data'` (Draft moved out to its own tables below). Row order (not
+  `os_string`) is the identity key here, preserving duplicate-`os_string`
+  semantics exactly like the CSV format does.
+- `evidence(source PK, payload JSONB, updated_at)` — same, `data` only now.
+- `meta(key PK, value)` — `data_revision`, `published_at`,
+  `published_by_user_id`, and (see below) the cross-instance sync lock.
+  `draft_based_on_revision` moved to `draft_meta` below (it's a per-user
+  fact now, not a global one).
+- `backups(id, created_at, suffix, rows_json, evidence_json,
+  published_by_user_id)`
+- `draft_rows(deployment_id, owner_user_id, row_order, os_string, ...)`, PK
+  `(deployment_id, owner_user_id, row_order)` — one private Draft per user.
+- `draft_evidence(deployment_id, owner_user_id, payload JSONB, updated_at)`,
+  PK `(deployment_id, owner_user_id)`.
+- `draft_meta(deployment_id, owner_user_id, based_on_revision, updated_at)`,
+  PK `(deployment_id, owner_user_id)` — this user's draft's merge-base
+  revision, replacing the old global `meta.draft_based_on_revision`.
+
+`iam_db.py` — separate schema `iam` (identity is a distinct concern from
+lookup data): `deployments(deployment_id PK, keycloak_issuer, created_at)`
+and `users(id PK, deployment_id, keycloak_sub, username, email, created_at,
+last_login_at, UNIQUE(deployment_id, keycloak_sub))`. `id` (a UUID hex
+string) is this app's own internal user id — every draft table's
+`owner_user_id` is this, never the raw Keycloak `sub`. Users are
+JIT-provisioned on first validated request (`auth.authenticate_request` →
+`iam_db.upsert_user`), same "create-on-first-sight" idiom as
+`import_from_files_if_empty`'s data seeding.
+
+A pre-cutover, single-global-draft database migrates automatically:
+`lookup_db.migrate_legacy_global_draft_if_present` (called from
+`docker/import_if_empty.py`, alongside the existing data-seed hook)
+snapshots any legacy `rows`/`evidence` rows with `source='draft'` into
+`backups` (suffix `legacy-global-draft-migration`) and drops them — a
+no-op once there's nothing left there. See AUTH_MULTITENANCY_PLAN.md §9 for
+the full rationale and the operational checklist around it.
 
 `vendor_lookups/db.py` — one schema **per vendor source** (`eosl`,
 `microsoft_lifecycle`, `junos`, `suse`, `layer23_switch`, `router_switch`),
@@ -1820,6 +1880,8 @@ comments elsewhere could otherwise be misled.
 | Dot-aware version scoring shared across sources | `version_match.py` |
 | Draft/Data diffing, evidence formatting | `lookup_extras.py` |
 | Postgres storage for Data/Draft/evidence/meta/backups | `lookup_db.py` |
+| Keycloak JWT validation, roles, `require_authentication` middleware | `auth.py` |
+| Postgres storage for deployments/users (identity) | `iam_db.py` |
 | Fuzzy/AI normalization matching (Add-OS pre-check) | `normalization_service.py` |
 | CSV/Excel column extraction for bulk Add-OS (currently unwired — §12) | `os_import_service.py` |
 | Vendor cascade order + keyword gating + per-source dispatch | `vendor_lookups/vendor_lookup_service.py`, `vendor_lookups/vendor_settings.py` |
@@ -1836,7 +1898,8 @@ comments elsewhere could otherwise be misled.
 | Row detail/evidence side panel | `static/js/drawer.js` |
 | Column filters side panel | `static/js/filters_panel.js` |
 | Staleness banner | `static/js/staleness.js` |
-| Fetch wrappers for every API endpoint | `static/js/api.js` |
+| Fetch wrappers for every API endpoint (attaches the Bearer token) | `static/js/api.js` |
+| Browser-side Keycloak OIDC login (Authorization Code + PKCE, no library) | `static/js/auth.js` |
 | More matching detail/edge cases than §4 covers | `MATCHING.md` |
 
 ---

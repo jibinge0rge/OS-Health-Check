@@ -32,6 +32,14 @@ def row(os_string: str, eol: str = "", eoas: str = "") -> dict:
     }
 
 
+# Fixture identity for the per-user Draft tests -- these tables key on
+# (deployment_id, owner_user_id), not on the raw Keycloak sub (see iam_db.py);
+# the exact strings don't matter here, only that they're stable within a test.
+DEPLOYMENT_ID = "test-deployment"
+USER_ID = "test-user-1"
+OTHER_USER_ID = "test-user-2"
+
+
 @unittest.skipUnless(_pg_available(), "DATABASE_URL not set")
 class LookupDbRoundTripTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -60,12 +68,6 @@ class LookupDbRoundTripTests(unittest.TestCase):
         self.assertEqual([r["eol_date"] for r in loaded if r["os_string"] == "Ambiguous OS"], ["2020-01-01", "2021-01-01"])
         self.assertEqual(loaded[-1]["os_string"], "Zzz Last")
 
-    def test_save_rows_overwrites_previous_content_for_source(self) -> None:
-        lookup_db.db_save_rows([row("First")], "draft", schema=self.schema)
-        lookup_db.db_save_rows([row("Second")], "draft", schema=self.schema)
-        loaded = lookup_db.db_load_rows("draft", schema=self.schema)
-        self.assertEqual([r["os_string"] for r in loaded], ["Second"])
-
     def test_evidence_round_trip(self) -> None:
         evidence = {"by_os": {"Ubuntu 24.04": {"eol": {"method": "api"}}}, "updated_at": "2026-01-01T00:00:00"}
         saved = lookup_db.db_save_evidence(evidence, "data", schema=self.schema)
@@ -74,37 +76,126 @@ class LookupDbRoundTripTests(unittest.TestCase):
         self.assertEqual(loaded["by_os"], evidence["by_os"])
 
     def test_load_missing_source_returns_empty(self) -> None:
-        self.assertEqual(lookup_db.db_load_rows("draft", schema=self.schema), [])
-        self.assertEqual(lookup_db.db_load_evidence("draft", schema=self.schema), {"by_os": {}, "updated_at": ""})
+        self.assertEqual(lookup_db.db_load_draft_rows(DEPLOYMENT_ID, USER_ID, schema=self.schema), [])
+        self.assertEqual(
+            lookup_db.db_load_draft_evidence(DEPLOYMENT_ID, USER_ID, schema=self.schema),
+            {"by_os": {}, "updated_at": ""},
+        )
+
+
+@unittest.skipUnless(_pg_available(), "DATABASE_URL not set")
+class LookupDbDraftTests(unittest.TestCase):
+    """Per-user Draft (AUTH_MULTITENANCY_PLAN.md §6) -- draft_rows/
+    draft_evidence/draft_meta, keyed by (deployment_id, owner_user_id)."""
+
+    def setUp(self) -> None:
+        from vendor_lookups.db import drop_schema
+
+        self.schema = _temp_schema("lookupdraft")
+        self.drop_schema = drop_schema
+        lookup_db.ensure_schema(self.schema)
+
+    def tearDown(self) -> None:
+        self.drop_schema(self.schema)
+
+    def test_save_rows_overwrites_previous_content(self) -> None:
+        lookup_db.db_save_draft_rows([row("First")], DEPLOYMENT_ID, USER_ID, schema=self.schema)
+        lookup_db.db_save_draft_rows([row("Second")], DEPLOYMENT_ID, USER_ID, schema=self.schema)
+        loaded = lookup_db.db_load_draft_rows(DEPLOYMENT_ID, USER_ID, schema=self.schema)
+        self.assertEqual([r["os_string"] for r in loaded], ["Second"])
+
+    def test_two_users_drafts_are_isolated(self) -> None:
+        lookup_db.db_save_draft_rows([row("User 1's row")], DEPLOYMENT_ID, USER_ID, schema=self.schema)
+        lookup_db.db_save_draft_rows([row("User 2's row")], DEPLOYMENT_ID, OTHER_USER_ID, schema=self.schema)
+        self.assertEqual(
+            [r["os_string"] for r in lookup_db.db_load_draft_rows(DEPLOYMENT_ID, USER_ID, schema=self.schema)],
+            ["User 1's row"],
+        )
+        self.assertEqual(
+            [r["os_string"] for r in lookup_db.db_load_draft_rows(DEPLOYMENT_ID, OTHER_USER_ID, schema=self.schema)],
+            ["User 2's row"],
+        )
+        lookup_db.db_delete_draft(DEPLOYMENT_ID, USER_ID, schema=self.schema)
+        self.assertEqual(lookup_db.db_load_draft_rows(DEPLOYMENT_ID, USER_ID, schema=self.schema), [])
+        self.assertEqual(
+            [r["os_string"] for r in lookup_db.db_load_draft_rows(DEPLOYMENT_ID, OTHER_USER_ID, schema=self.schema)],
+            ["User 2's row"],
+        )
 
     def test_first_draft_save_stamps_based_on_revision(self) -> None:
         lookup_db.db_save_rows([row("Data Row")], "data", schema=self.schema)
         lookup_db.db_save_evidence({}, "data", schema=self.schema)
         # Publish once so data_revision moves off its 0 default -- makes the
         # assertion below meaningful (not just "still the initial value").
-        lookup_db.db_publish([row("Data Row")], {}, expected_revision=0, schema=self.schema)
+        lookup_db.db_publish([row("Data Row")], {}, 0, DEPLOYMENT_ID, USER_ID, schema=self.schema)
         revision_when_draft_starts = lookup_db.db_data_revision(schema=self.schema)
 
-        lookup_db.db_save_rows([row("Data Row")], "draft", schema=self.schema)
-        self.assertEqual(lookup_db.db_draft_based_on_revision(schema=self.schema), revision_when_draft_starts)
+        lookup_db.db_save_draft_rows([row("Data Row")], DEPLOYMENT_ID, USER_ID, schema=self.schema)
+        self.assertEqual(
+            lookup_db.db_draft_based_on_revision(DEPLOYMENT_ID, USER_ID, schema=self.schema),
+            revision_when_draft_starts,
+        )
 
         # A second save of the SAME (still-existing) draft -- e.g. an
         # autosave picking up another edit -- must not re-stamp the base;
         # it should still reflect when the draft was first created. (Note:
-        # publishing anything, even unrelated Data, always deletes the
-        # draft -- see db_publish -- so there's no "draft survives a
+        # publishing anything, even unrelated Data, always deletes this
+        # user's draft -- see db_publish -- so there's no "draft survives a
         # publish" scenario to test here; that's covered by
         # test_publish_deletes_draft instead.)
-        lookup_db.db_save_rows([row("Data Row edited")], "draft", schema=self.schema)
-        self.assertEqual(lookup_db.db_draft_based_on_revision(schema=self.schema), revision_when_draft_starts)
+        lookup_db.db_save_draft_rows([row("Data Row edited")], DEPLOYMENT_ID, USER_ID, schema=self.schema)
+        self.assertEqual(
+            lookup_db.db_draft_based_on_revision(DEPLOYMENT_ID, USER_ID, schema=self.schema),
+            revision_when_draft_starts,
+        )
 
     def test_delete_draft_clears_rows_evidence_and_base_revision(self) -> None:
-        lookup_db.db_save_rows([row("Draft Row")], "draft", schema=self.schema)
-        lookup_db.db_save_evidence({"by_os": {"Draft Row": {}}}, "draft", schema=self.schema)
-        lookup_db.db_delete_draft(schema=self.schema)
+        lookup_db.db_save_draft_rows([row("Draft Row")], DEPLOYMENT_ID, USER_ID, schema=self.schema)
+        lookup_db.db_save_draft_evidence({"by_os": {"Draft Row": {}}}, DEPLOYMENT_ID, USER_ID, schema=self.schema)
+        lookup_db.db_delete_draft(DEPLOYMENT_ID, USER_ID, schema=self.schema)
+        self.assertEqual(lookup_db.db_load_draft_rows(DEPLOYMENT_ID, USER_ID, schema=self.schema), [])
+        self.assertEqual(
+            lookup_db.db_load_draft_evidence(DEPLOYMENT_ID, USER_ID, schema=self.schema),
+            {"by_os": {}, "updated_at": ""},
+        )
+        self.assertEqual(lookup_db.db_draft_based_on_revision(DEPLOYMENT_ID, USER_ID, schema=self.schema), 0)
+
+
+@unittest.skipUnless(_pg_available(), "DATABASE_URL not set")
+class MigrateLegacyGlobalDraftTests(unittest.TestCase):
+    """The pre-cutover single-global-draft rows lived in rows/evidence
+    (source='draft') -- migrate_legacy_global_draft_if_present retires them
+    into a backups snapshot so nothing is silently lost (plan §9)."""
+
+    def setUp(self) -> None:
+        from vendor_lookups.db import drop_schema
+
+        self.schema = _temp_schema("legacydraft")
+        self.drop_schema = drop_schema
+        lookup_db.ensure_schema(self.schema)
+
+    def tearDown(self) -> None:
+        self.drop_schema(self.schema)
+
+    def test_migrates_legacy_draft_into_backups_and_drops_it(self) -> None:
+        with lookup_db._connect(self.schema) as connection:
+            connection.execute(
+                "INSERT INTO rows (source, row_order, os_string) VALUES ('draft', 0, %s)", ("Legacy Draft Row",)
+            )
+
+        migrated = lookup_db.migrate_legacy_global_draft_if_present(schema=self.schema)
+        self.assertTrue(migrated)
         self.assertEqual(lookup_db.db_load_rows("draft", schema=self.schema), [])
-        self.assertEqual(lookup_db.db_load_evidence("draft", schema=self.schema), {"by_os": {}, "updated_at": ""})
-        self.assertEqual(lookup_db.db_draft_based_on_revision(schema=self.schema), 0)
+
+        with lookup_db._connect(self.schema) as connection:
+            backups = connection.execute(
+                "SELECT rows_json FROM backups WHERE suffix = 'legacy-global-draft-migration'"
+            ).fetchall()
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0]["rows_json"][0]["os_string"], "Legacy Draft Row")
+
+    def test_is_a_no_op_when_there_is_no_legacy_draft(self) -> None:
+        self.assertFalse(lookup_db.migrate_legacy_global_draft_if_present(schema=self.schema))
 
 
 @unittest.skipUnless(_pg_available(), "DATABASE_URL not set")
@@ -120,19 +211,36 @@ class LookupDbPublishTests(unittest.TestCase):
         self.drop_schema(self.schema)
 
     def test_publish_bumps_revision_and_writes_data(self) -> None:
-        result = lookup_db.db_publish([row("Oracle Linux 9", eol="2032-01-01")], {}, expected_revision=0, schema=self.schema)
+        result = lookup_db.db_publish(
+            [row("Oracle Linux 9", eol="2032-01-01")], {}, 0, DEPLOYMENT_ID, USER_ID, schema=self.schema
+        )
         self.assertEqual(result["data_revision"], 1)
         self.assertEqual(lookup_db.db_data_revision(schema=self.schema), 1)
         self.assertEqual(lookup_db.db_load_rows("data", schema=self.schema)[0]["eol_date"], "2032-01-01")
 
-    def test_publish_deletes_draft(self) -> None:
-        lookup_db.db_save_rows([row("Draft Row")], "draft", schema=self.schema)
-        lookup_db.db_publish([row("Data Row")], {}, expected_revision=0, schema=self.schema)
-        self.assertEqual(lookup_db.db_load_rows("draft", schema=self.schema), [])
+    def test_publish_deletes_only_the_publishing_users_draft(self) -> None:
+        lookup_db.db_save_draft_rows([row("User 1's draft row")], DEPLOYMENT_ID, USER_ID, schema=self.schema)
+        lookup_db.db_save_draft_rows([row("User 2's draft row")], DEPLOYMENT_ID, OTHER_USER_ID, schema=self.schema)
+        lookup_db.db_publish([row("Data Row")], {}, 0, DEPLOYMENT_ID, USER_ID, schema=self.schema)
+        self.assertEqual(lookup_db.db_load_draft_rows(DEPLOYMENT_ID, USER_ID, schema=self.schema), [])
+        # A different user's own in-progress draft in the same deployment is
+        # untouched by someone else's publish (AUTH_MULTITENANCY_PLAN.md §6.3).
+        self.assertEqual(
+            [r["os_string"] for r in lookup_db.db_load_draft_rows(DEPLOYMENT_ID, OTHER_USER_ID, schema=self.schema)],
+            ["User 2's draft row"],
+        )
+
+    def test_publish_records_who_published(self) -> None:
+        lookup_db.db_publish(
+            [row("First")], {}, 0, DEPLOYMENT_ID, USER_ID, published_by_user_id=USER_ID, schema=self.schema
+        )
+        with lookup_db._connect(self.schema) as connection:
+            backup = connection.execute("SELECT published_by_user_id FROM backups ORDER BY id").fetchone()
+        self.assertEqual(backup["published_by_user_id"], USER_ID)
 
     def test_publish_snapshots_previous_data_into_backups(self) -> None:
-        lookup_db.db_publish([row("First")], {}, expected_revision=0, schema=self.schema)
-        lookup_db.db_publish([row("Second")], {}, expected_revision=1, schema=self.schema)
+        lookup_db.db_publish([row("First")], {}, 0, DEPLOYMENT_ID, USER_ID, schema=self.schema)
+        lookup_db.db_publish([row("Second")], {}, 1, DEPLOYMENT_ID, USER_ID, schema=self.schema)
         with lookup_db._connect(self.schema) as connection:
             backups = connection.execute("SELECT rows_json FROM backups ORDER BY id").fetchall()
         self.assertEqual(len(backups), 2)
@@ -142,9 +250,9 @@ class LookupDbPublishTests(unittest.TestCase):
         self.assertEqual(backups[1]["rows_json"][0]["os_string"], "First")
 
     def test_stale_publish_is_rejected_and_writes_nothing(self) -> None:
-        lookup_db.db_publish([row("First")], {}, expected_revision=0, schema=self.schema)
+        lookup_db.db_publish([row("First")], {}, 0, DEPLOYMENT_ID, USER_ID, schema=self.schema)
         with self.assertRaises(lookup_db.PublishConflictError) as ctx:
-            lookup_db.db_publish([row("Stale attempt")], {}, expected_revision=0, schema=self.schema)
+            lookup_db.db_publish([row("Stale attempt")], {}, 0, DEPLOYMENT_ID, USER_ID, schema=self.schema)
         self.assertEqual(ctx.exception.current_revision, 1)
         # Nothing from the rejected attempt should have landed.
         self.assertEqual(lookup_db.db_load_rows("data", schema=self.schema)[0]["os_string"], "First")
@@ -157,7 +265,7 @@ class LookupDbPublishTests(unittest.TestCase):
 
         def attempt(label: str) -> None:
             try:
-                result = lookup_db.db_publish([row(label)], {}, expected_revision=0, schema=self.schema)
+                result = lookup_db.db_publish([row(label)], {}, 0, DEPLOYMENT_ID, USER_ID, schema=self.schema)
                 with lock:
                     results.append(("ok", result))
             except lookup_db.PublishConflictError as exc:

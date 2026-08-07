@@ -6,6 +6,7 @@ openai
 openpyxl
 psycopg[binary,pool]
 pyarrow
+PyJWT[crypto]
 python-dotenv
 python-multipart
 requests

@@ -1,7 +1,18 @@
 // Thin fetch wrappers for every /api/* endpoint the app consumes.
 
+import { getValidAccessToken } from "./auth.js";
+
+// Every /api/* route requires a Bearer token (AUTH_MULTITENANCY_PLAN.md
+// §5/§7) -- merged into every call below, including the SSE streams.
+// getValidAccessToken() refreshes first if the token's about to expire, so
+// callers never need to think about token lifetime themselves.
+async function withAuthHeaders(headers) {
+  const token = await getValidAccessToken();
+  return { ...headers, Authorization: `Bearer ${token}` };
+}
+
 async function json(url, opts) {
-  const response = await fetch(url, opts);
+  const response = await fetch(url, { ...opts, headers: await withAuthHeaders(opts?.headers) });
   if (!response.ok) {
     let detail = response.statusText;
     try {
@@ -36,7 +47,7 @@ function put(url, body) {
 async function postForFile(url, body) {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: await withAuthHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body ?? {}),
   });
   if (!response.ok) {
@@ -52,6 +63,9 @@ async function postForFile(url, body) {
 }
 
 export const api = {
+  // Identity
+  getMe: () => json(`/api/auth/me`),
+
   // Lookup (Data / Draft)
   getLookup: (source = "data") => json(`/api/lookup?source=${encodeURIComponent(source)}`),
   saveLookup: (rows, evidence, source = "draft", { baseRows, baseEvidence, resetBase = false } = {}) =>
@@ -113,7 +127,7 @@ export const api = {
 export async function* streamEvents(url, body, { signal } = {}) {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: await withAuthHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body ?? {}),
     signal,
   });

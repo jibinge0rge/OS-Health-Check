@@ -14,6 +14,9 @@
 # Local:
 #   cp .env.example .env   # optional AI keys
 #   docker compose up --build
+# This also stands up a throwaway, pre-configured Keycloak (see the
+# `keycloak` service's comment below) -- zero .env setup needed for auth
+# either, same as Postgres below.
 #
 # Portainer: deploy this stack (as a Git repository stack, not the plain
 # Web Editor — it needs to build from the Dockerfile) and set env in the UI:
@@ -24,11 +27,27 @@
 #   POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB -- only matter if you're
 #     using the bundled `db` service below; ignored once DATABASE_URL points
 #     elsewhere (e.g. Supabase) -- see the note on the `db` service.
+#   DEPLOYMENT_ID, KEYCLOAK_ISSUER_URL, KEYCLOAK_AUDIENCE -- required, no
+#     fallback (AUTH_MULTITENANCY_PLAN.md §5.1/§10, KEYCLOAK_SETUP.md for
+#     how to get real values). Every /api/* route requires a
+#     Keycloak-authenticated user; the app refuses to start without these,
+#     same as DATABASE_URL below.
 #
 # There is no file-based fallback: the app refuses to start unless
 # DATABASE_URL and LOOKUP_DB_ENABLED=true are both set. They default below
 # to the bundled `db` service, so `docker compose up` works with zero .env
-# setup; override DATABASE_URL in .env to point at a different Postgres.
+# setup.
+#
+# DEPLOYMENT_ID/KEYCLOAK_* default below to the bundled `keycloak` service
+# too -- a throwaway, pre-configured realm imported automatically from
+# docker/keycloak/os-health-check-dev-realm.json (see KEYCLOAK_SETUP.md for
+# what's in it: a public PKCE client, a `lookup-publisher` role, and two
+# test users -- publisher/publisher123, editor/editor123). This is for
+# LOCAL TESTING ONLY, same as this whole compose file -- a real deployment
+# (AKS/EKS, k8s/ manifests) points KEYCLOAK_ISSUER_URL at your actual
+# Keycloak instead; `keycloak` is never part of those manifests. Override
+# any of these in .env to point at a real/different Keycloak instead of the
+# bundled one.
 #
 # Vendor lookup caches live in PostgreSQL (named volume), not SQLite files.
 
@@ -52,6 +71,43 @@ services:
       retries: 10
       start_period: 10s
 
+  # Throwaway, pre-configured Keycloak for LOCAL TESTING ONLY -- never part
+  # of the k8s/ manifests (a real deployment points at your actual Keycloak
+  # instead). Starts unconditionally, same as `db` above -- if you already
+  # have a real/different Keycloak, override KEYCLOAK_ISSUER_URL/
+  # KEYCLOAK_AUDIENCE/KEYCLOAK_INTERNAL_URL in .env and this bundled
+  # container just sits there unused, exactly like overriding DATABASE_URL
+  # already leaves `db` unused. (An earlier version of this file gated this
+  # service behind a Compose profile -- removed because auth is no less
+  # required than the database now that every /api/* route needs it; there
+  # was no good reason to treat the two differently.)
+  #
+  # Auto-imports docker/keycloak/os-health-check-dev-realm.json on first
+  # boot (--import-realm skips it on later restarts if it already exists);
+  # there's no volume here, so a full `docker compose down` + `up` recreates
+  # it from that file every time -- consistent, reproducible test state, not
+  # a bug. See KEYCLOAK_SETUP.md for what's in the realm.
+  keycloak:
+    image: quay.io/keycloak/keycloak:latest
+    container_name: os-health-check-keycloak
+    restart: unless-stopped
+    command: start-dev --import-realm
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    ports:
+      - "${KEYCLOAK_PORT:-8081}:8080"
+    volumes:
+      - ./docker/keycloak/os-health-check-dev-realm.json:/opt/keycloak/data/import/os-health-check-dev-realm.json:ro
+    healthcheck:
+      # No curl in this image -- a bash /dev/tcp probe instead (bash is
+      # present; it's what kc.sh itself runs on).
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
   os-health-check:
     build: .
     image: os-health-check:local
@@ -60,6 +116,10 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      # keycloak deliberately NOT listed here -- auth.py's JWKS/discovery
+      # fetch is lazy (first real request), so the app doesn't need it up
+      # before starting; it'll just be ready by the time anyone actually
+      # tries to log in.
     ports:
       - "${APP_PORT:-8000}:8000"
     env_file:
@@ -70,6 +130,18 @@ services:
       UVICORN_RELOAD: "${UVICORN_RELOAD:-false}"
       DATABASE_URL: "${DATABASE_URL:-postgresql://oshealth:oshealth@db:5432/oshealth}"
       LOOKUP_DB_ENABLED: "${LOOKUP_DB_ENABLED:-true}"
+      # AUTH_MULTITENANCY_PLAN.md §5.1/§10 -- required, no fallback. Default
+      # below points at the bundled `keycloak` service above (see its
+      # comment) -- override any of these in .env to use a real/different
+      # Keycloak instead. KEYCLOAK_ISSUER_URL must be reachable from your
+      # BROWSER (published port); KEYCLOAK_INTERNAL_URL is what this
+      # container itself uses (the Docker network's own service hostname)
+      # -- see auth.py's module docstring for why these two can differ.
+      DEPLOYMENT_ID: "${DEPLOYMENT_ID:-local-dev}"
+      KEYCLOAK_ISSUER_URL: "${KEYCLOAK_ISSUER_URL:-http://localhost:8081/realms/os-health-check-dev}"
+      KEYCLOAK_INTERNAL_URL: "${KEYCLOAK_INTERNAL_URL:-http://keycloak:8080/realms/os-health-check-dev}"
+      KEYCLOAK_AUDIENCE: "${KEYCLOAK_AUDIENCE:-os-health-check-web}"
+      KEYCLOAK_PUBLISHER_ROLE: "${KEYCLOAK_PUBLISHER_ROLE:-lookup-publisher}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       OPENAI_MODEL: "${OPENAI_MODEL:-}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"

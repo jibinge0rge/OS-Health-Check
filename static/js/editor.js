@@ -996,7 +996,16 @@ function updateModeBar() {
     document.getElementById("exit-draft-btn").addEventListener("click", () => switchSource("data"));
     document.getElementById("revert-draft-btn").addEventListener("click", openRevertDraftModal);
     document.getElementById("delete-draft-btn").addEventListener("click", openDeleteDraftModal);
-    document.getElementById("validate-publish-btn").addEventListener("click", openValidateModal);
+    const publishBtn = document.getElementById("validate-publish-btn");
+    publishBtn.addEventListener("click", openValidateModal);
+    // Server-side enforcement is the real gate (403 from
+    // Depends(auth.require_publisher)) -- this is just a UX nicety so a
+    // non-publisher isn't surprised by a failed request after filling out
+    // the whole publish flow.
+    if (state.currentUser && !state.currentUser.is_publisher) {
+      publishBtn.disabled = true;
+      publishBtn.title = "Publishing requires the 'lookup-publisher' role in Keycloak, which your account does not have.";
+    }
   } else {
     el.modeChip.textContent = "PUBLISHED · READ-ONLY";
     el.modeHint.textContent = state.draftExists ? "A saved draft exists — open it to keep editing" : "Click Edit data to create a draft";

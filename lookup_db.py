@@ -67,7 +67,54 @@ CREATE TABLE IF NOT EXISTS backups (
     rows_json JSONB NOT NULL,
     evidence_json JSONB NOT NULL
 );
+
+-- Per-user Draft (AUTH_MULTITENANCY_PLAN.md §6) -- replaces the old
+-- single-global-draft rows in `rows`/`evidence` (source = 'draft'), which
+-- migrate_legacy_global_draft_if_present() below retires. `data` keeps using
+-- the `rows`/`evidence` tables above unchanged -- published Data stays one
+-- shared dataset per the plan's decision, only Draft becomes per-user.
+-- owner_user_id is this app's own iam.users.id (a UUID string), never the
+-- raw Keycloak `sub` -- see iam_db.py.
+CREATE TABLE IF NOT EXISTS draft_rows (
+    deployment_id TEXT NOT NULL,
+    owner_user_id TEXT NOT NULL,
+    row_order INTEGER NOT NULL,
+    os_string TEXT NOT NULL DEFAULT '',
+    normalized_os_detailed_name TEXT NOT NULL DEFAULT '',
+    normalized_os TEXT NOT NULL DEFAULT '',
+    eol_date TEXT NOT NULL DEFAULT '',
+    eol_status TEXT NOT NULL DEFAULT '',
+    eoas_date TEXT NOT NULL DEFAULT '',
+    eoas_status TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (deployment_id, owner_user_id, row_order)
+);
+
+CREATE TABLE IF NOT EXISTS draft_evidence (
+    deployment_id TEXT NOT NULL,
+    owner_user_id TEXT NOT NULL,
+    payload JSONB NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (deployment_id, owner_user_id)
+);
+
+-- Per-user replacement for the old global meta.draft_based_on_revision --
+-- "which Data revision was my draft based on" is now a per-user fact.
+CREATE TABLE IF NOT EXISTS draft_meta (
+    deployment_id TEXT NOT NULL,
+    owner_user_id TEXT NOT NULL,
+    based_on_revision INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (deployment_id, owner_user_id)
+);
 """
+
+# Column added after backups' initial release -- ALTER .. ADD COLUMN IF NOT
+# EXISTS, run unconditionally in ensure_schema, is the idempotent-migration
+# idiom for a column added to an already-existing table (CREATE TABLE IF NOT
+# EXISTS above only ever helps on a brand-new table).
+_BACKUPS_PUBLISHED_BY_COLUMN_DDL = (
+    "ALTER TABLE backups ADD COLUMN IF NOT EXISTS published_by_user_id TEXT NOT NULL DEFAULT '';"
+)
 
 _ensured_schemas: set[str] = set()
 
@@ -103,6 +150,7 @@ def ensure_schema(schema: str = SCHEMA) -> None:
         connection.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(schema)))
         connection.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema)))
         connection.execute(_DDL)
+        connection.execute(_BACKUPS_PUBLISHED_BY_COLUMN_DDL)
         # The sync lock's holder row must already exist before its first use
         # -- SELECT ... FOR UPDATE can't lock a row that isn't there yet, and
         # without this, two instances' very first acquire attempt could race.
@@ -154,9 +202,13 @@ def db_data_revision(schema: str = SCHEMA) -> int:
         return _data_revision(connection)
 
 
-def db_draft_based_on_revision(schema: str = SCHEMA) -> int:
+def db_draft_based_on_revision(deployment_id: str, owner_user_id: str, schema: str = SCHEMA) -> int:
     with _connect(schema) as connection:
-        return int(_get_meta(connection, "draft_based_on_revision", "0"))
+        row = connection.execute(
+            "SELECT based_on_revision FROM draft_meta WHERE deployment_id = %s AND owner_user_id = %s",
+            (deployment_id, owner_user_id),
+        ).fetchone()
+        return int(row["based_on_revision"]) if row else 0
 
 
 def _row_tuple(source: str, index: int, row: dict[str, object]) -> tuple:
@@ -219,15 +271,10 @@ def db_save_rows(
     schema: str = SCHEMA,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> None:
-    """Delete+bulk-insert for this source in one transaction. Stamps
-    draft_based_on_revision the first time draft rows are written for a
-    fresh draft -- just a revision number, since publish only needs a
-    "has anything changed" guard, not a full row-level merge."""
+    """Delete+bulk-insert for this source in one transaction. Only ever
+    called with source='data' now -- Draft moved to its own per-user tables
+    (db_save_draft_rows below); see AUTH_MULTITENANCY_PLAN.md §6."""
     with _connect(schema) as connection:
-        if source == "draft":
-            existing = connection.execute("SELECT 1 FROM rows WHERE source = 'draft' LIMIT 1").fetchone()
-            if existing is None:
-                _set_meta(connection, "draft_based_on_revision", str(_data_revision(connection)))
         connection.execute("DELETE FROM rows WHERE source = %s", (source,))
         _insert_rows(connection, source, rows, on_progress=on_progress)
 
@@ -263,22 +310,186 @@ def db_save_evidence(evidence: dict[str, object], source: str, schema: str = SCH
     return normalized
 
 
-def db_delete_draft(schema: str = SCHEMA) -> None:
+def _draft_row_tuple(deployment_id: str, owner_user_id: str, index: int, row: dict[str, object]) -> tuple:
+    return (
+        deployment_id,
+        owner_user_id,
+        index,
+        str(row.get("os_string", "") or ""),
+        str(row.get("normalized_os_detailed_name", "") or ""),
+        str(row.get("normalized_os", "") or ""),
+        str(row.get("eol_date", "") or ""),
+        str(row.get("eol_status", "") or ""),
+        str(row.get("eoas_date", "") or ""),
+        str(row.get("eoas_status", "") or ""),
+    )
+
+
+def db_draft_exists(deployment_id: str, owner_user_id: str, schema: str = SCHEMA) -> bool:
+    """Cheap existence check for one user's private draft -- "exists" once
+    it has at least one row, same convention as db_source_exists("data")."""
     with _connect(schema) as connection:
+        row = connection.execute(
+            "SELECT 1 FROM draft_rows WHERE deployment_id = %s AND owner_user_id = %s LIMIT 1",
+            (deployment_id, owner_user_id),
+        ).fetchone()
+        return row is not None
+
+
+def db_load_draft_rows(deployment_id: str, owner_user_id: str, schema: str = SCHEMA) -> list[dict[str, str]]:
+    with _connect(schema) as connection:
+        cursor = connection.execute(
+            "SELECT os_string, normalized_os_detailed_name, normalized_os, "
+            "eol_date, eol_status, eoas_date, eoas_status "
+            "FROM draft_rows WHERE deployment_id = %s AND owner_user_id = %s ORDER BY row_order",
+            (deployment_id, owner_user_id),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def db_save_draft_rows(
+    rows: list[dict[str, object]],
+    deployment_id: str,
+    owner_user_id: str,
+    schema: str = SCHEMA,
+) -> None:
+    """Delete+bulk-insert this user's draft rows in one transaction. Stamps
+    draft_meta.based_on_revision the first time this user's draft is written
+    for a fresh draft -- same "has anything changed" guard db_save_rows'
+    old draft branch used to do, just per-user now."""
+    with _connect(schema) as connection:
+        existing = connection.execute(
+            "SELECT 1 FROM draft_rows WHERE deployment_id = %s AND owner_user_id = %s LIMIT 1",
+            (deployment_id, owner_user_id),
+        ).fetchone()
+        if existing is None:
+            connection.execute(
+                "INSERT INTO draft_meta (deployment_id, owner_user_id, based_on_revision, updated_at) "
+                "VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (deployment_id, owner_user_id) DO UPDATE SET "
+                "based_on_revision = EXCLUDED.based_on_revision, updated_at = EXCLUDED.updated_at",
+                (deployment_id, owner_user_id, _data_revision(connection), datetime.now().isoformat(timespec="seconds")),
+            )
+        connection.execute(
+            "DELETE FROM draft_rows WHERE deployment_id = %s AND owner_user_id = %s",
+            (deployment_id, owner_user_id),
+        )
+        for index, row in enumerate(rows):
+            connection.execute(
+                "INSERT INTO draft_rows (deployment_id, owner_user_id, row_order, os_string, "
+                "normalized_os_detailed_name, normalized_os, eol_date, eol_status, eoas_date, eoas_status) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                _draft_row_tuple(deployment_id, owner_user_id, index, row),
+            )
+
+
+def db_load_draft_evidence(deployment_id: str, owner_user_id: str, schema: str = SCHEMA) -> dict[str, object]:
+    with _connect(schema) as connection:
+        row = connection.execute(
+            "SELECT payload, updated_at FROM draft_evidence WHERE deployment_id = %s AND owner_user_id = %s",
+            (deployment_id, owner_user_id),
+        ).fetchone()
+        if not row:
+            return {"by_os": {}, "updated_at": ""}
+        payload = row["payload"]
+        by_os = payload.get("by_os") if isinstance(payload, dict) else None
+        return {"by_os": by_os if isinstance(by_os, dict) else {}, "updated_at": row["updated_at"] or ""}
+
+
+def db_save_draft_evidence(
+    evidence: dict[str, object], deployment_id: str, owner_user_id: str, schema: str = SCHEMA
+) -> dict[str, object]:
+    normalized = _normalize_evidence(evidence)
+    with _connect(schema) as connection:
+        connection.execute(
+            "INSERT INTO draft_evidence (deployment_id, owner_user_id, payload, updated_at) "
+            "VALUES (%s, %s, %s::jsonb, %s) "
+            "ON CONFLICT (deployment_id, owner_user_id) DO UPDATE SET "
+            "payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at",
+            (deployment_id, owner_user_id, json.dumps(normalized), normalized["updated_at"]),
+        )
+    return normalized
+
+
+def db_delete_draft(deployment_id: str, owner_user_id: str, schema: str = SCHEMA) -> None:
+    with _connect(schema) as connection:
+        connection.execute(
+            "DELETE FROM draft_rows WHERE deployment_id = %s AND owner_user_id = %s", (deployment_id, owner_user_id)
+        )
+        connection.execute(
+            "DELETE FROM draft_evidence WHERE deployment_id = %s AND owner_user_id = %s",
+            (deployment_id, owner_user_id),
+        )
+        connection.execute(
+            "DELETE FROM draft_meta WHERE deployment_id = %s AND owner_user_id = %s", (deployment_id, owner_user_id)
+        )
+
+
+def migrate_legacy_global_draft_if_present(schema: str = SCHEMA) -> bool:
+    """One-time cutover (AUTH_MULTITENANCY_PLAN.md §9): before per-user
+    drafts existed, there was exactly one shared global draft in
+    rows/evidence (source='draft'). It has no owner, so it cannot be
+    mechanically assigned to "the right" user -- this snapshots it into
+    backups (so nothing is silently lost) and then drops it, so a fresh
+    per-user draft starts clean. Safe to call on every startup: a no-op
+    once the legacy rows are gone. Whoever owned that deployment's
+    in-progress draft should be told, before this runs, to either publish
+    it or note its state -- see the plan's operational checklist."""
+    with _connect(schema) as connection:
+        existing = connection.execute("SELECT 1 FROM rows WHERE source = 'draft' LIMIT 1").fetchone()
+        if existing is None:
+            return False
+
+        legacy_rows = connection.execute(
+            "SELECT os_string, normalized_os_detailed_name, normalized_os, "
+            "eol_date, eol_status, eoas_date, eoas_status "
+            "FROM rows WHERE source = 'draft' ORDER BY row_order"
+        ).fetchall()
+        evidence_row = connection.execute("SELECT payload FROM evidence WHERE source = 'draft'").fetchone()
+        legacy_evidence = evidence_row["payload"] if evidence_row else {"by_os": {}, "updated_at": ""}
+
+        created_at = datetime.now().isoformat(timespec="seconds")
+        connection.execute(
+            "INSERT INTO backups (created_at, suffix, rows_json, evidence_json) VALUES (%s, %s, %s::jsonb, %s::jsonb)",
+            (
+                created_at,
+                "legacy-global-draft-migration",
+                json.dumps([dict(row) for row in legacy_rows]),
+                json.dumps(legacy_evidence),
+            ),
+        )
         connection.execute("DELETE FROM rows WHERE source = 'draft'")
         connection.execute("DELETE FROM evidence WHERE source = 'draft'")
         connection.execute("DELETE FROM meta WHERE key = 'draft_based_on_revision'")
+
+    print(
+        f"[lookup_db] Migrated legacy global draft ({len(legacy_rows)} row(s)) into "
+        f"backups (suffix 'legacy-global-draft-migration') for schema '{schema}' -- "
+        "per-user drafts start empty from here."
+    )
+    return True
 
 
 def db_publish(
     resolved_rows: list[dict[str, object]],
     resolved_evidence: dict[str, object],
     expected_revision: int,
+    deployment_id: str,
+    owner_user_id: str,
+    published_by_user_id: str = "",
     backup_suffix: str = "",
     schema: str = SCHEMA,
 ) -> dict[str, object]:
     """Transactional publish with an optimistic-concurrency guard: refuses
     to overwrite Data if it was published again since expected_revision.
+
+    "Publish" now means *this specific user's* private draft
+    (deployment_id, owner_user_id) overwrites the shared, still-global Data
+    -- only that user's own draft is cleared afterward; every other user's
+    in-progress draft in this deployment is untouched. published_by_user_id
+    is normally the same as owner_user_id (a user publishing their own
+    draft) but is recorded separately for audit (AUTH_MULTITENANCY_PLAN.md
+    §6.3) in case that ever changes.
 
     An advisory lock serializes every publish attempt (held only for the
     duration of this transaction, released automatically on commit/
@@ -305,13 +516,14 @@ def db_publish(
         current_evidence = current_evidence_row["payload"] if current_evidence_row else {"by_os": {}, "updated_at": ""}
         created_at = datetime.now().isoformat(timespec="seconds")
         connection.execute(
-            "INSERT INTO backups (created_at, suffix, rows_json, evidence_json) "
-            "VALUES (%s, %s, %s::jsonb, %s::jsonb)",
+            "INSERT INTO backups (created_at, suffix, rows_json, evidence_json, published_by_user_id) "
+            "VALUES (%s, %s, %s::jsonb, %s::jsonb, %s)",
             (
                 created_at,
                 backup_suffix,
                 json.dumps([dict(row) for row in current_rows]),
                 json.dumps(current_evidence),
+                published_by_user_id,
             ),
         )
 
@@ -326,13 +538,21 @@ def db_publish(
             (json.dumps(normalized_evidence), created_at),
         )
 
-        connection.execute("DELETE FROM rows WHERE source = 'draft'")
-        connection.execute("DELETE FROM evidence WHERE source = 'draft'")
-        connection.execute("DELETE FROM meta WHERE key = 'draft_based_on_revision'")
+        connection.execute(
+            "DELETE FROM draft_rows WHERE deployment_id = %s AND owner_user_id = %s", (deployment_id, owner_user_id)
+        )
+        connection.execute(
+            "DELETE FROM draft_evidence WHERE deployment_id = %s AND owner_user_id = %s",
+            (deployment_id, owner_user_id),
+        )
+        connection.execute(
+            "DELETE FROM draft_meta WHERE deployment_id = %s AND owner_user_id = %s", (deployment_id, owner_user_id)
+        )
 
         new_revision = current_revision + 1
         _set_meta(connection, "data_revision", str(new_revision))
         _set_meta(connection, "published_at", created_at)
+        _set_meta(connection, "published_by_user_id", published_by_user_id)
 
         return {"data_revision": new_revision, "evidence": normalized_evidence, "row_count": len(resolved_rows)}
 
