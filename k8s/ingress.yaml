@@ -1,0 +1,39 @@
+# TLS Ingress for a real hostname (AKS/EKS + ingress-nginx + cert-manager).
+#
+# REPLACE the host below before apply — `oshealth.frostgate.in` was only used
+# in a one-off Azure credit test. Production / other environments must use
+# their own DNS name (and matching Cloudflare/DNS A record + Keycloak
+# redirect URIs / web origins).
+#
+# Requires: ingress-nginx, a ClusterIssuer (default annotation:
+# letsencrypt-prod — change if your issuer name differs), and DNS for
+# YOUR_APP_HOSTNAME pointing at the ingress controller LoadBalancer IP.
+#
+# proxy-body-size: nginx Ingress defaults to ~1m. Edit Data (fork draft),
+# Publish, and Excel/Parquet export POST the full lookup row set and return
+# 413 Request Entity Too Large without a higher limit.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: os-health-check
+  namespace: os-health-check
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - YOUR_APP_HOSTNAME.example.com   # <-- replace
+      secretName: os-health-check-tls
+  rules:
+    - host: YOUR_APP_HOSTNAME.example.com   # <-- same hostname as tls.hosts
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: os-health-check
+                port:
+                  number: 80

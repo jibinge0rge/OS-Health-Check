@@ -48,7 +48,8 @@ If any of the above isn't set up yet, get that in place first — none of the
 | `secret.example.yaml` | **Template only** — shows the shape, don't fill in real values and commit it |
 | `pvc.yaml` | Persists `_config/` (Settings, vendor-source toggles) across restarts |
 | `deployment.yaml` | The app itself — 1 replica, `Recreate` strategy (see its comment for why) |
-| `service.yaml` | `LoadBalancer` — exposes it with a public IP, no Ingress controller needed |
+| `service.yaml` | `LoadBalancer` — public IP without Ingress (fine for minikube / quick smoke); on AKS with TLS use ClusterIP + `ingress.yaml` |
+| `ingress.yaml` | Optional HTTPS Ingress — set **your** hostname before apply (not production-specific); needs ingress-nginx + cert-manager; `proxy-body-size: 50m` avoids 413 on draft/export |
 
 ## Local (minikube) vs. real cluster (AKS/EKS) — quick translation
 

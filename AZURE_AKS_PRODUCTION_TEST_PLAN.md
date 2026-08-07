@@ -451,34 +451,23 @@ dig +short oshealth.frostgate.in
 ```bash
 kubectl -n os-health-check patch svc os-health-check -p '{"spec":{"type":"ClusterIP"}}'
 
-kubectl apply -f - <<'EOF'
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: os-health-check
-  namespace: os-health-check
-  annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod
-spec:
-  ingressClassName: nginx
-  tls:
-    - hosts:
-        - oshealth.frostgate.in
-      secretName: os-health-check-tls
-  rules:
-    - host: oshealth.frostgate.in
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: os-health-check
-                port:
-                  number: 80
-EOF
+# From repo: k8s/ingress.yaml — edit BOTH host fields to YOUR app DNS
+# name first (this credit test used oshealth.frostgate.in; production will
+# be a different hostname). File ships with YOUR_APP_HOSTNAME.example.com.
+# Also sets proxy-body-size 50m (default ~1m → 413 on Edit Data / export).
+cd /path/to/OS-Health-Check/k8s
+# after replacing hosts in ingress.yaml:
+kubectl apply -f ingress.yaml
 
 kubectl -n os-health-check get certificate -w
+kubectl -n os-health-check describe ingress os-health-check
+```
+
+If the Ingress already exists without the body-size annotation:
+
+```bash
+kubectl -n os-health-check annotate ingress os-health-check \
+  nginx.ingress.kubernetes.io/proxy-body-size=50m --overwrite
 ```
 
 `READY=True` then:
