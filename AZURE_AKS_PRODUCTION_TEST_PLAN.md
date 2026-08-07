@@ -10,6 +10,9 @@
 > **What you are proving.** Browser login (HTTPS) → Keycloak JWT → AKS app
 > validates JWKS → Postgres read/write → publisher role works.
 >
+> **AWS counterpart.** [`AWS_EKS_PRODUCTION_TEST_PLAN.md`](AWS_EKS_PRODUCTION_TEST_PLAN.md)
+> — same app and Keycloak; EKS + RDS instead of AKS + Flexible Server.
+>
 > **Companions.** [`k8s/README.md`](k8s/README.md) · [`KEYCLOAK_SETUP.md`](KEYCLOAK_SETUP.md) ·
 > [`AUTH_MULTITENANCY_PLAN.md`](AUTH_MULTITENANCY_PLAN.md) · [`.env.example`](.env.example)
 
