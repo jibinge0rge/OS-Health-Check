@@ -174,23 +174,38 @@ export async function ensureAuthenticated() {
     }
     const tokens = await exchangeCodeForTokens(code, verifier);
     saveTokens(tokens);
-    // Drop ?code&state from the address bar so a reload never replays them.
-    url.searchParams.delete("code");
-    url.searchParams.delete("state");
-    window.history.replaceState({}, "", url.toString());
+    stripOidcCallbackParams(url);
     return;
   }
 
   const tokens = loadTokens();
-  if (tokens && tokens.expires_at > Date.now()) return;
+  if (tokens && tokens.expires_at > Date.now()) {
+    stripOidcCallbackParams(url);
+    return;
+  }
   if (tokens?.refresh_token) {
     const refreshed = await refreshTokens(tokens.refresh_token);
     if (refreshed) {
       saveTokens(refreshed);
+      stripOidcCallbackParams(url);
       return;
     }
   }
   await login();
+}
+
+function stripOidcCallbackParams(url) {
+  const junk = ["code", "state", "session_state", "iss", "error", "error_description"];
+  let dirty = false;
+  for (const key of junk) {
+    if (url.searchParams.has(key)) {
+      url.searchParams.delete(key);
+      dirty = true;
+    }
+  }
+  if (dirty) {
+    window.history.replaceState({}, "", `${url.pathname}${url.hash}`);
+  }
 }
 
 // Returns a currently-valid access token, refreshing first if it's expired
