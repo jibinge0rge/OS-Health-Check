@@ -759,6 +759,32 @@ class DottedHintOutranksCoincidentalBareMatchTests(unittest.TestCase):
         picked = pick_release(releases, extract_version_hints("Red Hat Linux 7.4"))
         self.assertEqual(picked.get("name"), "7")
 
+    def test_bare_hint_coincidence_refuses_when_dotted_hint_matches_nothing_at_all(self) -> None:
+        """Real incidents: "Windows 4.0.8 8" and "Windows 4.0.5 5" -- Windows
+        NT 4.0 isn't tracked as a release in this catalog at all (the dotted
+        hint "4.0.8"/"4.0.5" matches nothing, dotted_score 0), yet the bare
+        trailing digit coincidentally EXACT-matched an unrelated, much later
+        release's own bare name ("8", "5-sp3" via its numeric part "5") --
+        the same untrustworthy shape as the RHEL/CentOS/iOS fix above, just
+        with no rescuing dotted answer to replace it with. Must refuse
+        rather than accept the bare-hint coincidence."""
+        releases = [
+            {"name": "8", "label": "8", "latest": {"name": "6.2.9200"}},
+            {"name": "5-sp3", "label": "XP SP3", "latest": {"name": "5.1.2600"}},
+        ]
+        self.assertEqual(pick_release(releases, extract_version_hints("Windows 4.0.8 8")), {})
+        self.assertEqual(pick_release(releases, extract_version_hints("Windows 4.0.5 5")), {})
+
+    def test_windows_5_1_is_a_genuine_unique_match_not_a_coincidence(self) -> None:
+        """Sanity check: "Windows 5.1" (a single dotted hint, no bare hint
+        at all) must be UNAFFECTED by the guard above -- Windows XP really
+        is NT 5.1, and it's this catalog's only tracked XP release, so both
+        the dotted-only pass and the full-hint pass agree on it uniquely.
+        There's no bare-hint coincidence here to refuse."""
+        releases = [{"name": "5-sp3", "label": "XP SP3", "latest": {"name": "5.1.2600"}}]
+        picked = pick_release(releases, extract_version_hints("Windows 5.1"))
+        self.assertEqual(picked.get("name"), "5-sp3")
+
     def test_combined_build_number_hint_is_unaffected(self) -> None:
         """Sanity check: when the dotted hint set already includes the
         combined build number (e.g. "10.0.14393" from the "Windows 10.0

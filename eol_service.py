@@ -418,6 +418,20 @@ def pick_api_os_value(
     return value
 
 
+# Written by _generic_family_fallback_name (below) when a resolved
+# product's specific release can't be pinned down. Deliberately excluded
+# here from ever being treated as a real query candidate -- "Linux OS"
+# contains the bare word "linux", which IS a real, specific product (the
+# Linux Kernel project) in the phrase index; trusting it as a normal
+# preferred field on a LATER refresh would silently re-resolve the row to
+# the kernel's own release catalog instead of staying the deliberately
+# vague placeholder it was written as. Skipping it here makes every later
+# refresh re-derive fresh from os_string every time -- exactly as if the
+# field were still blank -- so the placeholder can never drift into a
+# specific (and likely wrong) product.
+_GENERIC_FAMILY_FALLBACK_NAMES = frozenset({"microsoft windows", "linux os"})
+
+
 def pick_api_os_value_with_field(
     os_string: str,
     normalized_os_detailed_name: str,
@@ -441,6 +455,8 @@ def pick_api_os_value_with_field(
         candidates.append((source, "os_string"))
 
     for value, field in candidates:
+        if field != "os_string" and value.lower() in _GENERIC_FAMILY_FALLBACK_NAMES:
+            continue
         if source and field != "os_string" and not vendors_compatible(source, value):
             continue
         return value, field
@@ -1088,6 +1104,25 @@ def _pick_release_with_hints(
             and dotted_candidates[0].get("name") not in {r.get("name") for r in best_candidates}
         ):
             best_score, best_candidates = dotted_score, dotted_candidates
+        elif dotted_score < _MIN_RELEASE_SCORE:
+            # The dotted hint(s) carry genuine version info that matches
+            # NOTHING in this catalog at all, not even weakly -- the
+            # specific version the query actually names simply isn't
+            # tracked here. Since scoring with ONLY the dotted hint(s)
+            # found nothing, whatever best_candidates found on the FULL
+            # hint set is necessarily explained entirely by a co-occurring
+            # BARE hint's coincidental exact/prefix match -- the exact
+            # untrustworthy shape the RHEL/CentOS/iOS fix above exists to
+            # catch, just with no rescuing dotted answer to replace it
+            # with this time. Real incidents: "Windows 4.0.8 8" (Windows NT
+            # 4.0 isn't tracked in this catalog at all -- dotted hint
+            # "4.0.8" matches nothing) resolved to "Windows 8", a much
+            # later, unrelated product, purely because the bare "8" happens
+            # to equal release "8"'s own name; "Windows 4.0.5 5" similarly
+            # resolved to "XP SP3" via the bare "5". Refuse rather than
+            # trust a bare-hint coincidence the query's own real version
+            # info can't back up at all.
+            return {}
 
     if best_score < _MIN_RELEASE_SCORE or not best_candidates:
         return {}
@@ -1457,6 +1492,36 @@ def build_normalization_from_product(
     }
 
 
+# When a product genuinely resolves (we know the VENDOR/FAMILY) but no
+# specific release can be pinned down, a row with nothing normalized yet
+# is better served by a generic family name than by staying blank -- e.g.
+# "Windows Vista / Windows 2008 / Windows 7 / Windows 2012" (several real
+# Windows generations, no single one confirmable) or "Windows 4.0.8 8"
+# (Windows NT 4.0 isn't tracked in this catalog at all). Deliberately a
+# FIXED brand-level name, not product_result["label"] -- a query mixing
+# both client (Vista, 7) and server (2008, 2012) generations is accurately
+# "Microsoft Windows", not the more specific (and here, wrong/incomplete)
+# "Microsoft Windows Server" the resolved slug's own label would give.
+# Scoped to Windows/Linux only, and ONLY here (a resolved product, refused
+# release) -- never at the earlier "product not found" refusal, where the
+# product genuinely isn't known to be Windows/Linux at all (e.g. Windows
+# CE is deliberately refused there precisely because it ISN'T desktop
+# Windows -- see _GENERIC_FAMILY_DISQUALIFYING_PHRASES -- so it must not
+# get "Microsoft Windows" here either).
+def _generic_family_fallback_name(product_result: dict[str, Any]) -> str | None:
+    # Keep these two literal strings in sync with _GENERIC_FAMILY_FALLBACK_NAMES
+    # (pick_api_os_value_with_field, above) -- that's what stops either one
+    # from being trusted as a real query value on a later refresh.
+    tags = product_result.get("tags")
+    if not isinstance(tags, list):
+        return None
+    if "windows" in tags:
+        return "Microsoft Windows"
+    if any("linux" in str(tag) for tag in tags):
+        return "Linux OS"
+    return None
+
+
 def lookup_os_eol(
     os_string: str,
     normalized_os_detailed_name: str,
@@ -1594,6 +1659,11 @@ def lookup_os_eol(
                     selected_release = fallback_release
     if not selected_release:
         empty_result["api_note"] = "No matching release found in endoflife.date product data"
+        if not _clean(normalized_os_detailed_name) and not _clean(normalized_os):
+            fallback_name = _generic_family_fallback_name(product_result)
+            if fallback_name:
+                empty_result["normalized_os_detailed_name"] = fallback_name
+                empty_result["normalized_os"] = fallback_name
         return empty_result
 
     source = _clean(os_string)

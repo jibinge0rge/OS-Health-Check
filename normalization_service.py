@@ -869,12 +869,39 @@ def _pair_from_index(index: int | None, allowed_pairs: list[dict[str, str]]) -> 
 # detection no longer silently does nothing without an AI key.
 _SPACED_SLASH_RE = re.compile(r"\s+/\s+")
 
+# When every segment names the SAME broad family (all "Windows...", or all
+# "Linux..."), the row isn't truly "ambiguous" the way "EulerOS / Ubuntu /
+# Fedora" (three unrelated, non-interchangeable distros) or "AIX 5.x / AIX
+# 6.x / Sidewinder G2" (a third, unrelated vendor mixed in) are -- it's a
+# real product, we just can't tell which SPECIFIC generation/version. Real
+# incident: "Windows Vista / Windows 2008 / Windows 7 / Windows 2012" (four
+# genuine Windows generations, no single one confirmable) was flagged
+# Ambiguous OS and permanently skipped from lifecycle enrichment -- better
+# to let it fall through to a normal lookup, which will itself refuse to
+# pick one specific release (see eol_service.py's refusal logic) and fall
+# back to the generic family name ("Microsoft Windows") instead, rather
+# than a dead-end "Ambiguous OS" label.
+_FAMILY_KEYWORD_RE = re.compile(r"^(windows|linux)\b", re.I)
+
+
+def _all_segments_share_one_recognized_family(segments: list[str]) -> bool:
+    families = set()
+    for segment in segments:
+        match = _FAMILY_KEYWORD_RE.match(segment)
+        if not match:
+            return False
+        families.add(match.group(1).lower())
+    return len(families) == 1
+
 
 def _looks_like_multi_os_list(os_string: str) -> bool:
     if not _SPACED_SLASH_RE.search(os_string):
         return False
     segments = [segment.strip() for segment in _SPACED_SLASH_RE.split(os_string)]
-    return sum(1 for segment in segments if segment) >= 2
+    non_empty = [segment for segment in segments if segment]
+    if len(non_empty) < 2:
+        return False
+    return not _all_segments_share_one_recognized_family(non_empty)
 
 
 def detect_ambiguous_os_batch(
