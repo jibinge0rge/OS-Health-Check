@@ -793,10 +793,18 @@ def _release_latest_name(release: dict[str, Any]) -> str:
 # recognizes "R2" as an edition marker while still declining to match
 # inside an unrelated word ending "...r2" or followed by more letters/digits
 # (e.g. "R2D2").
+# Matches "R2" as Windows Server's own generation marker ("2008 R2" vs
+# plain "2008", "2012 R2" vs plain "2012") -- glued directly to a preceding
+# digit ("2012R2") or standing alone, but never inside an unrelated word
+# ("R2D2", "SuperR2000"). Shared by _EDITION_LABEL_HINTS (narrowing when the
+# query names R2) and _tied_candidates_span_an_unstated_r2_gap below
+# (refusing when it doesn't).
+_R2_MARKER_RE = re.compile(r"(?<![A-Za-z])r2(?![0-9A-Za-z])", re.I)
+
 _EDITION_LABEL_HINTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\biot\b", re.I), "iot"),
     (re.compile(r"\bltsc\b|\blts\b", re.I), "(lts)"),
-    (re.compile(r"(?<![A-Za-z])r2(?![0-9A-Za-z])", re.I), "r2"),
+    (_R2_MARKER_RE, "r2"),
     (re.compile(r"\benterprise\b|\(e\)", re.I), "(e)"),
 )
 
@@ -1138,6 +1146,28 @@ def _pick_release_with_hints(
             if edition_matches:
                 best_candidates = edition_matches
 
+    # Checked BEFORE dominant-evidence below, not just before the final
+    # conservative-merge (see the later copy of this same check) -- dominant-
+    # evidence's own "ordinary exact match beats compound-token match" rule
+    # is exactly what let a coincidentally-present bare year win here. Real
+    # incident: a row's STALE prior normalized_os ("Microsoft Windows Server
+    # 2012", missing "R2" -- itself a leftover of the release-naming bug
+    # fixed earlier) got preferred as the query text by
+    # pick_api_os_value_with_field. That text's bare "2012" hint ordinarily
+    # EXACT-matches plain release "2012" (a 100-score "strong" match), while
+    # "2012-r2" -- despite the RAW os_string's build number ("6.3.9600.0")
+    # uniquely and genuinely identifying it -- only reaches 100 via the
+    # weaker compound-token rule, since a 90-score build PREFIX match isn't
+    # counted as "strong" evidence at all. Dominant-evidence then confidently
+    # preferred "2012" outright, silently discarding not just the short
+    # name's "R2" but the DETAILED name's too, since a different release was
+    # actually selected -- not merely renamed. Catching the R2 gap here,
+    # before dominant-evidence runs, stops a stale or coarse hint from ever
+    # getting the chance to outrank genuine build-number evidence for the
+    # correct generation.
+    if len(best_candidates) > 1 and _tied_candidates_span_an_unstated_r2_gap(best_candidates, os_text):
+        return {}
+
     if len(best_candidates) > 1:
         required_sets = [
             _release_required_hints(_release_candidate_strings(release), hints, best_score)
@@ -1242,7 +1272,46 @@ def _pick_release_with_hints(
         if best_score < 100:
             return {}
 
+    if len(best_candidates) > 1 and _tied_candidates_span_an_unstated_r2_gap(best_candidates, os_text):
+        return {}
+
     return _conservative_release(best_candidates)
+
+
+def _release_is_r2_generation(release: dict[str, Any]) -> bool:
+    text = f"{release.get('name', '') or ''} {release.get('label', '') or ''}"
+    return bool(_R2_MARKER_RE.search(text))
+
+
+def _tied_candidates_span_an_unstated_r2_gap(
+    candidates: list[dict[str, Any]], os_text: str
+) -> bool:
+    """True when the tied candidates span BOTH an R2 generation and its
+    non-R2 counterpart, and the query gives no R2 evidence at all to
+    justify picking either side.
+
+    "R2" denotes a materially different, LATER Windows Server generation --
+    not an edition/channel of the same release the way Enterprise/IoT/
+    consumer or a service-pack level are -- so a bare-year tie spanning
+    that gap must refuse rather than conservative-merge across it. Real
+    incident: "Windows Vista / Windows 2008 behind NetScaler" (hints
+    ["2008"] only -- no R2, no SP, no edition, nothing else to go on) tied
+    "2008-sp2" against "2008-r2-sp1", and the conservative "earliest EOL"
+    merge below confidently invented "Windows Server 2008 R2 SP1" -- a
+    specific generation the query never named at all.
+
+    Scoped narrowly: if the query DOES mention R2 (_R2_MARKER_RE), edition
+    narrowing (_edition_label_substring, above) already handles it before
+    this ever runs -- either it narrowed best_candidates down to just the
+    R2 side already (so there's no gap left to span), or it didn't and this
+    correctly stays silent, since the query DID give R2 evidence even if it
+    couldn't be used to narrow. Only fires on a genuine mix of R2 and non-R2
+    candidates with zero R2 evidence anywhere in the query.
+    """
+    is_r2 = [_release_is_r2_generation(release) for release in candidates]
+    if not any(is_r2) or all(is_r2):
+        return False
+    return not _R2_MARKER_RE.search(os_text or "")
 
 
 def _text_similarity(a: str, b: str) -> float:
@@ -1429,6 +1498,15 @@ _WINDOWS_PRODUCT_LABEL_RE = re.compile(r"\bwindows\b", re.I)
 # wherever it falls among a release label's words.
 _TOKEN_HAS_DIGIT_RE = re.compile(r"\d")
 
+# A generation-continuation marker immediately after the version ("R2",
+# never observed beyond that in this catalog, but not hardcoded to "2"
+# specifically). Unlike a trailing qualifier (service pack, channel, LTSC),
+# this combines WITH the version token to name a genuinely different,
+# later product generation -- "2012" and "2012 R2" are different releases
+# with their own (sometimes different) EOL dates, not two editions of one
+# thing the way "(LTSC)"/"SP1"/"AC" are.
+_GENERATION_CONTINUATION_RE = re.compile(r"^r\d+$", re.I)
+
 
 def _windows_release_name(release: dict[str, Any]) -> str:
     """Windows' own ``release.label`` packs the version onto one or more
@@ -1444,8 +1522,16 @@ def _windows_release_name(release: dict[str, Any]) -> str:
     trailing qualifier after the version is dropped, so ``normalized_os``
     stays a short, family-level name (e.g. "Microsoft Windows Embedded
     Standard 7", "Microsoft Windows Server 2012") even for a later service
-    pack/feature update of the same version. ``normalized_os_detailed_name``
-    is unaffected -- it always uses ``release.label`` in full, regardless of
+    pack/feature update of the same version.
+
+    Real incident: this dropped "R2" the same way it drops "(LTSC)"/"SP1"/
+    "AC" -- "Windows Server 2012 R2 (LTSC)" truncated to just "Windows
+    Server 2012", silently renaming the row to a DIFFERENT, earlier
+    generation rather than merely a shorter name for the same one. If the
+    token immediately after the version matches "R<digits>", it's kept too
+    (and truncation stops there instead) -- a real generation identifier,
+    not a droppable qualifier. ``normalized_os_detailed_name`` is unaffected
+    either way -- it always uses ``release.label`` in full, regardless of
     product.
     """
     label = _clean(release.get("label"))
@@ -1454,9 +1540,12 @@ def _windows_release_name(release: dict[str, Any]) -> str:
         return name.split("-", 1)[0] if name else ""
     tokens = label.split()
     kept: list[str] = []
-    for token in tokens:
+    for index, token in enumerate(tokens):
         kept.append(token)
         if _TOKEN_HAS_DIGIT_RE.search(token):
+            next_token = tokens[index + 1] if index + 1 < len(tokens) else ""
+            if _GENERATION_CONTINUATION_RE.match(next_token):
+                kept.append(next_token)
             break
     return " ".join(kept)
 

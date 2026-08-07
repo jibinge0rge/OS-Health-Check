@@ -268,6 +268,12 @@ async function switchSource(target) {
       // from disk later (which would race against concurrent publishes).
       const fresh = await api.getLookup("data");
       state.draftRows = fresh.rows.map((row) => ({ ...row }));
+      // Same "fetch fresh" principle applies to evidence -- state.evidence
+      // is a single shared field, not per-source, so without this it keeps
+      // whatever was already in memory (e.g. a just-deleted draft's
+      // "reviewed" marks) instead of the fresh Data evidence being used as
+      // this new draft's actual persisted baseline below.
+      state.evidence = fresh.evidence;
       await persistDraft({ baseRows: fresh.rows, baseEvidence: fresh.evidence });
       state.draftExists = true;
       state.draftBasedOnRevision = fresh.data_revision ?? 0;
@@ -1157,7 +1163,16 @@ async function openRefreshModal() {
     return;
   }
   if (!isDraft() && !state.draftExists) {
-    state.draftRows = state.dataRows.map((row) => ({ ...row }));
+    // Fork from a fresh fetch of Data (rows AND evidence), not whatever's
+    // already in memory -- state.evidence is a single shared field, not
+    // per-source, so trusting it here risks carrying over a just-deleted
+    // draft's stale evidence (e.g. "reviewed" marks) into this brand new
+    // draft. Same principle switchSource's own fork branch already uses.
+    const fresh = await api.getLookup("data");
+    state.dataRows = fresh.rows;
+    state.evidence = fresh.evidence;
+    state.draftRows = fresh.rows.map((row) => ({ ...row }));
+    dataByOs = new Map(state.dataRows.map((row) => [dedupeKey(row.os_string), row]));
   } else if (!isDraft() && state.draftExists) {
     const draft = await api.getLookup("draft");
     state.draftRows = draft.rows;
@@ -1558,7 +1573,15 @@ function openDeleteDraftModal() {
   document.getElementById("delete-draft-confirm-btn").onclick = async () => {
     await api.deleteDraft();
     state.draftRows = [];
-    state.draftExists = false;
+    // Reuse loadData (the same fresh re-fetch Publish's own completion
+    // handler already does) rather than only flipping draftExists/source
+    // locally -- state.evidence is a single shared field, not per-source,
+    // so left alone it keeps whatever the just-deleted draft's evidence
+    // was (e.g. "reviewed" marks). Real incident: those marks then
+    // silently resurfaced in the NEXT draft created from here, since
+    // Refresh EOL/EOAS forks a new draft using whatever state.evidence
+    // already holds in memory, not a fresh fetch.
+    await loadData();
     backToData();
     clearSelection();
     renderAll();

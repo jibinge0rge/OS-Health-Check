@@ -10,6 +10,7 @@ from eol_service import (
     build_slug_index,
     extract_version_hints,
     join_labels,
+    pick_api_os_value_with_field,
     pick_release,
     resolve_product_slug,
 )
@@ -465,16 +466,68 @@ class ResolveProductSlugTests(unittest.TestCase):
         )
 
     def test_windows_server_normalized_os_truncates_r2_suffix(self) -> None:
-        """The worked example this behavior was added for: "2012-r2" must
-        become the short "2012", not the full "2012 R2 (LTSC)" label."""
+        """"2012-r2" must become the short "2012 R2", not the full "2012 R2
+        (LTSC)" label -- but "R2" itself must be KEPT, not dropped the same
+        way "(LTSC)" is. Real incident: an earlier version of this rule
+        truncated straight to "2012", silently renaming the row to a
+        DIFFERENT, earlier generation rather than merely a shorter name for
+        the same one -- "R2" is a genuine generation marker, not a
+        droppable qualifier."""
         product_result = {"label": "Microsoft Windows Server"}
         release = {"name": "2012-r2", "label": "Windows Server 2012 R2 (LTSC)"}
         normalization = build_normalization_from_product(product_result, release)
-        self.assertEqual(normalization["normalized_os"], "Microsoft Windows Server 2012")
+        self.assertEqual(normalization["normalized_os"], "Microsoft Windows Server 2012 R2")
         self.assertEqual(
             normalization["normalized_os_detailed_name"],
             "Microsoft Windows Server 2012 R2 (LTSC)",
         )
+
+    def test_generation_continuation_marker_scoped_to_r_plus_digits_only(self) -> None:
+        """Sanity check the extension is narrowly scoped: qualifiers that
+        aren't shaped like "R<digits>" (SP1, AC, (LTSC)) must still be
+        dropped exactly as before."""
+        self.assertEqual(
+            build_normalization_from_product(
+                {"label": "Microsoft Windows Server"},
+                {"name": "2008-r2-sp1", "label": "Windows Server 2008 R2 SP1"},
+            )["normalized_os"],
+            "Microsoft Windows Server 2008 R2",
+        )
+        self.assertEqual(
+            build_normalization_from_product(
+                {"label": "Microsoft Windows Server"},
+                {"name": "23h2-ac", "label": "Windows Server 23H2 AC"},
+            )["normalized_os"],
+            "Microsoft Windows Server 23H2",
+        )
+        self.assertEqual(
+            build_normalization_from_product(
+                {"label": "Microsoft Windows Embedded"},
+                {"name": "standard-7-sp1", "label": "Standard 7 SP1"},
+            )["normalized_os"],
+            "Microsoft Windows Embedded Standard 7",
+        )
+
+    def test_windows_6_3_9600_end_to_end_keeps_r2(self) -> None:
+        """Real, reported incident: os_string "Windows 6.3.9600.0" (NT build
+        6.3.9600, genuinely Server 2012 R2's own build -- 2012 RTM's build
+        is the unrelated 6.2.9200) resolved the release correctly but
+        SILENTLY DROPPED "R2" from normalized_os specifically, renaming the
+        row to a different, earlier generation than what was actually
+        matched."""
+        releases = [
+            {"name": "2012", "label": "Windows Server 2012 (LTSC)",
+             "eolFrom": "2023-10-10", "latest": {"name": "6.2.9200"}},
+            {"name": "2012-r2", "label": "Windows Server 2012 R2 (LTSC)",
+             "eolFrom": "2023-10-10", "latest": {"name": "6.3.9600"}},
+        ]
+        os_string = "Windows 6.3.9600.0"
+        picked = pick_release(releases, extract_version_hints(os_string), os_text=os_string)
+        self.assertEqual(picked.get("name"), "2012-r2")
+        normalization = build_normalization_from_product(
+            {"label": "Microsoft Windows Server"}, picked
+        )
+        self.assertEqual(normalization["normalized_os"], "Microsoft Windows Server 2012 R2")
 
 
 class GenericLinuxKernelRequiresTheWordKernelTests(unittest.TestCase):
@@ -844,6 +897,92 @@ class DottedHintOutranksCoincidentalBareMatchTests(unittest.TestCase):
         self.assertEqual(picked.get("name"), "2016")
 
 
+class TiedR2GenerationGapRefusesWithoutEvidenceTests(unittest.TestCase):
+    """Real, reported incident: "Windows Vista / Windows 2008 behind
+    NetScaler" (hints ["2008"] only -- Vista and "behind NetScaler"
+    contribute no version info) ties "2008-sp2" against "2008-r2-sp1", both
+    via the same compound-token match on "2008" alone, with nothing in the
+    query mentioning R2, SP, or any other edition/generation marker. The
+    conservative "earliest EOL among tied releases" merge confidently
+    invented "Windows Server 2008 R2 SP1" -- a specific, LATER generation
+    the query never named. Fixed via _tied_candidates_span_an_unstated_r2_gap:
+    "R2" denotes a materially different Windows Server generation, not an
+    edition/channel of the same release the way Enterprise/IoT/consumer or
+    a service-pack level are, so a bare-year tie spanning that gap with no
+    R2 evidence anywhere refuses instead of guessing."""
+
+    # Real catalog shape: 2008-sp2 and 2008-r2-sp1 share IDENTICAL
+    # eolFrom/eoasFrom in production (SPs never changed the support
+    # timeline) -- deliberately kept identical here too, since a tie
+    # broken only by which happens to sort first is exactly the
+    # unreliable mechanism this fix replaces.
+    RELEASES = [
+        {"name": "2008-r2-sp1", "label": "Windows Server 2008 R2 SP1 (LTSC)",
+         "eolFrom": "2020-01-14", "eoasFrom": "2015-01-13", "latest": {"name": "6.1.7601"}},
+        {"name": "2008-sp2", "label": "Windows Server 2008 SP2 (LTSC)",
+         "eolFrom": "2020-01-14", "eoasFrom": "2015-01-13", "latest": {"name": "6.0.6003"}},
+    ]
+
+    def test_bare_year_with_no_r2_evidence_refuses(self) -> None:
+        os_string = "Windows Vista / Windows 2008 behind NetScaler"
+        hints = extract_version_hints(os_string)
+        self.assertEqual(hints, ["2008"])
+        picked = pick_release(self.RELEASES, hints, os_text=os_string)
+        self.assertEqual(picked, {})
+
+    def test_explicit_r2_still_narrows_and_resolves(self) -> None:
+        """Sanity check: when the query DOES name R2, edition narrowing
+        (checked before this refusal) already handles it -- must be
+        completely unaffected."""
+        os_string = "Windows Server 2008 R2 Enterprise"
+        picked = pick_release(self.RELEASES, extract_version_hints(os_string), os_text=os_string)
+        self.assertEqual(picked.get("name"), "2008-r2-sp1")
+
+    def test_explicit_non_r2_context_is_unaffected(self) -> None:
+        """A tie that doesn't span an R2/non-R2 gap at all (e.g. every
+        tied candidate is R2, or every one is non-R2) must never be
+        refused by this check -- it only fires on a genuine mix."""
+        all_non_r2 = [
+            {"name": "2003-sp1", "label": "Windows Server 2003 SP1", "eolFrom": "2009-04-14", "latest": {"name": "5.2.3790"}},
+            {"name": "2003-sp2", "label": "Windows Server 2003 SP2 (LTSC)", "eolFrom": "2015-07-14", "latest": {"name": "5.2.3790"}},
+        ]
+        picked = pick_release(all_non_r2, ["2003"], os_text="Windows Server 2003")
+        self.assertNotEqual(picked, {})
+
+    def test_stale_prior_normalized_os_does_not_poison_dominant_evidence(self) -> None:
+        """Real incident: a row's STALE prior normalized_os ("Microsoft
+        Windows Server 2012", missing "R2" -- itself a leftover of the
+        release-naming bug fixed earlier) got preferred as the query text
+        by pick_api_os_value_with_field. Its bare "2012" hint ordinarily
+        EXACT-matched plain release "2012" (a 100-score "strong" match),
+        outranking "2012-r2" via dominant-evidence even though the RAW
+        os_string's build number ("6.3.9600.0") uniquely and genuinely
+        identifies 2012 R2 -- a 90-score build PREFIX match isn't counted
+        as "strong" evidence. This didn't just rename the row -- it
+        selected a DIFFERENT release, silently dropping "R2" from BOTH
+        normalized_os AND normalized_os_detailed_name (the latter had
+        never been wrong before). Must refuse instead, checked before
+        dominant-evidence runs, not just before the final conservative
+        merge."""
+        releases = [
+            {"name": "2012", "label": "Windows Server 2012 (LTSC)",
+             "eolFrom": "2023-10-10", "latest": {"name": "6.2.9200"}},
+            {"name": "2012-r2", "label": "Windows Server 2012 R2 (LTSC)",
+             "eolFrom": "2023-10-10", "latest": {"name": "6.3.9600"}},
+        ]
+        os_string = "Windows 6.3.9600.0"
+        stale_prior_normalized_os = "Microsoft Windows Server 2012"  # missing R2
+        cleaned_name, _field = pick_api_os_value_with_field(
+            os_string, "Microsoft Windows Server 2012 R2 (LTSC)", stale_prior_normalized_os
+        )
+        self.assertEqual(cleaned_name, stale_prior_normalized_os)
+        release_hints = list(dict.fromkeys(
+            extract_version_hints(os_string) + extract_version_hints(cleaned_name)
+        ))
+        picked = pick_release(releases, release_hints, os_text=f"{os_string} {cleaned_name}")
+        self.assertEqual(picked, {})
+
+
 class DottedHintOverrideMustNotDiscardAnAlreadyTiedCandidateTests(unittest.TestCase):
     """Real, reported incidents: "WindowsServer2019 10.0 14393",
     "WindowsServer2022 10.0 17134", etc. each confidently (and wrongly)
@@ -964,10 +1103,23 @@ class CompoundSlugReleaseNameMatchingTests(unittest.TestCase):
          "eolFrom": "2023-10-10", "latest": {"name": "6.3.9600"}},
     ]
 
-    def test_bare_year_resolves_to_the_non_r2_compound_slug(self) -> None:
+    def test_bare_year_with_no_r2_evidence_refuses_rather_than_guessing(self) -> None:
+        """Real incident, discovered while fixing "Windows Vista / Windows
+        2008 behind NetScaler": this test used to assert a confident
+        "2008-sp2" pick here, on the theory that a bare year with no R2
+        mention defaults to the non-R2 generation. That was never a real,
+        deliberate guarantee -- it was an accident of this fixture's OWN
+        ordering (2008-sp2 listed first). endoflife.date's live catalog
+        lists "2008-r2-sp1" and "2008-sp2" with IDENTICAL eolFrom/eoasFrom
+        AND in the opposite order, so the exact same "earliest EOL, ties
+        broken by list order" mechanism this test relied on actually
+        returns the R2 release in production -- inventing a specific,
+        different generation ("2008 R2") the query never named at all.
+        Refusing is now the correct behavior; see
+        _tied_candidates_span_an_unstated_r2_gap."""
         os_string = "Windows Server 2008 Standard"
         picked = pick_release(self._RELEASES, extract_version_hints(os_string), os_text=os_string)
-        self.assertEqual(picked.get("name"), "2008-sp2")
+        self.assertEqual(picked, {})
 
     def test_year_plus_r2_resolves_to_the_r2_compound_slug(self) -> None:
         os_string = "Microsoft Windows Server 2008 R2 Standard 7600"

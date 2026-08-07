@@ -122,7 +122,7 @@ class LookupOsEolGenericFallbackTests(unittest.TestCase):
         result = lookup_os_eol(
             "Windows Server 2012 R2 Standard", "", "", frozenset({"windows", "windows-server"}), cache,
         )
-        self.assertEqual(result["normalized_os"], "Microsoft Windows Server 2012")
+        self.assertEqual(result["normalized_os"], "Microsoft Windows Server 2012 R2")
         self.assertNotEqual(result["eol_date"], "")
 
 
