@@ -1,9 +1,8 @@
 # TLS Ingress for a real hostname (AKS/EKS + ingress-nginx + cert-manager).
 #
-# REPLACE the host below before apply — `oshealth.frostgate.in` was only used
-# in a one-off Azure credit test. Production / other environments must use
-# their own DNS name (and matching Cloudflare/DNS A record + Keycloak
-# redirect URIs / web origins).
+# REPLACE both host fields below before apply with your real app DNS
+# name (matching Cloudflare/DNS A or CNAME + Keycloak redirect URIs /
+# web origins). Placeholder hosts must not be applied as-is.
 #
 # Requires: ingress-nginx, a ClusterIssuer (default annotation:
 # letsencrypt-prod — change if your issuer name differs), and DNS for

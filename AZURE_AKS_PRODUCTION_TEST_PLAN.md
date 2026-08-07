@@ -2,9 +2,9 @@
 
 > **Purpose.** An ordered, beginner-friendly path that was run end-to-end on an
 > Azure free/trial subscription (~**$200** credit): **AKS** + **Azure Database
-> for PostgreSQL Flexible Server** + remote Keycloak (`keycloack.frostgate.in`,
+> for PostgreSQL Flexible Server** + remote Keycloak (`keycloak.example.com`,
 > often behind a **Cloudflare Tunnel**) + app HTTPS at
-> **`https://oshealth.frostgate.in`**. Entra ID federation into Keycloak is the
+> **`https://app.example.com`**. Entra ID federation into Keycloak is the
 > last auth step.
 >
 > **What you are proving.** Browser login (HTTPS) → Keycloak JWT → AKS app
@@ -55,8 +55,8 @@ flowchart LR
   end
 
   subgraph Remote["Remote + Cloudflare"]
-    CFApp["DNS A oshealth<br/>DNS only → Ingress IP"]
-    CFKC["Cloudflare Tunnel<br/>keycloack.frostgate.in"]
+    CFApp["DNS A app<br/>DNS only → Ingress IP"]
+    CFKC["Cloudflare Tunnel<br/>keycloak.example.com"]
     KC["Keycloak"]
   end
 
@@ -71,9 +71,9 @@ flowchart LR
 | Piece | Where | Notes from this test |
 |---|---|---|
 | App | AKS, 1 replica, Service **ClusterIP** | Public entry is Ingress, not the app LoadBalancer |
-| App URL | `https://oshealth.frostgate.in` | Required for PKCE (`crypto.subtle` needs HTTPS) |
+| App URL | `https://app.example.com` | Required for PKCE (`crypto.subtle` needs HTTPS) |
 | DB | Flexible Server `Standard_B1ms` | CLI says “Paid Tier” — expected; burns credit |
-| Keycloak | `https://keycloack.frostgate.in` | Exact spelling (extra `a`); keep **Tunnel proxied** — do not grey-cloud this hostname |
+| Keycloak | `https://keycloak.example.com` | Keep Tunnel **proxied** — do not grey-cloud this hostname |
 | Image | Docker Hub `linux/amd64` | Apple Silicon must build with `--platform linux/amd64` |
 
 ---
@@ -97,8 +97,8 @@ Hard rules: one resource group; budget alerts; stop Postgres / delete the RG whe
 |---|---|
 | Azure free/trial + `az` CLI | `az login` |
 | `kubectl`, Docker, **Helm**, Docker Hub login | Helm for ingress-nginx |
-| Cloudflare zone for `frostgate.in` | App A record + existing Keycloak Tunnel |
-| Keycloak admin on `keycloack.frostgate.in` | Realm/client already planned here |
+| Cloudflare zone for `example.com` | App A record + existing Keycloak Tunnel |
+| Keycloak admin on `keycloak.example.com` | Realm/client already planned here |
 | This repo | Build from **repo root** (where `Dockerfile` lives) |
 
 ```bash
@@ -120,7 +120,7 @@ az account show
 | 4 AKS | `kubectl get nodes` → Ready |
 | 5 Connectivity | Clear what must reach what |
 | 6 Build amd64 + deploy | Pod Running; seed log present |
-| 7 Ingress + TLS + DNS | `https://oshealth.frostgate.in` → 200 |
+| 7 Ingress + TLS + DNS | `https://app.example.com` → 200 |
 | 8 Keycloak redirects + login | Local publisher can use the app (data + avatar) |
 | 9 Entra federation | Optional; after local login works |
 | 10 Checklist + tear down | RG deleted when finished |
@@ -143,8 +143,8 @@ az account show
 | `DEPLOYMENT_ID` | `azure-aks-prodtest` |
 | Keycloak realm / client | `os-health-check` / `os-health-check-web` |
 | Publisher role | `lookup-publisher` |
-| Keycloak URL | `https://keycloack.frostgate.in` |
-| App hostname | `oshealth.frostgate.in` |
+| Keycloak URL | `https://keycloak.example.com` |
+| App hostname | `app.example.com` |
 | Docker Hub | e.g. `jibingeorge/os-health-check:v1` |
 
 ```bash
@@ -162,7 +162,7 @@ Keycloak must be on HTTPS before AKS. Concepts: [`KEYCLOAK_SETUP.md`](KEYCLOAK_S
 ### 6.1 Smoke HTTPS
 
 ```bash
-curl -fsS "https://keycloack.frostgate.in/realms/master" | head
+curl -fsS "https://keycloak.example.com/realms/master" | head
 ```
 
 ### 6.2 Realm + public client
@@ -175,8 +175,8 @@ Create client **`os-health-check-web`**:
 |---|---|
 | Client authentication | **Off** (public) |
 | Standard flow | **On** |
-| Valid redirect URIs | `http://localhost:8000/*` for now; replace in Phase 8 with `https://oshealth.frostgate.in/*` |
-| Web origins | `http://localhost:8000` for now; later `https://oshealth.frostgate.in` |
+| Valid redirect URIs | `http://localhost:8000/*` for now; replace in Phase 8 with `https://app.example.com/*` |
+| Web origins | `http://localhost:8000` for now; later `https://app.example.com` |
 | Advanced → PKCE | **S256** |
 
 Root URL / Home URL can stay empty. This screen is only redirects/origins — **not** where publisher is assigned.
@@ -192,10 +192,10 @@ Root URL / Home URL can stay empty. This screen is only redirects/origins — **
 ### 6.4 Issuer (must match ConfigMap later)
 
 ```bash
-curl -fsS "https://keycloack.frostgate.in/realms/os-health-check/.well-known/openid-configuration" | head
+curl -fsS "https://keycloak.example.com/realms/os-health-check/.well-known/openid-configuration" | head
 ```
 
-Confirm `"issuer":"https://keycloack.frostgate.in/realms/os-health-check"` with no trailing slash. That exact string is `KEYCLOAK_ISSUER_URL`.
+Confirm `"issuer":"https://keycloak.example.com/realms/os-health-check"` with no trailing slash. That exact string is `KEYCLOAK_ISSUER_URL`.
 
 ---
 
@@ -319,7 +319,7 @@ az network public-ip list -g "$NODE_RG" --query "[].{name:name,ip:ipAddress}" -o
 | Pod → Postgres | Firewall open; `sslmode=require` |
 | Pod → Keycloak HTTPS | Tunnel/public HTTPS reachable from Azure |
 | Browser → Keycloak | Same issuer URL as ConfigMap |
-| Browser → app | After Phase 7: `https://oshealth.frostgate.in` |
+| Browser → app | After Phase 7: `https://app.example.com` |
 
 Leave `KEYCLOAK_INTERNAL_URL` unset unless the pod must use a different URL than the browser for discovery (issuer `iss` still must match `KEYCLOAK_ISSUER_URL`).
 
@@ -356,7 +356,7 @@ In `k8s/configmap.yaml`:
 
 ```yaml
 DEPLOYMENT_ID: "azure-aks-prodtest"
-KEYCLOAK_ISSUER_URL: "https://keycloack.frostgate.in/realms/os-health-check"
+KEYCLOAK_ISSUER_URL: "https://keycloak.example.com/realms/os-health-check"
 KEYCLOAK_AUDIENCE: "os-health-check-web"
 KEYCLOAK_PUBLISHER_ROLE: "lookup-publisher"
 LOOKUP_DB_ENABLED: "true"
@@ -435,17 +435,17 @@ EOF
 
 ### 12.3 Cloudflare DNS for the app only
 
-Zone **`frostgate.in`** → DNS → Add record:
+Zone **`example.com`** → DNS → Add record:
 
 | Type | Name | Content | Proxy |
 |---|---|---|---|
 | A | `oshealth` | `<INGRESS-EXTERNAL-IP>` | **DNS only** (grey cloud) |
 
 HTTP-01 issuance needs grey cloud so Let’s Encrypt hits Ingress directly.  
-**Do not** grey-cloud **`keycloack`** if that hostname is a Cloudflare Tunnel — leave Keycloak orange/proxied.
+**Do not** grey-cloud **`keycloak`** if that hostname is a Cloudflare Tunnel — leave Keycloak orange/proxied.
 
 ```bash
-dig +short oshealth.frostgate.in
+dig +short app.example.com
 # must equal the ingress EXTERNAL-IP (not 104.x / 172.x Cloudflare anycast)
 ```
 
@@ -455,7 +455,7 @@ dig +short oshealth.frostgate.in
 kubectl -n os-health-check patch svc os-health-check -p '{"spec":{"type":"ClusterIP"}}'
 
 # From repo: k8s/ingress.yaml — edit BOTH host fields to YOUR app DNS
-# name first (this credit test used oshealth.frostgate.in; production will
+# name first (this credit test used app.example.com; production will
 # be a different hostname). File ships with YOUR_APP_HOSTNAME.example.com.
 # Also sets proxy-body-size 50m (default ~1m → 413 on Edit Data / export).
 cd /path/to/OS-Health-Check/k8s
@@ -476,7 +476,7 @@ kubectl -n os-health-check annotate ingress os-health-check \
 `READY=True` then:
 
 ```bash
-curl -fsS -o /dev/null -w "%{http_code}\n" https://oshealth.frostgate.in/
+curl -fsS -o /dev/null -w "%{http_code}\n" https://app.example.com/
 # expect 200  (curl -I / HEAD may return 405 — app only allows GET)
 ```
 
@@ -490,12 +490,12 @@ Keycloak → client **`os-health-check-web`** → save:
 
 | Field | Value |
 |---|---|
-| Valid redirect URIs | `https://oshealth.frostgate.in/*` |
-| Web origins | `https://oshealth.frostgate.in` |
+| Valid redirect URIs | `https://app.example.com/*` |
+| Web origins | `https://app.example.com` |
 
 ### 13.2 Login
 
-Open **`https://oshealth.frostgate.in`**, sign in as local **`publisher`**.
+Open **`https://app.example.com`**, sign in as local **`publisher`**.
 
 Healthy result:
 
@@ -511,11 +511,11 @@ From the pod, Cloudflare often allows `curl` but blocks Python’s default User-
 # curl — usually 200
 kubectl -n os-health-check exec deploy/os-health-check -- \
   curl -sS -o /dev/null -w "%{http_code}\n" \
-  "https://keycloack.frostgate.in/realms/os-health-check/protocol/openid-connect/certs"
+  "https://keycloak.example.com/realms/os-health-check/protocol/openid-connect/certs"
 
 # python default UA — may be 403 without the auth.py fix
 kubectl -n os-health-check exec deploy/os-health-check -- \
-  python3 -c "import urllib.request; print(urllib.request.urlopen('https://keycloack.frostgate.in/realms/os-health-check/protocol/openid-connect/certs', timeout=15).status)"
+  python3 -c "import urllib.request; print(urllib.request.urlopen('https://keycloak.example.com/realms/os-health-check/protocol/openid-connect/certs', timeout=15).status)"
 ```
 
 Fix that shipped in this repo: rebuild/push the image that includes the User-Agent headers in `auth.py`, then:
@@ -541,7 +541,7 @@ Portal → **Microsoft Entra ID** → **App registrations** → New:
 | Field | Value |
 |---|---|
 | Name | `OS Health Check Keycloak Broker` |
-| Redirect URI (Web) | `https://keycloack.frostgate.in/realms/os-health-check/broker/microsoft/endpoint` |
+| Redirect URI (Web) | `https://keycloak.example.com/realms/os-health-check/broker/microsoft/endpoint` |
 
 Create a client secret; copy Application (client) ID and Directory (tenant) ID.
 
@@ -565,7 +565,7 @@ First Microsoft login creates a linked Keycloak user — assign **`lookup-publis
 
 - [ ] `kubectl get nodes` → Ready  
 - [ ] Pod Running; logs show DB seed/skip  
-- [ ] `https://oshealth.frostgate.in` → 200  
+- [ ] `https://app.example.com` → 200  
 - [ ] Certificate Ready  
 
 ### Auth (local)
@@ -606,7 +606,7 @@ Does **not** delete: Keycloak host, Cloudflare DNS/Tunnel, Entra app registratio
 |---|---|---|
 | Postgres | Flexible `B1ms` public + AllowAll for short test | Fast; strong password; delete RG after |
 | AKS node | `Standard_B2s_v2` | Available in `centralindia` |
-| App entry | Ingress + Let’s Encrypt + `oshealth.frostgate.in` | PKCE needs HTTPS |
+| App entry | Ingress + Let’s Encrypt + `app.example.com` | PKCE needs HTTPS |
 | App Service | ClusterIP | One public LB (Ingress) |
 | Image | Docker Hub `linux/amd64` | AKS nodes are amd64 |
 | Keycloak edge | Keep Cloudflare Tunnel | Don’t grey-cloud tunnel hostname |
@@ -626,7 +626,7 @@ kubectl config current-context
 # App
 kubectl -n os-health-check get pods,svc,ingress,certificate
 kubectl -n os-health-check logs -f deployment/os-health-check
-curl -fsS -o /dev/null -w "%{http_code}\n" https://oshealth.frostgate.in/
+curl -fsS -o /dev/null -w "%{http_code}\n" https://app.example.com/
 
 # Rebuild after code change (from repo root)
 export DOCKERHUB_USER=jibingeorge
@@ -637,7 +637,7 @@ kubectl -n os-health-check rollout restart deployment/os-health-check
 # JWKS reachability from pod
 kubectl -n os-health-check exec deploy/os-health-check -- \
   curl -fsS -o /dev/null -w "%{http_code}\n" \
-  "https://keycloack.frostgate.in/realms/os-health-check/protocol/openid-connect/certs"
+  "https://keycloak.example.com/realms/os-health-check/protocol/openid-connect/certs"
 
 # Postgres AllowAll (throwaway)
 az postgres flexible-server firewall-rule create \
@@ -653,7 +653,7 @@ az group delete -n rg-oshealth-prodtest --yes --no-wait
 
 ## What “success” looks like
 
-1. Colleague opens **`https://oshealth.frostgate.in`**.  
+1. Colleague opens **`https://app.example.com`**.  
 2. Logs in via Keycloak (local user or Microsoft after Phase 9).  
 3. Sees populated Lookup Data and a real username/avatar.  
 4. Publisher can edit Draft and Publish; editor cannot publish.  

@@ -2,7 +2,7 @@
 
 > **Purpose.** An ordered, beginner-friendly path to run the same prod-like
 > proof on **AWS** that we already validated on Azure: **EKS** + **RDS
-> PostgreSQL** + remote Keycloak (`keycloack.frostgate.in`, Cloudflare Tunnel)
+> PostgreSQL** + remote Keycloak (`keycloak.example.com`, Cloudflare Tunnel)
 > + app HTTPS on a hostname **you** choose + existing Keycloak **Entra**
 > federation (no Cognito required for this test).
 >
@@ -55,7 +55,7 @@ flowchart LR
 
   subgraph Remote["Remote + Cloudflare"]
     CFApp["DNS A YOUR_APP_HOSTNAME<br/>DNS only → Ingress IP/hostname"]
-    CFKC["Cloudflare Tunnel<br/>keycloack.frostgate.in"]
+    CFKC["Cloudflare Tunnel<br/>keycloak.example.com"]
     KC["Keycloak"]
     Entra["Microsoft Entra ID"]
   end
@@ -73,7 +73,7 @@ flowchart LR
 | App | EKS, 1 replica, Service **ClusterIP** | Public entry is Ingress, not `LoadBalancer` on the app Service |
 | App URL | `https://YOUR_APP_HOSTNAME` | Required for PKCE (`crypto.subtle` needs HTTPS) — **not** hard-coded in repo |
 | DB | RDS Postgres 16, small instance | Publicly reachable for short test, or SG-locked to EKS |
-| Keycloak | Reuse `https://keycloack.frostgate.in` | Keep Tunnel **proxied**; do not grey-cloud this host |
+| Keycloak | Reuse `https://keycloak.example.com` | Keep Tunnel **proxied**; do not grey-cloud this host |
 | Image | Docker Hub `linux/amd64` | Apple Silicon: `docker build --platform linux/amd64` |
 | IdP | Existing Entra → Keycloak broker | Same as Azure test; app never talks to AWS Cognito |
 
@@ -109,7 +109,7 @@ Hard rules:
 | `aws` CLI v2 + credentials | `aws configure` or SSO |
 | **eksctl** | Simplest path to a one-node EKS cluster |
 | `kubectl`, Docker, **Helm**, Docker Hub login | Same as Azure |
-| Cloudflare zone `frostgate.in` | New A/CNAME for **your** app hostname |
+| Cloudflare zone `example.com` | New A/CNAME for **your** app hostname |
 | Keycloak already set up | Reuse realm/client/users from Azure plan §6 |
 | This repo | Build from directory that contains `Dockerfile` |
 
@@ -155,8 +155,8 @@ eksctl version
 | `DEPLOYMENT_ID` | `aws-eks-prodtest` |
 | Keycloak realm / client | `os-health-check` / `os-health-check-web` |
 | Publisher role | `lookup-publisher` |
-| Keycloak URL | `https://keycloack.frostgate.in` |
-| App hostname | **`YOUR_APP_HOSTNAME`** (e.g. `oshealth-aws.frostgate.in`) — pick before Phase 7 |
+| Keycloak URL | `https://keycloak.example.com` |
+| App hostname | **`YOUR_APP_HOSTNAME`** (e.g. `app.example.com`) — pick before Phase 7 |
 | Docker Hub image | `jibingeorge/os-health-check:v1` (or your user) |
 | Common tag | `Project=oshealth-eks-prodtest` |
 
@@ -174,13 +174,13 @@ aws sts get-caller-identity
 If you already completed Keycloak for the Azure test, **skip creating a new realm**. Confirm:
 
 ```bash
-curl -fsS "https://keycloack.frostgate.in/realms/os-health-check/.well-known/openid-configuration" | head
+curl -fsS "https://keycloak.example.com/realms/os-health-check/.well-known/openid-configuration" | head
 ```
 
 Issuer must be exactly:
 
 ```text
-https://keycloack.frostgate.in/realms/os-health-check
+https://keycloak.example.com/realms/os-health-check
 ```
 
 You still need:
@@ -394,7 +394,7 @@ imagePullPolicy: Always
 
 ```yaml
 DEPLOYMENT_ID: "aws-eks-prodtest"
-KEYCLOAK_ISSUER_URL: "https://keycloack.frostgate.in/realms/os-health-check"
+KEYCLOAK_ISSUER_URL: "https://keycloak.example.com/realms/os-health-check"
 KEYCLOAK_AUDIENCE: "os-health-check-web"
 KEYCLOAK_PUBLISHER_ROLE: "lookup-publisher"
 LOOKUP_DB_ENABLED: "true"
@@ -431,7 +431,7 @@ Expect seed import or `already has 'data' rows -- skipping import`.
 
 Plain `http://<ELB hostname>` cannot run PKCE login. Use HTTPS on **your** DNS name.
 
-Pick `YOUR_APP_HOSTNAME` now (example only: `oshealth-aws.frostgate.in`). It must match Cloudflare DNS, Ingress hosts, and Keycloak redirects.
+Pick `YOUR_APP_HOSTNAME` now (example only: `app.example.com`). It must match Cloudflare DNS, Ingress hosts, and Keycloak redirects.
 
 ### 12.1 ingress-nginx
 
@@ -551,7 +551,7 @@ If APIs 401 with JWKS **403** from Python: confirm image includes `auth.py` User
 Reuse the Entra app + Keycloak IdP from the Azure plan. No new app registration is required if the broker redirect URI is still:
 
 ```text
-https://keycloack.frostgate.in/realms/os-health-check/broker/microsoft/endpoint
+https://keycloak.example.com/realms/os-health-check/broker/microsoft/endpoint
 ```
 
 Smoke:
@@ -657,7 +657,7 @@ kubectl -n os-health-check rollout restart deployment/os-health-check
 # JWKS from pod
 kubectl -n os-health-check exec deploy/os-health-check -- \
   curl -fsS -o /dev/null -w "%{http_code}\n" \
-  "https://keycloack.frostgate.in/realms/os-health-check/protocol/openid-connect/certs"
+  "https://keycloak.example.com/realms/os-health-check/protocol/openid-connect/certs"
 
 # Teardown (see Phase 11 for full sequence)
 eksctl delete cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" --wait
