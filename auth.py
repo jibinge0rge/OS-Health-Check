@@ -63,6 +63,20 @@ _DISCOVERY_CACHE_SECONDS = 3600
 _jwks_client: jwt.PyJWKClient | None = None
 _jwks_client_fetched_at = 0.0
 
+# Cloudflare (and similar bot filters in front of Keycloak) often 403 the
+# default Python/urllib User-Agent used by requests + PyJWKClient, while
+# browsers and curl succeed. That shows up as every /api/* call failing with
+# "Unable to verify token signature: ... HTTP Error 403" even though login
+# itself worked. Send a normal browser UA on discovery + JWKS fetches only.
+_OIDC_HTTP_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (compatible; OS-Health-Check/1.0; "
+        "+https://github.com/os-health-check) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json",
+}
+
 # sub -> (user_id, cached_at); avoids a DB round trip on every single request
 # -- last_login_at / username / email in iam_db still get refreshed on every
 # cache miss, just not on every request within the TTL window.
@@ -86,10 +100,14 @@ def _get_jwks_client() -> jwt.PyJWKClient:
     # relative to whichever URL we just used to reach it, so it's reachable
     # from here regardless of what the browser-facing issuer URL is.
     discovery_url = f"{KEYCLOAK_INTERNAL_URL}/.well-known/openid-configuration"
-    response = requests.get(discovery_url, timeout=10)
+    response = requests.get(discovery_url, headers=_OIDC_HTTP_HEADERS, timeout=10)
     response.raise_for_status()
     jwks_uri = response.json()["jwks_uri"]
-    _jwks_client = jwt.PyJWKClient(jwks_uri, lifespan=_DISCOVERY_CACHE_SECONDS)
+    _jwks_client = jwt.PyJWKClient(
+        jwks_uri,
+        lifespan=_DISCOVERY_CACHE_SECONDS,
+        headers=_OIDC_HTTP_HEADERS,
+    )
     _jwks_client_fetched_at = now
     return _jwks_client
 
