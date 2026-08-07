@@ -24,21 +24,54 @@ EOL_FETCH_WORKERS = 8
 # Insert spaces at letter↔digit boundaries (Linux8.2 → linux 8.2).
 _LETTER_DIGIT_BOUNDARY_RE = re.compile(r"(?<=[a-z])(?=\d)|(?<=\d)(?=[a-z])")
 
+# Windows' half-year feature-update tag ("21H2", "24H1", ...). Captured as
+# its own compound hint/token (see extract_version_hints and
+# _release_name_tokens) because the ordinary digit-only extraction those
+# functions already do strips the "H1"/"H2" suffix from BOTH the query and
+# every release name symmetrically -- two otherwise fully independent
+# releases (Windows 10's "21H1" and "21H2") both reduce to the bare hint
+# "21" and become indistinguishable, tying for the top score. Real
+# incident: "Windows 10 Pro 64 bit Edition Version 21H2" resolved to
+# "Microsoft Windows 10 21H1" -- the wrong, OLDER release -- because the
+# tie between "10-21h1" and every "10-21h2-*" edition (all scoring 100 via
+# the compound-token rule on the shared bare tokens {"10","21"}) fell back
+# to the conservative "earliest EOL among tied releases" merge, and 21H1's
+# support window happens to be the shortest. Exactly two leading digits
+# with no digit immediately before or after keeps this from firing inside
+# a longer run (never matches inside "2021H2" or "21H23").
+_HALF_YEAR_TAG_RE = re.compile(r"(?<!\d)\d{2}[Hh][12](?!\d)")
+
+
+def _half_year_tags(text: str) -> list[str]:
+    return [match.group().lower() for match in _HALF_YEAR_TAG_RE.finditer(text or "")]
+
 # Regex overrides run before the API phrase index (disambiguation only).
 _SLUG_PRIORITY_OVERRIDES: list[tuple[str, str]] = [
     (r"windows[\s-]?server", "windows-server"),
-    # A server-generation year (2008/2011/2012/2016/2019/2022/2025) alongside
-    # any mention of "win"/"windows" means Windows SERVER even when the
-    # inventory string drops the word "Server" entirely (a common real-world
-    # shorthand: "Windows 2008 R2 Standard", "Win 2008 R2", "Windows 2008 -
-    # Standard") -- none of these years is ever a Windows CLIENT version
-    # (client releases are named "7"/"8"/"10"/"11", or "XP"/"Vista"), so this
-    # is unambiguous. Without it, these fell through to the generic "windows"
-    # (client) phrase-index entry instead, which then has no matching release
-    # at all for a year it was never versioned by. Both lookaheads are
-    # order-independent (zero-width) since "2008"/"R2"/"Win" can appear in
-    # either order across real inventory strings.
-    (r"(?=.*\bwin(?:dows)?\b)(?=.*\b(?:2008|2011|2012|2016|2019|2022|2025)\b)", "windows-server"),
+    # A server-generation year (2000/2003/2008/2011/2012/2016/2019/2022/2025)
+    # alongside any mention of "win"/"windows" means Windows SERVER even when
+    # the inventory string drops the word "Server" entirely (a common
+    # real-world shorthand: "Windows 2008 R2 Standard", "Win 2008 R2",
+    # "Windows 2008 - Standard") -- none of these years is ever a Windows
+    # CLIENT version (client releases are named "7"/"8"/"10"/"11", or
+    # "XP"/"Vista"), so this is unambiguous. Without it, these fell through
+    # to the generic "windows" (client) phrase-index entry instead, which
+    # then has no matching release at all for a year it was never versioned
+    # by. Real incident: "Windows 2003 Service Pack 2" / "Windows Server
+    # 2003 sp2" resolved to slug "windows" (client, no such release exists
+    # there at all -> refused) purely because "2003" was missing from this
+    # list. Both lookaheads are order-independent (zero-width) since
+    # "2008"/"R2"/"Win" can appear in either order across real inventory
+    # strings.
+    #
+    # Deliberately NOT extended to the Semi-Annual-Channel-style codes
+    # windows-server also uses (1709/1803/1809/1903/1909/2004/20h2/23h2) --
+    # Windows 10/11 CLIENT feature updates are versioned with these EXACT
+    # same codes, so a bare "Windows 1809" alone is genuinely ambiguous
+    # between client and server; only a whole calendar year is unique to
+    # Server. Those still resolve correctly whenever the string spells out
+    # "Server" (the override immediately above this one).
+    (r"(?=.*\bwin(?:dows)?\b)(?=.*\b(?:2000|2003|2008|2011|2012|2016|2019|2022|2025)\b)", "windows-server"),
     (r"cisco[\s-]?ios[\s-]?xe|\bios[\s-]?xe\b", "cisco-ios-xe"),
     (r"centos[\s-]?stream", "centos-stream"),
     (
@@ -283,8 +316,31 @@ _GENERIC_FAMILY_TRUST_WORDS: dict[str, str] = {
     "linux": "kernel",
 }
 
+# The inverse of _GENERIC_FAMILY_TRUST_WORDS: phrases that, when present,
+# mean this match must be REFUSED even though the generic phrase-index match
+# otherwise looks fine -- the phrase names a real, different, unrelated
+# product endoflife.date simply doesn't track on its own.
+#
+# Real incident: "Microsoft Windows CE Version 6.0" (Windows CE / Windows
+# Embedded Compact -- an entirely separate, long-discontinued embedded OS
+# family, with no "windows-ce" product on endoflife.date at all) resolved
+# to the generic desktop "windows" product via the bare phrase "Microsoft
+# Windows". Its "6.0" version hint then matched Windows VISTA's own NT
+# kernel build ("6.0.6200") -- a confident-looking, but completely wrong,
+# release pick caused purely by two unrelated products coincidentally
+# sharing the version number "6.0". Nothing about "vendors_compatible"
+# catches this (both are nominally "microsoft"); the query must be refused
+# at the product level instead, the same way "linux" alone doesn't earn the
+# kernel project's own product above.
+_GENERIC_FAMILY_DISQUALIFYING_PHRASES: dict[str, tuple[str, ...]] = {
+    "windows": ("windows ce", "wince"),
+}
+
 
 def _generic_family_match_is_trustworthy(slug: str, os_name: str) -> bool:
+    lowered = os_name.lower()
+    if any(phrase in lowered for phrase in _GENERIC_FAMILY_DISQUALIFYING_PHRASES.get(slug, ())):
+        return False
     trust_word = _GENERIC_FAMILY_TRUST_WORDS.get(slug)
     if trust_word is None:
         return True
@@ -292,7 +348,7 @@ def _generic_family_match_is_trustworthy(slug: str, os_name: str) -> bool:
     # alias for this product is the glued "linuxkernel" (no separator at
     # all), so a strict \bkernel\b would itself refuse a real-world string
     # shaped exactly like that alias.
-    return trust_word.lower() in os_name.lower()
+    return trust_word.lower() in lowered
 
 
 def _clean(value: Any) -> str:
@@ -528,6 +584,11 @@ def extract_version_hints(os_name: str) -> list[str]:
             if combined not in seen:
                 seen.add(combined)
                 hints.append(combined)
+
+    for tag in _half_year_tags(text):
+        if tag not in seen:
+            seen.add(tag)
+            hints.append(tag)
     return hints
 
 
@@ -572,6 +633,10 @@ def _release_name_tokens(text: str) -> list[str]:
             if re.search(r"(?:^|[^A-Za-z0-9])(?:SP|R|U|(?:Service\s+)?Pack)\s*$", prefix, re.I):
                 continue
         tokens.append(token)
+
+    for tag in _half_year_tags(text):
+        if tag not in tokens:
+            tokens.append(tag)
     return tokens
 
 
@@ -719,6 +784,24 @@ _EDITION_LABEL_HINTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\benterprise\b|\(e\)", re.I), "(e)"),
 )
 
+# Explicit service-pack number ("SP2", "sp 2", "Service Pack 2") -- checked
+# ahead of every fixed pattern above (see _edition_label_substring) because
+# unlike those, this one is dynamic (the number varies) and, critically,
+# more directly diagnostic: several old Windows Server generations ship
+# distinct per-service-pack releases that differ ONLY by SP level, with no
+# R2/IoT/Enterprise angle to narrow by at all. Real incidents: "Windows
+# Server 2003 Service Pack 2" (hints ["2003"]) tied release "2003" against
+# "2003-sp1"/"2003-sp2" -- all three share the SAME latest.name build
+# ("5.2.3790", SPs never bumped it) and the SAME compound-token match on
+# "2003", so nothing distinguished them and the plain RTM release won by
+# dominant-evidence (its bare name is an ordinary exact match, a stronger
+# signal than the others' compound-token-only evidence) -- silently
+# dropping the query's own explicit "Service Pack 2". "Windows 2008 Service
+# Pack 2" was worse: it landed on "2008-r2-sp1" (Windows Server 2008 *R2*
+# SP1) instead of plain "2008-sp2" -- an entirely different release, not
+# just the wrong SP level.
+_SP_NUMBER_RE = re.compile(r"\bsp\s?(\d)\b|\bservice\s+pack\s+(\d)\b", re.I)
+
 
 def _edition_label_substring(os_text: str) -> str | None:
     """The release-label substring an OS string's edition/channel implies.
@@ -728,6 +811,9 @@ def _edition_label_substring(os_text: str) -> str | None:
     channel when a build number is otherwise shared by both.
     """
     text = str(os_text or "")
+    sp_match = _SP_NUMBER_RE.search(text)
+    if sp_match:
+        return f"sp{sp_match.group(1) or sp_match.group(2)}"
     for pattern, label_substring in _EDITION_LABEL_HINTS:
         if pattern.search(text):
             return label_substring
@@ -968,6 +1054,30 @@ def _pick_release_with_hints(
     # winner -- "6.6" can only ever numeric-prefix-match release "6", never
     # "7" or "8") while no longer overriding an already-unambiguous answer
     # with a hint that's too coarse to mean anything on its own.
+    #
+    # A further guard, below: the dotted winner must be a candidate the
+    # full-hint-set pass missed ENTIRELY, not one that's already sitting
+    # inside the current best_candidates tie. Real incident: "WindowsServer
+    # 2022 10.0 17134" (hints ["2022", "10.0", "17134", "10.0.17134"]) ties
+    # "2022" (its own bare name is an ordinary exact match on hint "2022")
+    # against "1803-sac" (build 10.0.17134 -- a real Windows Server release,
+    # just an OLDER, unrelated one that happens to share this query's build
+    # number) -- both already scoring 100 on the FULL hint set. The dotted-
+    # only pass then uniquely resolves to "1803-sac" (the same release
+    # already in that tie) and this override used to unconditionally REPLACE
+    # the tie with just that one candidate, discarding "2022" -- and with it,
+    # the query's own explicitly-named year -- before the shared-hint/
+    # dominant-evidence checks below ever got a chance to run. Those checks
+    # exist precisely to handle "two releases tied, each confirmed by a
+    # DIFFERENT piece of evidence, with different underlying builds" --
+    # correctly refusing rather than guessing (see the empty-intersection
+    # check right below) -- but only when best_candidates still contains
+    # both. Requiring the dotted winner to be a genuinely NEW name (absent
+    # from best_candidates) preserves the RHEL/CentOS/iOS fix intact -- there,
+    # the dotted winner ("6") never scored 100 on the full hint set at all,
+    # so it's never already one of the tied candidates -- while letting an
+    # already-tied, already-explainable case fall through to the tie-break
+    # logic that already exists to handle it correctly.
     dotted_hints = [hint for hint in hints if "." in hint]
     if dotted_hints and dotted_hints != hints:
         dotted_score, dotted_candidates = _best_scoring_releases(releases, dotted_hints)
@@ -975,6 +1085,7 @@ def _pick_release_with_hints(
             dotted_score >= _MIN_RELEASE_SCORE
             and len(dotted_candidates) == 1
             and {r.get("name") for r in dotted_candidates} != {r.get("name") for r in best_candidates}
+            and dotted_candidates[0].get("name") not in {r.get("name") for r in best_candidates}
         ):
             best_score, best_candidates = dotted_score, dotted_candidates
 

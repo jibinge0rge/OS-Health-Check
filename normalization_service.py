@@ -852,6 +852,31 @@ def _pair_from_index(index: int | None, allowed_pairs: list[dict[str, str]]) -> 
     }
 
 
+# A '/' with whitespace on BOTH sides is, by real-world inventory-string
+# convention, a deliberate "list of separate things" separator -- unlike a
+# '/' glued directly onto surrounding words/digits, which is virtually
+# always part of a single product's own name, version path, or model range
+# ("Debian GNU/Linux 10", "FreeBSD/12.2-STABLE", "Canon LBP245/246/248",
+# "EPSON 11a/b/g/n"). Verified against every example in the AI prompt below:
+# every ambiguous=true example there ("AIX 5.x / AIX 6.x / Sidewinder G2",
+# "Cisco IOS 12.1 / Cisco IOS 12.2", "EulerOS / Ubuntu / Fedora") uses a
+# spaced slash; every ambiguous=false example uses an unspaced one.
+# Real incident: "Windows Vista / Windows 2008 / Windows 7 / Windows 2012"
+# was never flagged at all when no AI provider was configured (the ONLY
+# path that could flag it before this), so it fell straight through to a
+# normal -- and, for a string this genuinely ambiguous, wrong -- lifecycle
+# lookup. This heuristic runs unconditionally, before AI, so ambiguous
+# detection no longer silently does nothing without an AI key.
+_SPACED_SLASH_RE = re.compile(r"\s+/\s+")
+
+
+def _looks_like_multi_os_list(os_string: str) -> bool:
+    if not _SPACED_SLASH_RE.search(os_string):
+        return False
+    segments = [segment.strip() for segment in _SPACED_SLASH_RE.split(os_string)]
+    return sum(1 for segment in segments if segment) >= 2
+
+
 def detect_ambiguous_os_batch(
     os_strings: list[str],
     provider: object = "openai",
@@ -859,11 +884,11 @@ def detect_ambiguous_os_batch(
 ) -> list[bool]:
     """Return True when an OS string lists multiple distinct products separated by '/'."""
     cleaned_strings = [_clean(value) for value in os_strings]
-    results = [False for _ in cleaned_strings]
+    results = [_looks_like_multi_os_list(value) for value in cleaned_strings]
     indexed_items = [
         {"item_index": index, "os_string": value}
         for index, value in enumerate(cleaned_strings)
-        if value and "/" in value
+        if value and "/" in value and not results[index]
     ]
     if not indexed_items:
         return results

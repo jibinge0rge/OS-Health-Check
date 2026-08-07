@@ -519,6 +519,36 @@ class GenericLinuxKernelRequiresTheWordKernelTests(unittest.TestCase):
         self.assertEqual(resolve("Red Hat Linux 7.4"), "rhel")
 
 
+class WindowsCeRefusesGenericWindowsMatchTests(unittest.TestCase):
+    """Real, reported incident: "Microsoft Windows CE Version 6.0" resolved
+    to the generic desktop "windows" product via the bare phrase "Microsoft
+    Windows" -- endoflife.date has no "windows-ce" product of its own at
+    all. Its "6.0" version hint then matched Windows VISTA's own NT kernel
+    build ("6.0.6200") and confidently (but wrongly) picked "Vista SP2" --
+    two entirely unrelated products coincidentally sharing the version
+    number "6.0". Unlike the Linux-kernel guard above (which REQUIRES a
+    word before trusting a generic match), this is the inverse: "windows
+    ce"/"wince" REFUSES an otherwise-normal match, because it names a real,
+    different product this catalog just doesn't track."""
+
+    def test_windows_ce_refuses_the_generic_windows_match(self) -> None:
+        for os_name in (
+            "Microsoft Windows CE Version 6.0",
+            "Windows CE 5.0",
+            "WinCE 6.0 Professional",
+        ):
+            with self.subTest(os_name=os_name):
+                self.assertIsNone(resolve(os_name))
+
+    def test_other_windows_strings_are_unaffected(self) -> None:
+        """Sanity check: the guard is scoped to the "windows ce"/"wince"
+        phrases alone -- ordinary desktop Windows strings must still
+        resolve normally."""
+        self.assertEqual(resolve("Microsoft Windows Vista SP2"), "windows")
+        self.assertEqual(resolve("Windows 10.0.19045"), "windows")
+        self.assertEqual(resolve("Windows Server 2019"), "windows-server")
+
+
 class BitnessMarkerContextTests(unittest.TestCase):
     """Real incident: Android reached major version 16 ('Baklava', 2025), but
     16/32/64/86/128/256 were unconditionally treated as architecture/bitness
@@ -715,8 +745,12 @@ class DottedHintOutranksCoincidentalBareMatchTests(unittest.TestCase):
             {"name": "11-24h2-e", "label": "11 24H2 (E)", "latest": {"name": "10.0.26100"}, "eolFrom": "2027-10-12"},
             {"name": "11-24h2-w", "label": "11 24H2 (W)", "latest": {"name": "10.0.26100"}, "eolFrom": "2026-10-13"},
         ]
+        # "24h2" is also captured now (see the half-year-tag fix) -- both
+        # editions gain it as a token too, so the tie (and its resolution)
+        # is unaffected; only the bare-digit hints this test is actually
+        # about stay unaffected.
         hints = extract_version_hints("Microsoft Windows 11 24H2")
-        self.assertEqual(hints, ["11", "24"])
+        self.assertEqual(hints, ["11", "24", "24h2"])
         picked = pick_release(releases, hints, os_text="Microsoft Windows 11 24H2")
         self.assertEqual(picked.get("name"), "11-24h2-w")
 
@@ -737,6 +771,26 @@ class DottedHintOutranksCoincidentalBareMatchTests(unittest.TestCase):
         os_string = "Windows 10.0 (14393)"
         picked = pick_release(releases, extract_version_hints(os_string), os_text=os_string)
         self.assertEqual(picked.get("name"), "10-1607")
+
+    def test_windows_10_21h1_vs_21h2_half_year_tag_disambiguates(self) -> None:
+        """Real incident: "Windows 10 Pro 64 bit Edition Version 21H2"
+        resolved to "Microsoft Windows 10 21H1" -- the wrong, OLDER release.
+        Bare-digit hint extraction strips "H1"/"H2" from both the query and
+        every release name, so "10-21h1" and "10-21h2" (genuinely different
+        releases with different builds) both reduce to tokens {"10","21"}
+        and tie at 100 via the compound-token rule; the conservative
+        earliest-EOL merge then picked 21H1 for having the shortest support
+        window. The half-year-tag hint ("21h2") restores the distinction."""
+        releases = [
+            {"name": "10-21h1", "label": "10 21H1", "eolFrom": "2022-12-13", "latest": {"name": "10.0.19043"}},
+            {"name": "10-21h2-w", "label": "10 21H2 (W)", "eolFrom": "2023-06-13", "latest": {"name": "10.0.19044"}},
+            {"name": "10-21h2-e", "label": "10 21H2 (E)", "eolFrom": "2024-06-11", "latest": {"name": "10.0.19044"}},
+        ]
+        os_string = "Windows 10 Pro 64 bit Edition Version 21H2"
+        hints = extract_version_hints(os_string)
+        self.assertIn("21h2", hints)
+        picked = pick_release(releases, hints, os_text=os_string)
+        self.assertEqual(picked.get("name"), "10-21h2-w")
 
     def test_coarse_family_wide_dotted_hint_does_not_override_a_unique_win(self) -> None:
         """Real regression, found while verifying the fix above against the
@@ -764,6 +818,64 @@ class DottedHintOutranksCoincidentalBareMatchTests(unittest.TestCase):
         self.assertEqual(picked.get("name"), "2016")
 
 
+class DottedHintOverrideMustNotDiscardAnAlreadyTiedCandidateTests(unittest.TestCase):
+    """Real, reported incidents: "WindowsServer2019 10.0 14393",
+    "WindowsServer2022 10.0 17134", etc. each confidently (and wrongly)
+    resolved to an OLDER, unrelated Windows Server generation -- one whose
+    real build number happens to equal the trailing bare number in the
+    query -- silently discarding the year the query actually stated.
+
+    Root cause: on the FULL hint set, both the stated year (e.g. "2022",
+    an ordinary exact match on its own bare release name) and the
+    coincidentally-matching older release (e.g. "1803-sac", confirmed via
+    its build number) already tie at the top score (100) -- exactly the
+    shape the shared-hint/dominant-evidence checks below exist to referee.
+    But the dotted-hints-override (the fix for "RHEL 6.6 3 8" et al, see
+    DottedHintOutranksCoincidentalBareMatchTests above) ran BEFORE those
+    checks and unconditionally replaced the whole tie with just the dotted-
+    only winner ("1803-sac"), discarding "2022" before the tie-break logic
+    ever got a chance to run. The fix: the override may only introduce a
+    release the full-hint pass missed ENTIRELY (as in the RHEL case, where
+    "6" never scored 100 on the full hint set at all) -- not one that's
+    already sitting inside the current tie, which the existing shared-hint/
+    empty-intersection-refusal logic is already equipped to referee
+    correctly (here: refuse, since "2022" and "1803-sac" are genuinely
+    different releases with different builds and no hint in common)."""
+
+    RELEASES = [
+        {"name": "2016", "label": "Windows Server 2016 (LTSC)", "eolFrom": "2027-01-12", "latest": {"name": "10.0.14393"}},
+        {"name": "2019", "label": "Windows Server 2019 (LTSC)", "eolFrom": "2029-01-09", "latest": {"name": "10.0.17763"}},
+        {"name": "2022", "label": "Windows Server 2022 (LTSC)", "eolFrom": "2031-10-14", "latest": {"name": "10.0.20348"}},
+        {"name": "2025", "label": "Windows Server 2025 (LTSC)", "eolFrom": "2034-11-14", "latest": {"name": "10.0.26100"}},
+        {"name": "1803-sac", "label": "Windows Server 1803 SAC", "eolFrom": "2019-07-09", "latest": {"name": "10.0.17134"}},
+        {"name": "1909-sac", "label": "Windows Server 1909 SAC", "eolFrom": "2021-05-11", "latest": {"name": "10.0.18363"}},
+        {"name": "2004-sac", "label": "Windows Server 2004 SAC", "eolFrom": "2021-12-14", "latest": {"name": "10.0.19041"}},
+    ]
+
+    def test_stated_year_conflicting_with_an_older_releases_build_refuses(self) -> None:
+        for os_string in (
+            "WindowsServer2019 10.0 14393",  # 14393 is really 2016's build
+            "WindowsServer2019 10.0 17134",  # 17134 is really 1803's build
+            "WindowsServer2019 10.0 19041",  # 19041 is really 2004's build
+            "WindowsServer2022 10.0 17134",  # 17134 is really 1803's build
+            "WindowsServer2022 10.0 18363",  # 18363 is really 1909's build
+            "WindowsServer2022 10.0 26100",  # 26100 is really 2025's build
+        ):
+            with self.subTest(os_string=os_string):
+                hints = extract_version_hints(os_string)
+                picked = pick_release(self.RELEASES, hints, os_text=os_string)
+                self.assertEqual(picked, {})
+
+    def test_unaffected_when_the_dotted_winner_is_a_new_candidate_not_in_the_tie(self) -> None:
+        """Sanity check the RHEL/CentOS/iOS fix (and the WindowsServer2016
+        regression guard) this change sits right next to are both still
+        intact -- see DottedHintOutranksCoincidentalBareMatchTests, which
+        this test class does not duplicate."""
+        releases = [{"name": n} for n in ["10", "9", "8", "7", "6", "5", "4"]]
+        picked = pick_release(releases, extract_version_hints("RHEL 6.6 3 8"), os_text="RHEL 6.6 3 8")
+        self.assertEqual(picked.get("name"), "6")
+
+
 class GluedWordDigitTruncationTests(unittest.TestCase):
     """Real incident: a bulk-reported inventory string "Microsoft
     WindowsServer2008R2 Standard" (vendor tooling glued the words and
@@ -787,8 +899,11 @@ class GluedWordDigitTruncationTests(unittest.TestCase):
 
     def test_compound_tag_truncation_is_still_protected(self) -> None:
         """Sanity check the narrower lookbehind doesn't over-widen: "24H2"
-        must still yield only "24" (not also a spurious "4")."""
-        self.assertEqual(extract_version_hints("Microsoft Windows 11 24H2"), ["11", "24"])
+        must still yield only "24" from the plain digit-run pass (not also a
+        spurious "4") -- "24h2" is a separate, deliberate addition from the
+        half-year-tag pass (see WindowsHalfYearTagTests), not a regression
+        of this one."""
+        self.assertEqual(extract_version_hints("Microsoft Windows 11 24H2"), ["11", "24", "24h2"])
 
 
 class CompoundSlugReleaseNameMatchingTests(unittest.TestCase):
@@ -889,6 +1004,84 @@ class WindowsServerR2EditionHintTests(unittest.TestCase):
         immediately followed by another letter or digit."""
         self.assertIsNone(_edition_label_substring("R2D2"))
         self.assertIsNone(_edition_label_substring("SuperR2000"))
+
+
+class ServicePackEditionHintTests(unittest.TestCase):
+    """Real incidents: several old Windows Server generations ship distinct
+    per-service-pack releases sharing the SAME latest.name build (SPs never
+    bumped it) and the SAME compound-token match on the base year -- nothing
+    else narrows between them. "Windows Server 2003 Service Pack 2" (hints
+    ["2003"]) tied "2003"/"2003-sp1"/"2003-sp2" and the plain RTM release won
+    by dominant-evidence (its bare name is an ordinary exact match), silently
+    dropping the query's own explicit "Service Pack 2". "Windows 2008 Service
+    Pack 2" was worse: it landed on "2008-r2-sp1" (Server 2008 *R2* SP1)
+    instead of plain "2008-sp2" -- an entirely different release."""
+
+    SERVER_2003_RELEASES = [
+        {"name": "2003", "label": "Windows Server 2003 (LTSC)",
+         "eolFrom": "2007-04-10", "latest": {"name": "5.2.3790"}},
+        {"name": "2003-sp1", "label": "Windows Server 2003 SP1",
+         "eolFrom": "2009-04-14", "latest": {"name": "5.2.3790"}},
+        {"name": "2003-sp2", "label": "Windows Server 2003 SP2 (LTSC)",
+         "eolFrom": "2015-07-14", "latest": {"name": "5.2.3790"}},
+    ]
+    SERVER_2008_RELEASES = [
+        {"name": "2008-sp2", "label": "Windows Server 2008 SP2",
+         "eolFrom": "2020-01-14", "latest": {"name": "6.0.6003"}},
+        {"name": "2008-r2-sp1", "label": "Windows Server 2008 R2 SP1",
+         "eolFrom": "2020-01-14", "latest": {"name": "6.1.7601"}},
+    ]
+
+    def test_spelled_out_service_pack_number_is_recognized(self) -> None:
+        self.assertEqual(_edition_label_substring("Windows Server 2003 Service Pack 2"), "sp2")
+        self.assertEqual(_edition_label_substring("Windows 2008 Service Pack 2"), "sp2")
+
+    def test_abbreviated_sp_number_is_recognized(self) -> None:
+        self.assertEqual(_edition_label_substring("Windows Server 2003 sp2"), "sp2")
+        self.assertEqual(_edition_label_substring("Windows Server 2003 SP 2"), "sp2")
+
+    def test_service_pack_2_picks_the_sp2_release_not_rtm(self) -> None:
+        os_string = "Windows Server 2003 Service Pack 2"
+        hints = extract_version_hints(os_string)
+        self.assertEqual(hints, ["2003"])
+        picked = pick_release(self.SERVER_2003_RELEASES, hints, os_text=os_string)
+        self.assertEqual(picked.get("name"), "2003-sp2")
+
+    def test_service_pack_2_picks_the_sp2_release_not_a_different_r2_release(self) -> None:
+        os_string = "Windows 2008 Service Pack 2"
+        hints = extract_version_hints(os_string)
+        picked = pick_release(self.SERVER_2008_RELEASES, hints, os_text=os_string)
+        self.assertEqual(picked.get("name"), "2008-sp2")
+
+    def test_r2_service_pack_2_still_prefers_sp2_when_no_r2_release_exists(self) -> None:
+        """Real incident: "Windows 2003 R2 Service Pack 2" -- Windows Server
+        2003 R2 isn't tracked as its own separate release on endoflife.date
+        at all, only plain 2003/2003-sp1/2003-sp2. The unmatchable "R2" must
+        not prevent "Service Pack 2" from still picking the right release."""
+        os_string = "Windows 2003 R2 Service Pack 2"
+        hints = extract_version_hints(os_string)
+        picked = pick_release(self.SERVER_2003_RELEASES, hints, os_text=os_string)
+        self.assertEqual(picked.get("name"), "2003-sp2")
+
+
+class ServerYearOverrideTests(unittest.TestCase):
+    """Real incident: "Windows 2003 Service Pack 2" / "Windows Server 2003
+    sp2" resolved to slug "windows" (client) -- no such release exists there
+    at all -- purely because "2003" was missing from the server-generation-
+    year override list (2000 was also missing)."""
+
+    def test_2000_and_2003_route_to_windows_server_without_the_word_server(self) -> None:
+        self.assertEqual(resolve("Windows 2003 Service Pack 2"), "windows-server")
+        self.assertEqual(resolve("Windows 2003 R2 Service Pack 2"), "windows-server")
+        self.assertEqual(resolve("Win 2000 Server Pack 4"), "windows-server")
+
+    def test_semi_annual_channel_codes_are_unaffected(self) -> None:
+        """Sanity check: codes Windows 10/11 CLIENT also uses (1809, 2004,
+        20H2, ...) must stay ambiguous without the literal word "Server" --
+        adding them to the override would wrongly force every mention of
+        e.g. "Windows 10 1809" to windows-server."""
+        self.assertEqual(resolve("Windows 10 1809"), "windows")
+        self.assertEqual(resolve("Windows 10 2004"), "windows")
 
 
 class BuildNumberSuffixMatchTests(unittest.TestCase):
