@@ -343,12 +343,12 @@ Current `auth.py` sends a browser-like **User-Agent** on OIDC discovery/JWKS fet
 
 Set Docker Hub repo to **Public** (or configure an imagePullSecret).
 
-### 11.2 Manifests (Kustomize overlay)
+### 11.2 Manifests (`k8s/base`)
 
-Edit before apply:
+Edit before apply (same manifests for AKS and EKS):
 
-1. `k8s/overlays/azure/kustomization.yaml` → `images:` (your Docker Hub user / tag)
-2. `k8s/overlays/azure/configmap-patch.yaml` — issuer must match Keycloak exactly:
+1. `k8s/base/deployment.yaml` → `image:` (your Docker Hub user / tag)
+2. `k8s/base/configmap.yaml` — set `DEPLOYMENT_ID` and issuer must match Keycloak exactly:
 
 ```yaml
 DEPLOYMENT_ID: "azure-aks-prodtest"
@@ -357,9 +357,9 @@ KEYCLOAK_AUDIENCE: "os-health-check-web"
 KEYCLOAK_PUBLISHER_ROLE: "lookup-publisher"
 ```
 
-3. `k8s/overlays/azure/ingress-patch.yaml` — both host fields = your app DNS (used in Phase 7; safe to set now)
+3. `k8s/base/ingress.yaml` — both host fields = your app DNS (used in Phase 7; safe to set now)
 
-Base Service is already **ClusterIP** (Ingress is the public path).
+Service is already **ClusterIP** (Ingress is the public path).
 
 ### 11.3 Apply
 
@@ -374,8 +374,8 @@ kubectl create secret generic os-health-check-secrets \
   --from-literal=OPENROUTER_API_KEY='' \
   --dry-run=client -o yaml | kubectl apply -f -
 
-# If namespace does not exist yet, create it first or apply twice after overlay creates it:
-kubectl apply -k k8s/overlays/azure
+# If namespace does not exist yet, create it first or apply twice after base creates it:
+kubectl apply -k k8s/base
 
 kubectl -n os-health-check get pods -w
 kubectl -n os-health-check logs -f deployment/os-health-check
@@ -384,7 +384,7 @@ kubectl -n os-health-check logs -f deployment/os-health-check
 If the Secret was created before the namespace existed:
 
 ```bash
-kubectl apply -k k8s/overlays/azure
+kubectl apply -k k8s/base
 kubectl create secret generic os-health-check-secrets \
   --namespace os-health-check \
   --from-literal=DATABASE_URL='postgresql://oshealthadmin:YOUR_PASSWORD@psql-oshealth-test.postgres.database.azure.com:5432/oshealth?sslmode=require' \
@@ -460,13 +460,13 @@ dig +short app.example.com
 # must equal the ingress EXTERNAL-IP (not 104.x / 172.x Cloudflare anycast)
 ```
 
-### 12.4 Ingress (included in azure overlay)
+### 12.4 Ingress (included in `k8s/base`)
 
-Service is already ClusterIP from the overlay. Ensure `k8s/overlays/azure/ingress-patch.yaml` hosts match your DNS, then re-apply if needed:
+Service is already ClusterIP. Ensure `k8s/base/ingress.yaml` hosts match your DNS, then re-apply if needed:
 
 ```bash
 cd /path/to/OS-Health-Check
-kubectl apply -k k8s/overlays/azure
+kubectl apply -k k8s/base
 
 kubectl -n os-health-check get certificate -w
 kubectl -n os-health-check describe ingress os-health-check

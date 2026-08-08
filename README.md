@@ -257,16 +257,16 @@ runs its own Postgres container.
 `DATABASE_URL` + AI keys, a `ConfigMap` for non-secret env vars, a
 `PersistentVolumeClaim` that persists `_config/` (Settings, vendor-source
 toggles) across pod restarts, a `Deployment` (1 replica), a **ClusterIP**
-`Service`, and (azure/aws overlays) an HTTPS `Ingress`. Apply with
-`kubectl apply -k k8s/overlays/<azure|aws|minikube>`.
+`Service`, and an HTTPS `Ingress` (removed for minikube). Apply with
+`kubectl apply -k k8s/base` (AKS/EKS) or `kubectl apply -k k8s/overlays/minikube`.
 
 **Loading data the first time**: there's no separate "import" step to run by hand. The same startup hook the Docker deployment uses (`docker/import_if_empty.py`) runs automatically inside the pod before the app starts — on a genuinely empty Postgres database, it loads in the lookup data baked into the image (`_data/eol_lookup.csv`) the first time it connects and finds zero rows, logging `[lookup_db] No 'data' rows in Postgres schema 'lookup' yet -- importing N row(s)...`. Every later pod restart is a no-op once the database has any rows (from that import, or a real publish).
 
-**No cloud account yet?** These same manifests can be tested against [minikube](https://minikube.sigs.k8s.io/) — a real one-node Kubernetes cluster that runs inside Docker on your own machine — before you ever touch Azure/AWS. See [k8s/README.md § Testing locally with minikube](k8s/README.md#testing-locally-with-minikube-no-cloud-needed).
+**No cloud account yet?** These same manifests can be tested against [minikube](https://minikube.sigs.k8s.io/) — a real one-node Kubernetes cluster that runs inside Docker on your own machine — before you ever touch Azure/AWS. See [k8s/README.md § Testing locally with minikube](k8s/README.md#testing-locally-with-minikube).
 
-Full walkthrough (building/pushing the image, creating the secret, applying an
-overlay, watching startup logs, Ingress/TLS, updating a build, tearing it
-down): [`k8s/README.md`](k8s/README.md).
+Full walkthrough (building/pushing the image, creating the secret, applying
+base or the minikube overlay, watching startup logs, Ingress/TLS, updating a
+build, tearing it down): [`k8s/README.md`](k8s/README.md).
 
 ---
 

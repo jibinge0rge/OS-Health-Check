@@ -18,8 +18,8 @@ spec:
     spec:
       containers:
         - name: os-health-check
-          # Overlays set the real image via kustomize `images:`.
-          image: docker.io/REPLACE_ME/os-health-check:v1
+          # Cloud: set your registry/tag. Minikube overlay replaces with local image.
+          image: docker.io/YOUR_DOCKERHUB_USER/os-health-check:v1
           imagePullPolicy: Always
           ports:
             - containerPort: 8000

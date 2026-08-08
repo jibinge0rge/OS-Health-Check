@@ -13,8 +13,8 @@
 > **What you are proving.** Browser login (HTTPS) → Keycloak JWT → EKS app
 > validates JWKS → Postgres read/write → publisher role works.
 >
-> **Companions.** `[k8s/README.md](../k8s/README.md)` · `[k8s/overlays/aws](../k8s/overlays/aws)` ·
-> `[KEYCLOAK_SETUP.md](KEYCLOAK_SETUP.md)` · `[.env.example](../.env.example)`
+> **Companions.** [`k8s/README.md`](../k8s/README.md) · [`k8s/base`](../k8s/base) ·
+> [`KEYCLOAK_SETUP.md`](KEYCLOAK_SETUP.md) · [`.env.example`](../.env.example)
 
 ---
 
@@ -480,12 +480,12 @@ Use an image that includes current `auth.py` (browser-like User-Agent on OIDC di
 
 Docker Hub repo should be **Public** (or configure an imagePullSecret).
 
-### 11.2 Manifests (Kustomize overlay)
+### 11.2 Manifests (`k8s/base`)
 
-Edit before apply:
+Edit before apply (same manifests for EKS and AKS):
 
-1. `k8s/overlays/aws/kustomization.yaml` → `images:` (Docker Hub user / tag)
-2. `k8s/overlays/aws/configmap-patch.yaml`:
+1. `k8s/base/deployment.yaml` → `image:` (Docker Hub user / tag)
+2. `k8s/base/configmap.yaml`:
 
 ```yaml
 DEPLOYMENT_ID: "aws-eks-prodtest"
@@ -494,9 +494,9 @@ KEYCLOAK_AUDIENCE: "os-health-check-web"
 KEYCLOAK_PUBLISHER_ROLE: "lookup-publisher"
 ```
 
-3. `k8s/overlays/aws/ingress-patch.yaml` — both host fields = your app DNS
+3. `k8s/base/ingress.yaml` — both host fields = your app DNS
 
-Base Service is already **ClusterIP**.
+Service is already **ClusterIP**.
 
 ### 11.3 Persistent volumes (EBS CSI) — required before apply
 
@@ -554,7 +554,7 @@ kubectl get storageclass
 ```bash
 cd /path/to/OS-Health-Check
 
-kubectl apply -k k8s/overlays/aws
+kubectl apply -k k8s/base
 
 kubectl create secret generic os-health-check-secrets \
   --namespace os-health-check \
@@ -661,13 +661,13 @@ dig +short "$INGRESS_HOST" @1.1.1.1
 
 
 
-### 12.4 Ingress (included in aws overlay)
+### 12.4 Ingress (included in `k8s/base`)
 
-Service is already ClusterIP. Ensure `k8s/overlays/aws/ingress-patch.yaml` hosts match DNS, then:
+Service is already ClusterIP. Ensure `k8s/base/ingress.yaml` hosts match DNS, then:
 
 ```bash
 cd /path/to/OS-Health-Check
-kubectl apply -k k8s/overlays/aws
+kubectl apply -k k8s/base
 kubectl -n os-health-check get certificate
 # wait until READY True (watch with: kubectl -n os-health-check get certificate -w)
 ```
@@ -692,10 +692,10 @@ curl -fsS -o /dev/null -w "%{http_code}\n" https://YOUR_APP_HOSTNAME/
 
 ## 13. Phase 8 — Keycloak redirects + first login
 
-`KEYCLOAK_ISSUER_URL` in `k8s/overlays/aws/configmap-patch.yaml` must be the **exact** browser-reachable realm URL (scheme + host + `/realms/...`, no trailing slash). After editing:
+`KEYCLOAK_ISSUER_URL` in `k8s/base/configmap.yaml` must be the **exact** browser-reachable realm URL (scheme + host + `/realms/...`, no trailing slash). After editing:
 
 ```bash
-kubectl apply -k k8s/overlays/aws
+kubectl apply -k k8s/base
 kubectl -n os-health-check rollout restart deploy/os-health-check
 ```
 
@@ -884,7 +884,7 @@ eksctl delete cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" --wait
 | `az aks get-credentials`              | `aws eks update-kubeconfig` / eksctl                       |
 | Azure LB EXTERNAL-IP                  | NLB hostname on Ingress Service                            |
 | Tear down: `az group delete`          | `eksctl delete cluster` + `aws rds delete-db-instance`     |
-| App hostname in Azure plan            | **Your** hostname (`k8s/overlays/aws/ingress-patch.yaml`)  |
+| App hostname in Azure plan            | **Your** hostname (`k8s/base/ingress.yaml`)                |
 
 
 Lessons carried over (do not re-learn the hard way):

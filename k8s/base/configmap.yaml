@@ -1,6 +1,6 @@
 # Non-secret configuration. Credentials belong in a Secret (see
-# ../secret.example.yaml). Cloud-specific values are set in
-# overlays/{azure,aws,minikube}/ — do not put real hostnames here.
+# ../secret.example.yaml). Edit DEPLOYMENT_ID / Keycloak / audience here
+# before cloud apply. Minikube overlay patches these for local Keycloak.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -10,8 +10,7 @@ data:
   APP_PORT: "8000"
   UVICORN_RELOAD: "false"
   LOOKUP_DB_ENABLED: "true"
-  # Overlays replace these three (and KEYCLOAK_PUBLISHER_ROLE if needed).
-  DEPLOYMENT_ID: "CHANGE-ME-per-deployment"
-  KEYCLOAK_ISSUER_URL: "CHANGE-ME-https://your-keycloak/realms/your-realm"
-  KEYCLOAK_AUDIENCE: "CHANGE-ME-client-id"
+  DEPLOYMENT_ID: "CHANGE-ME"
+  KEYCLOAK_ISSUER_URL: "https://keycloak.example.com/realms/os-health-check"
+  KEYCLOAK_AUDIENCE: "os-health-check-web"
   KEYCLOAK_PUBLISHER_ROLE: "lookup-publisher"

@@ -1,6 +1,6 @@
-# HTTPS Ingress (ingress-nginx + cert-manager). Hosts overridden per overlay.
-# ssl-redirect false until Certificate Ready; then annotate ssl-redirect=true
-# (see Azure/AWS production test plans).
+# HTTPS Ingress (ingress-nginx + cert-manager). Edit both host fields to your
+# app DNS. Minikube overlay deletes this. ssl-redirect false until Certificate
+# Ready; then annotate ssl-redirect=true (see Azure/AWS production test plans).
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

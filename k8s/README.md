@@ -4,28 +4,25 @@ Postgres is **not** part of this deployment — point it at managed Postgres
 (Azure Flexible Server, RDS, etc.) via a `DATABASE_URL` Secret. For everyday
 local development use `docker compose` from the repo root instead.
 
-Manifests are arranged for [Kustomize](https://kubectl.docs.kubernetes.io/references/kustomize/)
+Manifests use [Kustomize](https://kubectl.docs.kubernetes.io/references/kustomize/)
 (built into `kubectl`):
 
 ```text
 k8s/
-  base/                 # shared: Namespace, ConfigMap shell, PVC, Deployment,
+  base/                 # AKS / EKS: Namespace, ConfigMap, PVC, Deployment,
                         #         Service (ClusterIP), Ingress
   overlays/
-    azure/              # DEPLOYMENT_ID + issuer + hostname + image for AKS
-    aws/                # same for EKS
-    minikube/           # local image; no Ingress
+    minikube/           # local image; no Ingress; local Keycloak issuer
   secret.example.yaml   # template only — never apply with real secrets
   README.md
 ```
 
-Apply one overlay:
-
 ```bash
-kubectl apply -k k8s/overlays/azure     # or aws / minikube
+kubectl apply -k k8s/base                 # AKS / EKS (edit base first)
+kubectl apply -k k8s/overlays/minikube    # local
 ```
 
-Preview: `kubectl kustomize k8s/overlays/aws`
+Preview: `kubectl kustomize k8s/base`
 
 ## Prerequisites
 
@@ -38,15 +35,15 @@ The app refuses to start without `DATABASE_URL` + `LOOKUP_DB_ENABLED=true`
 and `DEPLOYMENT_ID` / `KEYCLOAK_ISSUER_URL` / `KEYCLOAK_AUDIENCE`. See
 [../docs/KEYCLOAK_SETUP.md](../docs/KEYCLOAK_SETUP.md).
 
-## Before `kubectl apply -k` (azure / aws)
+## Before `kubectl apply -k k8s/base` (AKS / EKS)
 
-Edit the overlay you will use:
+Edit these files in **`k8s/base/`**:
 
 | File | What to set |
 |------|-------------|
-| `overlays/<cloud>/kustomization.yaml` → `images:` | Your Docker Hub user + tag |
-| `overlays/<cloud>/configmap-patch.yaml` | `DEPLOYMENT_ID`, **exact** `KEYCLOAK_ISSUER_URL`, audience |
-| `overlays/<cloud>/ingress-patch.yaml` | App hostname in **both** host fields |
+| `deployment.yaml` → `image:` | Your Docker Hub user + tag |
+| `configmap.yaml` | `DEPLOYMENT_ID`, **exact** `KEYCLOAK_ISSUER_URL`, audience |
+| `ingress.yaml` | App hostname in **both** host fields |
 
 Create the Secret (not in git):
 
@@ -61,13 +58,13 @@ kubectl create secret generic os-health-check-secrets \
   --from-literal=OPENROUTER_API_KEY=''
 ```
 
-(Namespace is also created by the overlay; creating the secret after the first
+(Namespace is also created by the base; creating the secret after the first
 `apply -k` is fine if the namespace already exists.)
 
 Then:
 
 ```bash
-kubectl apply -k k8s/overlays/aws    # or azure
+kubectl apply -k k8s/base
 kubectl -n os-health-check get pods,pvc,ingress,certificate
 ```
 
@@ -84,11 +81,11 @@ kubectl -n os-health-check annotate ingress os-health-check \
 
 | Step | Minikube | AKS / EKS |
 |------|----------|-----------|
-| Overlay | `k8s/overlays/minikube` | `k8s/overlays/azure` or `aws` |
-| Image | `minikube image load os-health-check:local` | `docker push` + `images:` in overlay |
+| Apply | `k8s/overlays/minikube` | `k8s/base` |
+| Image | `minikube image load os-health-check:local` | Edit `base/deployment.yaml` + `docker push` |
 | Postgres | `host.minikube.internal` in Secret | Managed DB + `sslmode=require` |
 | Reach app | `minikube service os-health-check -n os-health-check --url` | `https://YOUR_APP_HOSTNAME` via Ingress |
-| Ingress | Removed by overlay | Included; edit hostname patch |
+| Ingress | Removed by overlay | Edit hosts in `base/ingress.yaml` |
 
 ## Testing locally with minikube
 
@@ -137,8 +134,8 @@ kubectl -n os-health-check exec -it deployment/os-health-check -- \
 
 ## Updating to a new build
 
-**Cloud:** bump `newTag` (or `newName`) under `images:` in the overlay, push
-the image, then `kubectl apply -k k8s/overlays/<cloud>`.
+**Cloud:** bump the image tag in `base/deployment.yaml`, push the image, then
+`kubectl apply -k k8s/base`.
 
 **Minikube:**
 
