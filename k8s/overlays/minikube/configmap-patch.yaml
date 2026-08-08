@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: os-health-check-config
+  namespace: os-health-check
+data:
+  DEPLOYMENT_ID: "local-dev"
+  KEYCLOAK_ISSUER_URL: "http://localhost:8081/realms/os-health-check-dev"
+  KEYCLOAK_AUDIENCE: "os-health-check-web"
+  KEYCLOAK_PUBLISHER_ROLE: "lookup-publisher"

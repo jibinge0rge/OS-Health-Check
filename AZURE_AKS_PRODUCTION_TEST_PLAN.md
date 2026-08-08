@@ -343,49 +343,60 @@ Current `auth.py` sends a browser-like **User-Agent** on OIDC discovery/JWKS fet
 
 Set Docker Hub repo to **Public** (or configure an imagePullSecret).
 
-### 11.2 Manifests
+### 11.2 Manifests (Kustomize overlay)
 
-In `k8s/deployment.yaml`:
+Edit before apply:
 
-```yaml
-image: docker.io/<you>/os-health-check:v1
-imagePullPolicy: Always
-```
-
-In `k8s/configmap.yaml`:
+1. `k8s/overlays/azure/kustomization.yaml` → `images:` (your Docker Hub user / tag)
+2. `k8s/overlays/azure/configmap-patch.yaml` — issuer must match Keycloak exactly:
 
 ```yaml
 DEPLOYMENT_ID: "azure-aks-prodtest"
 KEYCLOAK_ISSUER_URL: "https://keycloak.example.com/realms/os-health-check"
 KEYCLOAK_AUDIENCE: "os-health-check-web"
 KEYCLOAK_PUBLISHER_ROLE: "lookup-publisher"
-LOOKUP_DB_ENABLED: "true"
 ```
 
-Prefer Service **ClusterIP** from the start if you will add Ingress next. If `service.yaml` is still `LoadBalancer`, you will patch it in Phase 7.
+3. `k8s/overlays/azure/ingress-patch.yaml` — both host fields = your app DNS (used in Phase 7; safe to set now)
+
+Base Service is already **ClusterIP** (Ingress is the public path).
 
 ### 11.3 Apply
 
 ```bash
-cd k8s
-kubectl apply -f namespace.yaml
+cd /path/to/OS-Health-Check
 
 kubectl create secret generic os-health-check-secrets \
   --namespace os-health-check \
   --from-literal=DATABASE_URL='postgresql://oshealthadmin:YOUR_PASSWORD@psql-oshealth-test.postgres.database.azure.com:5432/oshealth?sslmode=require' \
   --from-literal=OPENAI_API_KEY='' \
   --from-literal=GEMINI_API_KEY='' \
-  --from-literal=OPENROUTER_API_KEY=''
+  --from-literal=OPENROUTER_API_KEY='' \
+  --dry-run=client -o yaml | kubectl apply -f -
 
-kubectl apply -f configmap.yaml -f pvc.yaml -f deployment.yaml -f service.yaml
+# If namespace does not exist yet, create it first or apply twice after overlay creates it:
+kubectl apply -k k8s/overlays/azure
 
 kubectl -n os-health-check get pods -w
 kubectl -n os-health-check logs -f deployment/os-health-check
 ```
 
+If the Secret was created before the namespace existed:
+
+```bash
+kubectl apply -k k8s/overlays/azure
+kubectl create secret generic os-health-check-secrets \
+  --namespace os-health-check \
+  --from-literal=DATABASE_URL='postgresql://oshealthadmin:YOUR_PASSWORD@psql-oshealth-test.postgres.database.azure.com:5432/oshealth?sslmode=require' \
+  --from-literal=OPENAI_API_KEY='' \
+  --from-literal=GEMINI_API_KEY='' \
+  --from-literal=OPENROUTER_API_KEY=''
+kubectl -n os-health-check rollout restart deploy/os-health-check
+```
+
 Expect seed import or `already has 'data' rows -- skipping import`, and Uvicorn listening on `:8000` inside the pod.
 
-`service.yaml` maps **port 80 → container 8000**. Never open public `:8000` on the load balancer.
+Service maps **port 80 → container 8000**. Never open public `:8000` on the load balancer.
 
 ---
 
@@ -449,31 +460,24 @@ dig +short app.example.com
 # must equal the ingress EXTERNAL-IP (not 104.x / 172.x Cloudflare anycast)
 ```
 
-### 12.4 App Service → ClusterIP + Ingress
+### 12.4 Ingress (included in azure overlay)
+
+Service is already ClusterIP from the overlay. Ensure `k8s/overlays/azure/ingress-patch.yaml` hosts match your DNS, then re-apply if needed:
 
 ```bash
-kubectl -n os-health-check patch svc os-health-check -p '{"spec":{"type":"ClusterIP"}}'
-
-# From repo: k8s/ingress.yaml — edit BOTH host fields to YOUR app DNS
-# name first (this credit test used app.example.com; production will
-# be a different hostname). File ships with YOUR_APP_HOSTNAME.example.com.
-# Also sets proxy-body-size 50m (default ~1m → 413 on Edit Data / export).
-cd /path/to/OS-Health-Check/k8s
-# after replacing hosts in ingress.yaml:
-kubectl apply -f ingress.yaml
+cd /path/to/OS-Health-Check
+kubectl apply -k k8s/overlays/azure
 
 kubectl -n os-health-check get certificate -w
 kubectl -n os-health-check describe ingress os-health-check
 ```
 
-If the Ingress already exists without the body-size annotation:
+Ingress ships with `ssl-redirect: "false"` so Let’s Encrypt HTTP-01 can complete. After `READY=True`:
 
 ```bash
 kubectl -n os-health-check annotate ingress os-health-check \
-  nginx.ingress.kubernetes.io/proxy-body-size=50m --overwrite
+  nginx.ingress.kubernetes.io/ssl-redirect=true --overwrite
 ```
-
-`READY=True` then:
 
 ```bash
 curl -fsS -o /dev/null -w "%{http_code}\n" https://app.example.com/

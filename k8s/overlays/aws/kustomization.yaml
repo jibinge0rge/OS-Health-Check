@@ -1,0 +1,21 @@
+# EKS + Ingress path. Edit before apply:
+#   1. images[] — your Docker Hub user / tag
+#   2. configmap-patch.yaml — KEYCLOAK_ISSUER_URL (exact public issuer)
+#   3. ingress-patch.yaml — app hostname (both host fields)
+#
+# Install EBS CSI + default StorageClass first (AWS plan §11.3).
+# Secret by hand:
+#   kubectl create secret generic os-health-check-secrets -n os-health-check ...
+#
+#   kubectl apply -k k8s/overlays/aws
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+patches:
+  - path: configmap-patch.yaml
+  - path: ingress-patch.yaml
+images:
+  - name: docker.io/REPLACE_ME/os-health-check
+    newName: docker.io/YOUR_DOCKERHUB_USER/os-health-check
+    newTag: v1

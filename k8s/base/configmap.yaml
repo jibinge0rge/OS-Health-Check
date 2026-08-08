@@ -1,0 +1,17 @@
+# Non-secret configuration. Credentials belong in a Secret (see
+# ../secret.example.yaml). Cloud-specific values are set in
+# overlays/{azure,aws,minikube}/ — do not put real hostnames here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: os-health-check-config
+  namespace: os-health-check
+data:
+  APP_PORT: "8000"
+  UVICORN_RELOAD: "false"
+  LOOKUP_DB_ENABLED: "true"
+  # Overlays replace these three (and KEYCLOAK_PUBLISHER_ROLE if needed).
+  DEPLOYMENT_ID: "CHANGE-ME-per-deployment"
+  KEYCLOAK_ISSUER_URL: "CHANGE-ME-https://your-keycloak/realms/your-realm"
+  KEYCLOAK_AUDIENCE: "CHANGE-ME-client-id"
+  KEYCLOAK_PUBLISHER_ROLE: "lookup-publisher"

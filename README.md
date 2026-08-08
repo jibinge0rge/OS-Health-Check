@@ -238,7 +238,12 @@ Cloud **Deploy** (Azure/AWS) shells out to the `az` / `aws` CLI on the host runn
 
 ### Kubernetes
 
-For a real cluster deployment (AKS/EKS/etc.), the manifests live in [`k8s/`](k8s/) with a full step-by-step guide in [`k8s/README.md`](k8s/README.md). Postgres is **not** part of those manifests — point `DATABASE_URL` at whatever managed Postgres (or self-hosted instance) you're using; for local testing, keep using `docker compose` instead, which runs its own Postgres container.
+For a real cluster deployment (AKS/EKS/etc.), the manifests live in [`k8s/`](k8s/)
+(Kustomize: `base/` + `overlays/{azure,aws,minikube}`) with a full guide in
+[`k8s/README.md`](k8s/README.md). Postgres is **not** part of those manifests —
+point `DATABASE_URL` at whatever managed Postgres (or self-hosted instance)
+you're using; for local testing, keep using `docker compose` instead, which
+runs its own Postgres container.
 
 **Prerequisites** (see `k8s/README.md` for detail on each):
 
@@ -247,13 +252,21 @@ For a real cluster deployment (AKS/EKS/etc.), the manifests live in [`k8s/`](k8s
 - A container registry account (Docker Hub by default) to push the built image to
 - Docker, to build that image
 
-**What gets deployed**: a `Namespace`, a `Secret` (created by hand via `kubectl create secret`, never committed — see `k8s/secret.example.yaml`) for `DATABASE_URL` + AI keys, a `ConfigMap` for non-secret env vars, a `PersistentVolumeClaim` that persists `_config/` (Settings, vendor-source toggles) across pod restarts, a `Deployment` (1 replica), and a `LoadBalancer` `Service`.
+**What gets deployed**: a `Namespace`, a `Secret` (created by hand via
+`kubectl create secret`, never committed — see `k8s/secret.example.yaml`) for
+`DATABASE_URL` + AI keys, a `ConfigMap` for non-secret env vars, a
+`PersistentVolumeClaim` that persists `_config/` (Settings, vendor-source
+toggles) across pod restarts, a `Deployment` (1 replica), a **ClusterIP**
+`Service`, and (azure/aws overlays) an HTTPS `Ingress`. Apply with
+`kubectl apply -k k8s/overlays/<azure|aws|minikube>`.
 
 **Loading data the first time**: there's no separate "import" step to run by hand. The same startup hook the Docker deployment uses (`docker/import_if_empty.py`) runs automatically inside the pod before the app starts — on a genuinely empty Postgres database, it loads in the lookup data baked into the image (`_data/eol_lookup.csv`) the first time it connects and finds zero rows, logging `[lookup_db] No 'data' rows in Postgres schema 'lookup' yet -- importing N row(s)...`. Every later pod restart is a no-op once the database has any rows (from that import, or a real publish).
 
 **No cloud account yet?** These same manifests can be tested against [minikube](https://minikube.sigs.k8s.io/) — a real one-node Kubernetes cluster that runs inside Docker on your own machine — before you ever touch Azure/AWS. See [k8s/README.md § Testing locally with minikube](k8s/README.md#testing-locally-with-minikube-no-cloud-needed).
 
-Full walkthrough (building/pushing the image, creating the secret, applying the manifests, watching startup logs, getting the external IP, updating to a new build, tearing it down): [`k8s/README.md`](k8s/README.md).
+Full walkthrough (building/pushing the image, creating the secret, applying an
+overlay, watching startup logs, Ingress/TLS, updating a build, tearing it
+down): [`k8s/README.md`](k8s/README.md).
 
 ---
 
@@ -329,7 +342,7 @@ OS-Health-Check/
 ├── docker-compose.yml            # App + PostgreSQL (local / Portainer)
 ├── docker/entrypoint.sh          # uvicorn startup (+ optional --reload)
 ├── docker/import_if_empty.py     # Seeds a brand-new, empty Postgres from _data/ on first startup
-├── k8s/                          # Kubernetes manifests + deployment guide (see k8s/README.md)
+├── k8s/                          # Kustomize base + azure/aws/minikube overlays (see k8s/README.md)
 ├── .env.example                  # Documented env vars (copy to .env)
 ├── _data/
 │   ├── eol_lookup.csv            # Baked-in seed CSV -- only ever read once, by the first-boot

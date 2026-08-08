@@ -1,0 +1,60 @@
+# Single replica — PVC is ReadWriteOnce; Draft/Publish assumes one instance.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: os-health-check
+  namespace: os-health-check
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: os-health-check
+  template:
+    metadata:
+      labels:
+        app: os-health-check
+    spec:
+      containers:
+        - name: os-health-check
+          # Overlays set the real image via kustomize `images:`.
+          image: docker.io/REPLACE_ME/os-health-check:v1
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: os-health-check-config
+            - secretRef:
+                name: os-health-check-secrets
+          volumeMounts:
+            - name: config
+              mountPath: /app/_config
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: config
+          persistentVolumeClaim:
+            claimName: os-health-check-config

@@ -1,0 +1,14 @@
+# Local minikube — no Ingress (use `minikube service`). Load image first:
+#   minikube image load os-health-check:local
+# Secret DATABASE_URL typically:
+#   postgresql://oshealth:oshealth@host.minikube.internal:5432/oshealth
+#
+#   kubectl apply -k k8s/overlays/minikube
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+patches:
+  - path: configmap-patch.yaml
+  - path: deployment-patch.yaml
+  - path: delete-ingress.yaml

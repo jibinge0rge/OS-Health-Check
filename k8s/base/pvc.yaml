@@ -1,0 +1,16 @@
+# Persists _config/ across pod restarts. Does NOT cover _data/ (seed CSV
+# stays in the image). ReadWriteOnce — single replica only; see comment
+# history in git / AUTH_MULTITENANCY_PLAN if you need to scale out.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: os-health-check-config
+  namespace: os-health-check
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 256Mi
+  # Default StorageClass. EKS 1.31+: EBS CSI + ebs.csi.aws.com class
+  # (AWS plan §11.3). AKS: managed-csi.

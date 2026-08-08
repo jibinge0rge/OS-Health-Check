@@ -1,0 +1,14 @@
+# ClusterIP — public entry is Ingress (AKS/EKS production path).
+# Minikube overlay keeps ClusterIP; use `minikube service` to reach the app.
+apiVersion: v1
+kind: Service
+metadata:
+  name: os-health-check
+  namespace: os-health-check
+spec:
+  type: ClusterIP
+  selector:
+    app: os-health-check
+  ports:
+    - port: 80
+      targetPort: 8000

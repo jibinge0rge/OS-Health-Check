@@ -1,0 +1,12 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: os-health-check
+  namespace: os-health-check
+spec:
+  template:
+    spec:
+      containers:
+        - name: os-health-check
+          image: os-health-check:local
+          imagePullPolicy: IfNotPresent
