@@ -160,6 +160,47 @@ class LookupDbDraftTests(unittest.TestCase):
         )
         self.assertEqual(lookup_db.db_draft_based_on_revision(DEPLOYMENT_ID, USER_ID, schema=self.schema), 0)
 
+    def test_fetch_lookup_view_draft_and_data(self) -> None:
+        lookup_db.db_save_rows([row("Published")], "data", schema=self.schema)
+        lookup_db.db_save_evidence({"by_os": {"Published": {}}}, "data", schema=self.schema)
+        lookup_db.db_save_draft_rows([row("Draft")], DEPLOYMENT_ID, USER_ID, schema=self.schema)
+        lookup_db.db_save_draft_evidence({"by_os": {"Draft": {}}}, DEPLOYMENT_ID, USER_ID, schema=self.schema)
+
+        data_view = lookup_db.db_fetch_lookup_view("data", DEPLOYMENT_ID, USER_ID, schema=self.schema)
+        self.assertEqual([r["os_string"] for r in data_view["rows"]], ["Published"])
+        self.assertTrue(data_view["draft_exists"])
+        self.assertNotIn("based_on_revision", data_view)
+
+        draft_view = lookup_db.db_fetch_lookup_view("draft", DEPLOYMENT_ID, USER_ID, schema=self.schema)
+        self.assertEqual([r["os_string"] for r in draft_view["rows"]], ["Draft"])
+        self.assertTrue(draft_view["draft_exists"])
+        self.assertIn("based_on_revision", draft_view)
+
+        empty = lookup_db.db_fetch_lookup_view("draft", DEPLOYMENT_ID, OTHER_USER_ID, schema=self.schema)
+        self.assertEqual(empty["rows"], [])
+        self.assertFalse(empty["draft_exists"])
+        self.assertNotIn("based_on_revision", empty)
+
+    def test_bulk_draft_insert_preserves_order_at_scale(self) -> None:
+        # Exercises executemany chunking (_INSERT_CHUNK=500) without needing
+        # a remote Azure RTT -- correctness at ~1.2k rows is enough.
+        rows = [row(f"OS-{i:04d}", eol=f"2030-01-{(i % 28) + 1:02d}") for i in range(1200)]
+        lookup_db.db_save_draft_rows(rows, DEPLOYMENT_ID, USER_ID, schema=self.schema)
+        loaded = lookup_db.db_load_draft_rows(DEPLOYMENT_ID, USER_ID, schema=self.schema)
+        self.assertEqual(len(loaded), 1200)
+        self.assertEqual(loaded[0]["os_string"], "OS-0000")
+        self.assertEqual(loaded[500]["os_string"], "OS-0500")
+        self.assertEqual(loaded[-1]["os_string"], "OS-1199")
+
+    def test_fetch_diff_inputs_short_circuits_when_no_draft(self) -> None:
+        lookup_db.db_save_rows([row("Published")], "data", schema=self.schema)
+        self.assertIsNone(lookup_db.db_fetch_diff_inputs(DEPLOYMENT_ID, USER_ID, schema=self.schema))
+        lookup_db.db_save_draft_rows([row("Draft")], DEPLOYMENT_ID, USER_ID, schema=self.schema)
+        bundle = lookup_db.db_fetch_diff_inputs(DEPLOYMENT_ID, USER_ID, schema=self.schema)
+        assert bundle is not None
+        self.assertEqual([r["os_string"] for r in bundle["data_rows"]], ["Published"])
+        self.assertEqual([r["os_string"] for r in bundle["draft_rows"]], ["Draft"])
+
 
 @unittest.skipUnless(_pg_available(), "DATABASE_URL not set")
 class MigrateLegacyGlobalDraftTests(unittest.TestCase):

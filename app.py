@@ -1857,6 +1857,72 @@ def _published_at() -> str:
     return lookup_db.db_published_at()
 
 
+def _build_lookup_response(source: str, current_user: auth.CurrentUser) -> dict[str, object]:
+    """Sync body of GET /api/lookup -- one DB transaction via db_fetch_lookup_view."""
+    normalized = source.strip().lower()
+    if normalized not in {"data", "draft"}:
+        raise HTTPException(status_code=400, detail="Unsupported lookup source.")
+    view = lookup_db.db_fetch_lookup_view(
+        normalized, current_user.deployment_id, current_user.user_id
+    )
+    rows = view["rows"]
+    evidence = view["evidence"]
+    assert isinstance(rows, list)
+    assert isinstance(evidence, dict)
+    by_os = evidence.get("by_os") if isinstance(evidence.get("by_os"), dict) else {}
+    for row in rows:
+        row["matched_by"] = row_matched_by(by_os.get(str(row.get("os_string") or "").strip()), row)
+    result: dict[str, object] = {
+        "headers": CSV_HEADERS,
+        "rows": rows,
+        "source": source,
+        "evidence": evidence,
+        "published_at": view["published_at"],
+        "draft_exists": view["draft_exists"],
+        "data_revision": view["data_revision"],
+        "storage_mode": "postgres",
+        # host:port/dbname only -- never the password -- so the UI can show
+        # which Postgres this instance is actually talking to.
+        "storage_target": lookup_db.describe_target(),
+    }
+    if "based_on_revision" in view:
+        result["based_on_revision"] = view["based_on_revision"]
+    return result
+
+
+def _build_lookup_diff_response(source: str, current_user: auth.CurrentUser) -> dict[str, object]:
+    """Sync body of GET /api/lookup/diff -- one DB transaction for both sides."""
+    if source.strip().lower() != "draft":
+        raise HTTPException(status_code=400, detail="Unsupported lookup source.")
+    bundle = lookup_db.db_fetch_diff_inputs(current_user.deployment_id, current_user.user_id)
+    if bundle is None:
+        return {
+            "added": [],
+            "edited": [],
+            "deleted": [],
+            "unresolved": 0,
+            "added_count": 0,
+            "edited_count": 0,
+            "deleted_count": 0,
+        }
+    return compute_lookup_diff(bundle["data_rows"], bundle["draft_rows"])
+
+
+def _update_lookup_sync(
+    payload: LookupPayload, source: str, current_user: auth.CurrentUser
+) -> dict[str, object]:
+    save_rows(payload.rows, source, owner=current_user)
+    evidence = save_evidence(
+        prune_evidence_to_rows(payload.evidence, payload.rows), source, owner=current_user
+    )
+    return {
+        "saved": True,
+        "row_count": len(payload.rows),
+        "source": source,
+        "evidence": evidence,
+    }
+
+
 @app.get("/api/auth/me")
 async def get_current_user_info(
     current_user: auth.CurrentUser = Depends(auth.get_current_user),
@@ -1875,51 +1941,32 @@ async def get_current_user_info(
 async def get_lookup(
     source: str = "data", current_user: auth.CurrentUser = Depends(auth.get_current_user)
 ) -> dict[str, object]:
-    rows = load_rows(source, owner=current_user)
-    evidence = load_evidence(source, owner=current_user)
-    by_os = evidence.get("by_os") if isinstance(evidence.get("by_os"), dict) else {}
-    for row in rows:
-        row["matched_by"] = row_matched_by(by_os.get(str(row.get("os_string") or "").strip()), row)
-    result: dict[str, object] = {
-        "headers": CSV_HEADERS,
-        "rows": rows,
-        "source": source,
-        "evidence": evidence,
-        "published_at": _published_at(),
-        "draft_exists": _draft_exists(current_user),
-        "data_revision": read_data_revision(),
-        "storage_mode": "postgres",
-        # host:port/dbname only -- never the password -- so the UI can show
-        # which Postgres this instance is actually talking to.
-        "storage_target": lookup_db.describe_target(),
-    }
-    if source.strip().lower() == "draft" and _draft_exists(current_user):
-        result["based_on_revision"] = read_draft_based_on_revision(current_user)
-    return result
+    # Blocking Postgres -- off the event loop so a fat draft save cannot stall
+    # other requests (same pattern as auth / vendor sync).
+    return await asyncio.to_thread(_build_lookup_response, source, current_user)
 
 
 @app.get("/api/lookup/evidence")
 async def get_lookup_row_evidence(
     os_string: str, source: str = "data", current_user: auth.CurrentUser = Depends(auth.get_current_user)
 ) -> dict[str, object]:
-    evidence = load_evidence(source, owner=current_user)
-    by_os = evidence.get("by_os") if isinstance(evidence.get("by_os"), dict) else {}
-    rows = load_rows(source, owner=current_user)
-    row = next((item for item in rows if item.get("os_string") == os_string), None)
-    if row is None:
-        raise HTTPException(status_code=404, detail="Row not found for that os_string.")
-    return build_evidence_entries(by_os.get(os_string.strip()), row)
+    def _sync() -> dict[str, object]:
+        evidence = load_evidence(source, owner=current_user)
+        by_os = evidence.get("by_os") if isinstance(evidence.get("by_os"), dict) else {}
+        rows = load_rows(source, owner=current_user)
+        row = next((item for item in rows if item.get("os_string") == os_string), None)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Row not found for that os_string.")
+        return build_evidence_entries(by_os.get(os_string.strip()), row)
+
+    return await asyncio.to_thread(_sync)
 
 
 @app.get("/api/lookup/diff")
 async def get_lookup_diff(
     source: str = "draft", current_user: auth.CurrentUser = Depends(auth.get_current_user)
 ) -> dict[str, object]:
-    if not _source_exists(source, owner=current_user):
-        return {"added": [], "edited": [], "deleted": [], "unresolved": 0, "added_count": 0, "edited_count": 0, "deleted_count": 0}
-    data_rows = load_rows("data") if _data_exists() else []
-    draft_rows = load_rows(source, owner=current_user)
-    return compute_lookup_diff(data_rows, draft_rows)
+    return await asyncio.to_thread(_build_lookup_diff_response, source, current_user)
 
 
 @app.post("/api/lookup")
@@ -1928,14 +1975,7 @@ async def update_lookup(
     source: str = "draft",
     current_user: auth.CurrentUser = Depends(auth.get_current_user),
 ) -> dict[str, object]:
-    save_rows(payload.rows, source, owner=current_user)
-    evidence = save_evidence(prune_evidence_to_rows(payload.evidence, payload.rows), source, owner=current_user)
-    return {
-        "saved": True,
-        "row_count": len(payload.rows),
-        "source": source,
-        "evidence": evidence,
-    }
+    return await asyncio.to_thread(_update_lookup_sync, payload, source, current_user)
 
 
 def check_publish_conflicts(payload: LookupPayload, owner: auth.CurrentUser) -> dict[str, object]:

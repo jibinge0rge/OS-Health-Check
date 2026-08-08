@@ -204,11 +204,18 @@ def db_data_revision(schema: str = SCHEMA) -> int:
 
 def db_draft_based_on_revision(deployment_id: str, owner_user_id: str, schema: str = SCHEMA) -> int:
     with _connect(schema) as connection:
-        row = connection.execute(
-            "SELECT based_on_revision FROM draft_meta WHERE deployment_id = %s AND owner_user_id = %s",
-            (deployment_id, owner_user_id),
-        ).fetchone()
-        return int(row["based_on_revision"]) if row else 0
+        return _conn_draft_based_on_revision(connection, deployment_id, owner_user_id)
+
+# Chunk size for executemany inserts -- keeps progress callbacks useful on
+# large imports while still collapsing thousands of remote round-trips into
+# a handful of batched statements (critical against Azure Flexible Server /
+# RDS at 5k–20k rows).
+_INSERT_CHUNK = 500
+
+_ROWS_SELECT = (
+    "SELECT os_string, normalized_os_detailed_name, normalized_os, "
+    "eol_date, eol_status, eoas_date, eoas_status "
+)
 
 
 def _row_tuple(source: str, index: int, row: dict[str, object]) -> tuple:
@@ -231,20 +238,90 @@ def _insert_rows(
     rows: list[dict[str, object]],
     on_progress: Callable[[int, int], None] | None = None,
 ) -> None:
+    """Bulk-insert published `rows` via cursor.executemany (chunked). Far
+    fewer network round-trips than one INSERT per row against remote Postgres.
+    (psycopg Connection has .execute but not .executemany -- use a cursor.)"""
     total = len(rows)
-    for index, row in enumerate(rows):
-        connection.execute(
-            "INSERT INTO rows (source, row_order, os_string, normalized_os_detailed_name, "
-            "normalized_os, eol_date, eol_status, eoas_date, eoas_status) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            _row_tuple(source, index, row),
-        )
-        # One INSERT per row means one network round trip per row -- against
-        # a remote Postgres (e.g. Aiven) that's the slow part by far, so this
-        # is opt-in (only the CLI import passes on_progress) rather than
-        # printing on every normal app request that saves rows.
-        if on_progress and ((index + 1) % 250 == 0 or index + 1 == total):
-            on_progress(index + 1, total)
+    if total == 0:
+        return
+    query = (
+        "INSERT INTO rows (source, row_order, os_string, normalized_os_detailed_name, "
+        "normalized_os, eol_date, eol_status, eoas_date, eoas_status) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+    )
+    with connection.cursor() as cur:
+        for start in range(0, total, _INSERT_CHUNK):
+            chunk = rows[start : start + _INSERT_CHUNK]
+            cur.executemany(
+                query,
+                [_row_tuple(source, start + index, row) for index, row in enumerate(chunk)],
+            )
+            if on_progress:
+                on_progress(min(start + len(chunk), total), total)
+
+
+def _conn_load_rows(connection: psycopg.Connection[Any], source: str) -> list[dict[str, str]]:
+    cursor = connection.execute(
+        _ROWS_SELECT + "FROM rows WHERE source = %s ORDER BY row_order",
+        (source,),
+    )
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def _conn_load_evidence(connection: psycopg.Connection[Any], source: str) -> dict[str, object]:
+    row = connection.execute(
+        "SELECT payload, updated_at FROM evidence WHERE source = %s", (source,)
+    ).fetchone()
+    if not row:
+        return {"by_os": {}, "updated_at": ""}
+    payload = row["payload"]
+    by_os = payload.get("by_os") if isinstance(payload, dict) else None
+    return {"by_os": by_os if isinstance(by_os, dict) else {}, "updated_at": row["updated_at"] or ""}
+
+
+def _conn_draft_exists(
+    connection: psycopg.Connection[Any], deployment_id: str, owner_user_id: str
+) -> bool:
+    row = connection.execute(
+        "SELECT 1 FROM draft_rows WHERE deployment_id = %s AND owner_user_id = %s LIMIT 1",
+        (deployment_id, owner_user_id),
+    ).fetchone()
+    return row is not None
+
+
+def _conn_load_draft_rows(
+    connection: psycopg.Connection[Any], deployment_id: str, owner_user_id: str
+) -> list[dict[str, str]]:
+    cursor = connection.execute(
+        _ROWS_SELECT
+        + "FROM draft_rows WHERE deployment_id = %s AND owner_user_id = %s ORDER BY row_order",
+        (deployment_id, owner_user_id),
+    )
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def _conn_load_draft_evidence(
+    connection: psycopg.Connection[Any], deployment_id: str, owner_user_id: str
+) -> dict[str, object]:
+    row = connection.execute(
+        "SELECT payload, updated_at FROM draft_evidence WHERE deployment_id = %s AND owner_user_id = %s",
+        (deployment_id, owner_user_id),
+    ).fetchone()
+    if not row:
+        return {"by_os": {}, "updated_at": ""}
+    payload = row["payload"]
+    by_os = payload.get("by_os") if isinstance(payload, dict) else None
+    return {"by_os": by_os if isinstance(by_os, dict) else {}, "updated_at": row["updated_at"] or ""}
+
+
+def _conn_draft_based_on_revision(
+    connection: psycopg.Connection[Any], deployment_id: str, owner_user_id: str
+) -> int:
+    row = connection.execute(
+        "SELECT based_on_revision FROM draft_meta WHERE deployment_id = %s AND owner_user_id = %s",
+        (deployment_id, owner_user_id),
+    ).fetchone()
+    return int(row["based_on_revision"]) if row else 0
 
 
 def db_source_exists(source: str, schema: str = SCHEMA) -> bool:
@@ -256,13 +333,7 @@ def db_source_exists(source: str, schema: str = SCHEMA) -> bool:
 
 def db_load_rows(source: str, schema: str = SCHEMA) -> list[dict[str, str]]:
     with _connect(schema) as connection:
-        cursor = connection.execute(
-            "SELECT os_string, normalized_os_detailed_name, normalized_os, "
-            "eol_date, eol_status, eoas_date, eoas_status "
-            "FROM rows WHERE source = %s ORDER BY row_order",
-            (source,),
-        )
-        return [dict(row) for row in cursor.fetchall()]
+        return _conn_load_rows(connection, source)
 
 
 def db_save_rows(
@@ -281,15 +352,7 @@ def db_save_rows(
 
 def db_load_evidence(source: str, schema: str = SCHEMA) -> dict[str, object]:
     with _connect(schema) as connection:
-        row = connection.execute(
-            "SELECT payload, updated_at FROM evidence WHERE source = %s", (source,)
-        ).fetchone()
-        if not row:
-            return {"by_os": {}, "updated_at": ""}
-        payload = row["payload"]
-        by_os = payload.get("by_os") if isinstance(payload, dict) else None
-        return {"by_os": by_os if isinstance(by_os, dict) else {}, "updated_at": row["updated_at"] or ""}
-
+        return _conn_load_evidence(connection, source)
 
 def _normalize_evidence(evidence: object) -> dict[str, object]:
     by_os = evidence.get("by_os") if isinstance(evidence, dict) else None
@@ -325,26 +388,42 @@ def _draft_row_tuple(deployment_id: str, owner_user_id: str, index: int, row: di
     )
 
 
+def _insert_draft_rows(
+    connection: psycopg.Connection[Any],
+    deployment_id: str,
+    owner_user_id: str,
+    rows: list[dict[str, object]],
+) -> None:
+    total = len(rows)
+    if total == 0:
+        return
+    query = (
+        "INSERT INTO draft_rows (deployment_id, owner_user_id, row_order, os_string, "
+        "normalized_os_detailed_name, normalized_os, eol_date, eol_status, eoas_date, eoas_status) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+    )
+    with connection.cursor() as cur:
+        for start in range(0, total, _INSERT_CHUNK):
+            chunk = rows[start : start + _INSERT_CHUNK]
+            cur.executemany(
+                query,
+                [
+                    _draft_row_tuple(deployment_id, owner_user_id, start + index, row)
+                    for index, row in enumerate(chunk)
+                ],
+            )
+
+
 def db_draft_exists(deployment_id: str, owner_user_id: str, schema: str = SCHEMA) -> bool:
     """Cheap existence check for one user's private draft -- "exists" once
     it has at least one row, same convention as db_source_exists("data")."""
     with _connect(schema) as connection:
-        row = connection.execute(
-            "SELECT 1 FROM draft_rows WHERE deployment_id = %s AND owner_user_id = %s LIMIT 1",
-            (deployment_id, owner_user_id),
-        ).fetchone()
-        return row is not None
+        return _conn_draft_exists(connection, deployment_id, owner_user_id)
 
 
 def db_load_draft_rows(deployment_id: str, owner_user_id: str, schema: str = SCHEMA) -> list[dict[str, str]]:
     with _connect(schema) as connection:
-        cursor = connection.execute(
-            "SELECT os_string, normalized_os_detailed_name, normalized_os, "
-            "eol_date, eol_status, eoas_date, eoas_status "
-            "FROM draft_rows WHERE deployment_id = %s AND owner_user_id = %s ORDER BY row_order",
-            (deployment_id, owner_user_id),
-        )
-        return [dict(row) for row in cursor.fetchall()]
+        return _conn_load_draft_rows(connection, deployment_id, owner_user_id)
 
 
 def db_save_draft_rows(
@@ -374,27 +453,12 @@ def db_save_draft_rows(
             "DELETE FROM draft_rows WHERE deployment_id = %s AND owner_user_id = %s",
             (deployment_id, owner_user_id),
         )
-        for index, row in enumerate(rows):
-            connection.execute(
-                "INSERT INTO draft_rows (deployment_id, owner_user_id, row_order, os_string, "
-                "normalized_os_detailed_name, normalized_os, eol_date, eol_status, eoas_date, eoas_status) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                _draft_row_tuple(deployment_id, owner_user_id, index, row),
-            )
+        _insert_draft_rows(connection, deployment_id, owner_user_id, rows)
 
 
 def db_load_draft_evidence(deployment_id: str, owner_user_id: str, schema: str = SCHEMA) -> dict[str, object]:
     with _connect(schema) as connection:
-        row = connection.execute(
-            "SELECT payload, updated_at FROM draft_evidence WHERE deployment_id = %s AND owner_user_id = %s",
-            (deployment_id, owner_user_id),
-        ).fetchone()
-        if not row:
-            return {"by_os": {}, "updated_at": ""}
-        payload = row["payload"]
-        by_os = payload.get("by_os") if isinstance(payload, dict) else None
-        return {"by_os": by_os if isinstance(by_os, dict) else {}, "updated_at": row["updated_at"] or ""}
-
+        return _conn_load_draft_evidence(connection, deployment_id, owner_user_id)
 
 def db_save_draft_evidence(
     evidence: dict[str, object], deployment_id: str, owner_user_id: str, schema: str = SCHEMA
@@ -560,6 +624,65 @@ def db_publish(
 def db_published_at(schema: str = SCHEMA) -> str:
     with _connect(schema) as connection:
         return _get_meta(connection, "published_at", "")
+
+
+def db_fetch_lookup_view(
+    source: str,
+    deployment_id: str,
+    owner_user_id: str,
+    schema: str = SCHEMA,
+) -> dict[str, object]:
+    """Everything GET /api/lookup needs, in one Postgres transaction.
+
+    Collapses the previous 5–7 separate connections (rows, evidence,
+    published_at, draft_exists, data_revision, optional based_on_revision)
+    into a single round-trip batch -- the dominant latency against remote
+    Azure/RDS when the payload itself is small (empty draft).
+    """
+    normalized = source.strip().lower()
+    with _connect(schema) as connection:
+        if normalized == "draft":
+            rows = _conn_load_draft_rows(connection, deployment_id, owner_user_id)
+            evidence = _conn_load_draft_evidence(connection, deployment_id, owner_user_id)
+            draft_exists = len(rows) > 0
+        else:
+            rows = _conn_load_rows(connection, "data")
+            evidence = _conn_load_evidence(connection, "data")
+            draft_exists = _conn_draft_exists(connection, deployment_id, owner_user_id)
+
+        result: dict[str, object] = {
+            "rows": rows,
+            "evidence": evidence,
+            "published_at": _get_meta(connection, "published_at", ""),
+            "draft_exists": draft_exists,
+            "data_revision": _data_revision(connection),
+        }
+        if normalized == "draft" and draft_exists:
+            result["based_on_revision"] = _conn_draft_based_on_revision(
+                connection, deployment_id, owner_user_id
+            )
+        return result
+
+
+def db_fetch_diff_inputs(
+    deployment_id: str,
+    owner_user_id: str,
+    schema: str = SCHEMA,
+) -> dict[str, object] | None:
+    """Rows needed for GET /api/lookup/diff in one transaction. Returns None
+    when the user's draft does not exist (same empty-diff short-circuit as
+    before)."""
+    with _connect(schema) as connection:
+        if not _conn_draft_exists(connection, deployment_id, owner_user_id):
+            return None
+        data_exists = (
+            connection.execute("SELECT 1 FROM rows WHERE source = 'data' LIMIT 1").fetchone()
+            is not None
+        )
+        return {
+            "data_rows": _conn_load_rows(connection, "data") if data_exists else [],
+            "draft_rows": _conn_load_draft_rows(connection, deployment_id, owner_user_id),
+        }
 
 
 def _sync_lock_is_stale(heartbeat_at: str) -> bool:
