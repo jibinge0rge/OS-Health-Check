@@ -287,42 +287,86 @@ aws rds start-db-instance --db-instance-identifier "$RDS_ID"
 
 ### 9.1 Create a small cluster with eksctl
 
-`eksctl` creates a VPC + managed node group. This takes **15–25 minutes**.
+**Use `eksctl` from this section — not the EKS console “Create cluster” wizard.** The console often invents a random name (e.g. `hilarious-creature-…`) and can leave you with an **ACTIVE** control plane and **zero node groups**, so `kubectl get nodes` prints `No resources found`.
+
+Set names explicitly (do not leave these empty; do not reuse Azure names like `aks-oshealth-test`):
+
+```bash
+export AWS_REGION=ap-south-1
+export AWS_DEFAULT_REGION=ap-south-1
+export CLUSTER_NAME=eks-oshealth-test
+export PROJECT_TAG=oshealth-eks-prodtest
+
+echo "Will create CLUSTER_NAME=$CLUSTER_NAME in $AWS_REGION"
+```
+
+`eksctl` creates a VPC + **managed node group with 1 node**. This takes **15–25 minutes**. Run from a shell where the exports above are set:
 
 ```bash
 eksctl create cluster \
   --name "$CLUSTER_NAME" \
   --region "$AWS_REGION" \
   --version 1.31 \
+  --with-oidc \
   --nodegroup-name ng-oshealth \
   --node-type t3.medium \
   --nodes 1 \
   --nodes-min 1 \
   --nodes-max 1 \
   --managed \
+  --asg-access \
+  --full-ecr-access \
   --tags "Project=$PROJECT_TAG"
 ```
 
-Point kubectl (eksctl usually does this automatically):
+When it finishes, **confirm the real name and that a node group exists** (note: `list-nodegroups` needs `--cluster-name`, not `--name`):
+
+```bash
+aws eks list-clusters --region "$AWS_REGION" --output table
+# expect: eks-oshealth-test
+
+aws eks list-nodegroups \
+  --region "$AWS_REGION" \
+  --cluster-name "$CLUSTER_NAME" \
+  --output table
+# expect: ng-oshealth
+```
+
+Point kubectl at **this** EKS cluster (your kubeconfig may still point at a deleted AKS / Minikube context — that causes `azmk8s.io` / `127.0.0.1` errors):
 
 ```bash
 aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER_NAME"
 kubectl config current-context
+# must mention eks-oshealth-test / arn:aws:eks:... — not aks-oshealth-test
+
 kubectl get nodes
+# expect 1 node Ready (not "No resources found")
 ```
 
-One node `Ready`. If an old Minikube context was active, `update-kubeconfig` / `current-context` must show the EKS cluster (not `127.0.0.1`).
+If `list-clusters` shows only a random name from an earlier console create, either delete that cluster and re-run this section, or set `CLUSTER_NAME` to that name **and** add a node group:
+
+```bash
+eksctl create nodegroup \
+  --cluster "$CLUSTER_NAME" \
+  --region "$AWS_REGION" \
+  --name ng-oshealth \
+  --node-type t3.medium \
+  --nodes 1 \
+  --nodes-min 1 \
+  --nodes-max 1 \
+  --managed
+```
 
 ### 9.2 Note node security group (for RDS)
 
 ```bash
-# Shared / cluster / node SGs vary by eksctl version — list ENI SGs on the node:
 kubectl get nodes -o wide
 INSTANCE_ID=$(aws ec2 describe-instances \
+  --region "$AWS_REGION" \
   --filters "Name=tag:eks:cluster-name,Values=$CLUSTER_NAME" "Name=instance-state-name,Values=running" \
   --query 'Reservations[0].Instances[0].InstanceId' --output text)
 echo "INSTANCE_ID=$INSTANCE_ID"
-aws ec2 describe-instances --instance-ids "$INSTANCE_ID" \
+aws ec2 describe-instances --region "$AWS_REGION" --instance-ids "$INSTANCE_ID" \
   --query 'Reservations[0].Instances[0].SecurityGroups' --output table
 ```
 
@@ -643,6 +687,7 @@ export RDS_ID=rds-oshealth-test
 aws sts get-caller-identity
 aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER_NAME"
 kubectl config current-context
+kubectl get nodes
 
 kubectl -n os-health-check get pods,svc,ingress,certificate
 kubectl -n os-health-check logs -f deployment/os-health-check
