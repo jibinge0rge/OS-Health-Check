@@ -1614,7 +1614,7 @@ the always-file-based vendor-Refresh preference files
 (`vendor_lookup_settings.json`, `layer23_switch_sync.json`,
 `router_switch_sync.json`) live there regardless of storage mode — it's a
 separate concern from the lookup rows/evidence/draft themselves, and is
-what a Kubernetes PVC persists (see `k8s/README.md`).
+what a Kubernetes PVC persists (see `../k8s/README.md`).
 
 `lookup_db.py` — schema `lookup` (constant `SCHEMA`):
 

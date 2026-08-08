@@ -36,7 +36,7 @@ Preview: `kubectl kustomize k8s/overlays/aws`
 
 The app refuses to start without `DATABASE_URL` + `LOOKUP_DB_ENABLED=true`
 and `DEPLOYMENT_ID` / `KEYCLOAK_ISSUER_URL` / `KEYCLOAK_AUDIENCE`. See
-[../KEYCLOAK_SETUP.md](../KEYCLOAK_SETUP.md).
+[../docs/KEYCLOAK_SETUP.md](../docs/KEYCLOAK_SETUP.md).
 
 ## Before `kubectl apply -k` (azure / aws)
 
@@ -163,5 +163,5 @@ Do not bump `replicas:` without reading the PVC / Draft-Publish constraints
 
 ## Production plans
 
-- [Azure AKS](../AZURE_AKS_PRODUCTION_TEST_PLAN.md)
-- [AWS EKS](../AWS_EKS_PRODUCTION_TEST_PLAN.md)
+- [Azure AKS](../docs/AZURE_AKS_PRODUCTION_TEST_PLAN.md)
+- [AWS EKS](../docs/AWS_EKS_PRODUCTION_TEST_PLAN.md)

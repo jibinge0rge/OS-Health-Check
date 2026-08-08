@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS backups (
     evidence_json JSONB NOT NULL
 );
 
--- Per-user Draft (AUTH_MULTITENANCY_PLAN.md §6) -- replaces the old
+-- Per-user Draft (docs/AUTH_MULTITENANCY_PLAN.md §6) -- replaces the old
 -- single-global-draft rows in `rows`/`evidence` (source = 'draft'), which
 -- migrate_legacy_global_draft_if_present() below retires. `data` keeps using
 -- the `rows`/`evidence` tables above unchanged -- published Data stays one
@@ -273,7 +273,7 @@ def db_save_rows(
 ) -> None:
     """Delete+bulk-insert for this source in one transaction. Only ever
     called with source='data' now -- Draft moved to its own per-user tables
-    (db_save_draft_rows below); see AUTH_MULTITENANCY_PLAN.md §6."""
+    (db_save_draft_rows below); see docs/AUTH_MULTITENANCY_PLAN.md §6."""
     with _connect(schema) as connection:
         connection.execute("DELETE FROM rows WHERE source = %s", (source,))
         _insert_rows(connection, source, rows, on_progress=on_progress)
@@ -426,7 +426,7 @@ def db_delete_draft(deployment_id: str, owner_user_id: str, schema: str = SCHEMA
 
 
 def migrate_legacy_global_draft_if_present(schema: str = SCHEMA) -> bool:
-    """One-time cutover (AUTH_MULTITENANCY_PLAN.md §9): before per-user
+    """One-time cutover (docs/AUTH_MULTITENANCY_PLAN.md §9): before per-user
     drafts existed, there was exactly one shared global draft in
     rows/evidence (source='draft'). It has no owner, so it cannot be
     mechanically assigned to "the right" user -- this snapshots it into
@@ -488,7 +488,7 @@ def db_publish(
     -- only that user's own draft is cleared afterward; every other user's
     in-progress draft in this deployment is untouched. published_by_user_id
     is normally the same as owner_user_id (a user publishing their own
-    draft) but is recorded separately for audit (AUTH_MULTITENANCY_PLAN.md
+    draft) but is recorded separately for audit (docs/AUTH_MULTITENANCY_PLAN.md
     §6.3) in case that ever changes.
 
     An advisory lock serializes every publish attempt (held only for the

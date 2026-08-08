@@ -1,6 +1,6 @@
 # OS Health Check — User Guide
 
-A step-by-step guide to using the app. For install, Docker, and `.env` setup, see [README.md](README.md).
+A step-by-step guide to using the app. For install, Docker, and `.env` setup, see [README.md](../README.md).
 
 ---
 
@@ -18,7 +18,7 @@ You work safely in a **Draft**, then **Validate & publish** when you are ready t
 
 ## First open
 
-1. Start the app (see [README.md](README.md)).
+1. Start the app (see [README.md](../README.md)).
 2. Open **http://127.0.0.1:8000** in your browser.
 3. You land on **Lookup editor**, mode **Data** (the read-only published lookup).
 
@@ -381,4 +381,4 @@ Someone else published while you had the page open. On Data, click **Reload**. I
 
 ## Need setup help?
 
-Installation, Docker, PostgreSQL, and AI API keys are documented in [README.md](README.md).
+Installation, Docker, PostgreSQL, and AI API keys are documented in [README.md](../README.md).

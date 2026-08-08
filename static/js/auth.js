@@ -1,9 +1,9 @@
 // Keycloak OIDC login for a server-rendered, no-build-step app -- there's no
-// framework/bundler here (see ARCHITECTURE.md §2), so this hand-rolls
+// framework/bundler here (see docs/ARCHITECTURE.md §2), so this hand-rolls
 // Authorization Code + PKCE directly against Keycloak's standard endpoints
 // rather than pulling in an external JS adapter. Works unchanged whether
 // Keycloak is per-deployment or one realm shared by every deployment
-// (AUTH_MULTITENANCY_PLAN.md §3.1) -- this only ever talks to whichever
+// (docs/AUTH_MULTITENANCY_PLAN.md §3.1) -- this only ever talks to whichever
 // issuer/client this page was rendered with (window.__OSHC_AUTH__, set by
 // index.html from the server's own KEYCLOAK_ISSUER_URL/KEYCLOAK_AUDIENCE).
 

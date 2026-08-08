@@ -7,7 +7,7 @@
     "realm": [
       {
         "name": "lookup-publisher",
-        "description": "Can publish a draft into the shared Data (AUTH_MULTITENANCY_PLAN.md §6.3)."
+        "description": "Can publish a draft into the shared Data (docs/AUTH_MULTITENANCY_PLAN.md §6.3)."
       }
     ]
   },

@@ -472,7 +472,7 @@ one in progress). It has no owner, so it cannot be mechanically assigned to
    frontend OIDC login flow (`auth.js`, token attachment in `api.js`).
 4. **Phase 4 — Cleanup.** Remove the now-dead single-global-draft code paths
    in `lookup_db.py`/`app.py`; update `ARCHITECTURE.md` §6/§7 to describe the
-   new per-user draft model; update `k8s/README.md` with the new env vars.
+   new per-user draft model; update `../k8s/README.md` with the new env vars.
 
 ## 13. Testing / verification plan
 

@@ -1,6 +1,6 @@
 """Keycloak OIDC Bearer-JWT authentication for every /api/* route.
 
-Stateless by design (AUTH_MULTITENANCY_PLAN.md §2/§5): no server-side
+Stateless by design (docs/AUTH_MULTITENANCY_PLAN.md §2/§5): no server-side
 session store. Each request's `Authorization: Bearer <token>` is validated
 against *this deployment's own* Keycloak realm -- resolved once via OIDC
 discovery and cached as a PyJWT PyJWKClient, which handles its own JWKS
@@ -11,7 +11,7 @@ server with a realm per deployment, or a single realm shared by every
 deployment (plan §3.1) -- this module only ever cares about the one
 KEYCLOAK_ISSUER_URL configured for *this* running app instance. It also
 works unchanged once a realm starts federating to an upstream IdP (Azure AD,
-KEYCLOAK_SETUP.md §5): federation only changes how Keycloak authenticates
+docs/KEYCLOAK_SETUP.md §5): federation only changes how Keycloak authenticates
 the user upstream, never the shape of the JWT this module validates.
 """
 
@@ -55,8 +55,8 @@ if not (DEPLOYMENT_ID and KEYCLOAK_ISSUER_URL and KEYCLOAK_AUDIENCE):
     raise RuntimeError(
         "DEPLOYMENT_ID, KEYCLOAK_ISSUER_URL, and KEYCLOAK_AUDIENCE are all "
         "required -- every /api/* route requires an authenticated Keycloak "
-        "user. See AUTH_MULTITENANCY_PLAN.md §5.1 for what these mean and "
-        "KEYCLOAK_SETUP.md for how to set them."
+        "user. See docs/AUTH_MULTITENANCY_PLAN.md §5.1 for what these mean and "
+        "docs/KEYCLOAK_SETUP.md for how to set them."
     )
 
 _DISCOVERY_CACHE_SECONDS = 3600

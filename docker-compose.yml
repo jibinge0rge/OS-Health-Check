@@ -28,7 +28,7 @@
 #     using the bundled `db` service below; ignored once DATABASE_URL points
 #     elsewhere (e.g. Supabase) -- see the note on the `db` service.
 #   DEPLOYMENT_ID, KEYCLOAK_ISSUER_URL, KEYCLOAK_AUDIENCE -- required, no
-#     fallback (AUTH_MULTITENANCY_PLAN.md §5.1/§10, KEYCLOAK_SETUP.md for
+#     fallback (docs/AUTH_MULTITENANCY_PLAN.md §5.1/§10, docs/KEYCLOAK_SETUP.md for
 #     how to get real values). Every /api/* route requires a
 #     Keycloak-authenticated user; the app refuses to start without these,
 #     same as DATABASE_URL below.
@@ -40,7 +40,7 @@
 #
 # DEPLOYMENT_ID/KEYCLOAK_* default below to the bundled `keycloak` service
 # too -- a throwaway, pre-configured realm imported automatically from
-# docker/keycloak/os-health-check-dev-realm.json (see KEYCLOAK_SETUP.md for
+# docker/keycloak/os-health-check-dev-realm.json (see docs/KEYCLOAK_SETUP.md for
 # what's in it: a public PKCE client, a `lookup-publisher` role, and two
 # test users -- publisher/publisher123, editor/editor123). This is for
 # LOCAL TESTING ONLY, same as this whole compose file -- a real deployment
@@ -86,7 +86,7 @@ services:
   # boot (--import-realm skips it on later restarts if it already exists);
   # there's no volume here, so a full `docker compose down` + `up` recreates
   # it from that file every time -- consistent, reproducible test state, not
-  # a bug. See KEYCLOAK_SETUP.md for what's in the realm.
+  # a bug. See docs/KEYCLOAK_SETUP.md for what's in the realm.
   keycloak:
     image: quay.io/keycloak/keycloak:latest
     container_name: os-health-check-keycloak
@@ -130,7 +130,7 @@ services:
       UVICORN_RELOAD: "${UVICORN_RELOAD:-false}"
       DATABASE_URL: "${DATABASE_URL:-postgresql://oshealth:oshealth@db:5432/oshealth}"
       LOOKUP_DB_ENABLED: "${LOOKUP_DB_ENABLED:-true}"
-      # AUTH_MULTITENANCY_PLAN.md §5.1/§10 -- required, no fallback. Default
+      # docs/AUTH_MULTITENANCY_PLAN.md §5.1/§10 -- required, no fallback. Default
       # below points at the bundled `keycloak` service above (see its
       # comment) -- override any of these in .env to use a real/different
       # Keycloak instead. KEYCLOAK_ISSUER_URL must be reachable from your

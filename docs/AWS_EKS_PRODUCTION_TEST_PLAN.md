@@ -13,8 +13,8 @@
 > **What you are proving.** Browser login (HTTPS) → Keycloak JWT → EKS app
 > validates JWKS → Postgres read/write → publisher role works.
 >
-> **Companions.** `[k8s/README.md](k8s/README.md)` · `[k8s/overlays/aws](k8s/overlays/aws)` ·
-> `[KEYCLOAK_SETUP.md](KEYCLOAK_SETUP.md)` · `[.env.example](.env.example)`
+> **Companions.** `[k8s/README.md](../k8s/README.md)` · `[k8s/overlays/aws](../k8s/overlays/aws)` ·
+> `[KEYCLOAK_SETUP.md](KEYCLOAK_SETUP.md)` · `[.env.example](../.env.example)`
 
 ---
 

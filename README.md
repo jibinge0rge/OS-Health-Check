@@ -2,7 +2,7 @@
 
 Web app for maintaining an **OS normalization and lifecycle lookup** — the table that maps raw inventory strings (e.g. `Oracle Linux Server 9.5`) to a normalized name and its **EOL** (end of life) / **EOAS** (end of active support) dates.
 
-**New here?** Start with the step-by-step [User Guide](USER_GUIDE.md) (screen tour, everyday workflows). This README covers setup, configuration, architecture, and technical detail.
+**New here?** Start with the step-by-step [User Guide](docs/USER_GUIDE.md) (screen tour, everyday workflows). This README covers setup, configuration, architecture, and technical detail.
 
 Use it to:
 
@@ -338,6 +338,7 @@ OS-Health-Check/
 │       ├── staleness.js         # Proactive "Data changed" banner (fresh-on-draft-start +
 │       │                        #   periodic revision check)
 │       ├── date_utils.js  icons.js
+├── docs/                         # Architecture, setup guides, and production test plans
 ├── Dockerfile                   # Container image
 ├── docker-compose.yml            # App + PostgreSQL (local / Portainer)
 ├── docker/entrypoint.sh          # uvicorn startup (+ optional --reload)

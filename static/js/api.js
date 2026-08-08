@@ -2,7 +2,7 @@
 
 import { getValidAccessToken } from "./auth.js";
 
-// Every /api/* route requires a Bearer token (AUTH_MULTITENANCY_PLAN.md
+// Every /api/* route requires a Bearer token (docs/AUTH_MULTITENANCY_PLAN.md
 // §5/§7) -- merged into every call below, including the SSE streams.
 // getValidAccessToken() refreshes first if the token's about to expire, so
 // callers never need to think about token lifetime themselves.

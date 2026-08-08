@@ -40,7 +40,7 @@ function showFatalAuthError(err) {
   hint.textContent =
     "This usually means KEYCLOAK_ISSUER_URL (in .env) doesn't match a Keycloak that's actually " +
     "reachable from your browser, or the client/redirect URI isn't configured for this URL. " +
-    "See KEYCLOAK_SETUP.md §6 for the specific gotchas this matches.";
+    "See docs/KEYCLOAK_SETUP.md §6 for the specific gotchas this matches.";
 
   const retryBtn = document.createElement("button");
   retryBtn.textContent = "Retry";
@@ -54,7 +54,7 @@ function showFatalAuthError(err) {
 }
 
 try {
-  // Gates the whole app behind a Keycloak login (AUTH_MULTITENANCY_PLAN.md
+  // Gates the whole app behind a Keycloak login (docs/AUTH_MULTITENANCY_PLAN.md
   // §8) -- redirects away and never resolves if there's no valid session
   // yet, so nothing below ever runs unauthenticated.
   await ensureAuthenticated();

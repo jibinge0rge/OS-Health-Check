@@ -8,7 +8,7 @@ the lookup rows/evidence/draft/backups data lookup_db.py owns.
 
 A Keycloak `sub` claim is only unique within one realm. Since different
 deployments may run entirely separate Keycloak realms/instances while
-sharing this same Postgres (see AUTH_MULTITENANCY_PLAN.md §5.2), the natural
+sharing this same Postgres (see docs/AUTH_MULTITENANCY_PLAN.md §5.2), the natural
 user key is the composite (deployment_id, keycloak_sub) -- deployment_id
 always comes from *this app instance's own* DEPLOYMENT_ID env var (auth.py),
 never from the token, so this stays correct regardless of whether Keycloak

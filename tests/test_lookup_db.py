@@ -85,7 +85,7 @@ class LookupDbRoundTripTests(unittest.TestCase):
 
 @unittest.skipUnless(_pg_available(), "DATABASE_URL not set")
 class LookupDbDraftTests(unittest.TestCase):
-    """Per-user Draft (AUTH_MULTITENANCY_PLAN.md §6) -- draft_rows/
+    """Per-user Draft (docs/AUTH_MULTITENANCY_PLAN.md §6) -- draft_rows/
     draft_evidence/draft_meta, keyed by (deployment_id, owner_user_id)."""
 
     def setUp(self) -> None:
@@ -224,7 +224,7 @@ class LookupDbPublishTests(unittest.TestCase):
         lookup_db.db_publish([row("Data Row")], {}, 0, DEPLOYMENT_ID, USER_ID, schema=self.schema)
         self.assertEqual(lookup_db.db_load_draft_rows(DEPLOYMENT_ID, USER_ID, schema=self.schema), [])
         # A different user's own in-progress draft in the same deployment is
-        # untouched by someone else's publish (AUTH_MULTITENANCY_PLAN.md §6.3).
+        # untouched by someone else's publish (docs/AUTH_MULTITENANCY_PLAN.md §6.3).
         self.assertEqual(
             [r["os_string"] for r in lookup_db.db_load_draft_rows(DEPLOYMENT_ID, OTHER_USER_ID, schema=self.schema)],
             ["User 2's draft row"],

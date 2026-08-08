@@ -170,7 +170,7 @@ async def no_cache_static_assets(request: Request, call_next):
 @app.middleware("http")
 async def require_authentication(request: Request, call_next):
     """Every /api/* route requires an authenticated Keycloak user -- see
-    AUTH_MULTITENANCY_PLAN.md §5.3/§7. Enforced once, here, rather than
+    docs/AUTH_MULTITENANCY_PLAN.md §5.3/§7. Enforced once, here, rather than
     annotating every individual route with Depends(auth.get_current_user):
     a route that forgets the dependency can't accidentally end up
     unauthenticated, and auth.get_current_user (used by handlers that need
@@ -705,7 +705,7 @@ def _load_evidence_file() -> dict[str, object]:
 
 def _require_owner(owner: "auth.CurrentUser | None") -> "auth.CurrentUser":
     """Draft reads/writes are always scoped to one authenticated user
-    (AUTH_MULTITENANCY_PLAN.md §6) -- every call site that can reach the
+    (docs/AUTH_MULTITENANCY_PLAN.md §6) -- every call site that can reach the
     'draft' branch of load_rows/save_rows/etc. is behind
     Depends(auth.get_current_user), so owner should never actually be None
     here; this is a defensive guard against a future call site forgetting
