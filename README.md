@@ -239,11 +239,14 @@ Cloud **Deploy** (Azure/AWS) shells out to the `az` / `aws` CLI on the host runn
 ### Kubernetes
 
 For a real cluster deployment (AKS/EKS/etc.), the manifests live in [`k8s/`](k8s/)
-(Kustomize: `base/` + `overlays/{azure,aws,minikube}`) with a full guide in
+(Kustomize: `base/` + `overlays/minikube`) with a full guide in
 [`k8s/README.md`](k8s/README.md). Postgres is **not** part of those manifests —
 point `DATABASE_URL` at whatever managed Postgres (or self-hosted instance)
 you're using; for local testing, keep using `docker compose` instead, which
 runs its own Postgres container.
+
+**Multi-customer / GitOps target state** (Helm chart + Jenkins CI + Argo CD):
+see [`docs/GITOPS_DEPLOYMENT_PLAN.md`](docs/GITOPS_DEPLOYMENT_PLAN.md).
 
 **Prerequisites** (see `k8s/README.md` for detail on each):
 
@@ -343,7 +346,8 @@ OS-Health-Check/
 ├── docker-compose.yml            # App + PostgreSQL (local / Portainer)
 ├── docker/entrypoint.sh          # uvicorn startup (+ optional --reload)
 ├── docker/import_if_empty.py     # Seeds a brand-new, empty Postgres from _data/ on first startup
-├── k8s/                          # Kustomize base + azure/aws/minikube overlays (see k8s/README.md)
+├── k8s/                          # Kustomize base + minikube overlay (see k8s/README.md;
+                                  #   multi-customer GitOps: docs/GITOPS_DEPLOYMENT_PLAN.md)
 ├── .env.example                  # Documented env vars (copy to .env)
 ├── _data/
 │   ├── eol_lookup.csv            # Baked-in seed CSV -- only ever read once, by the first-boot

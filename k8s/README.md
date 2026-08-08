@@ -162,3 +162,4 @@ Do not bump `replicas:` without reading the PVC / Draft-Publish constraints
 
 - [Azure AKS](../docs/AZURE_AKS_PRODUCTION_TEST_PLAN.md)
 - [AWS EKS](../docs/AWS_EKS_PRODUCTION_TEST_PLAN.md)
+- [GitOps (Helm + Jenkins + Argo CD)](../docs/GITOPS_DEPLOYMENT_PLAN.md) — multi-customer target state
